@@ -3,9 +3,23 @@
 Native iOS version of the Puerto Rico downhill pothole racer, built with
 **SwiftUI + SceneKit**. Same course (identical seeded track generation), same
 physics, same hazards — potholes, iguanas, el tapón — with touch controls,
-haptics on every hit, and a fully synthesized soundtrack (AVAudioEngine renders
-the dembow beat, engine, wind, and coquí chirps from math; there are zero
-audio or image assets).
+haptics, and a fully synthesized soundtrack (AVAudioEngine renders the dembow
+beat, engine, wind, and coquí chirps from math; there are zero audio or image
+assets).
+
+Feature parity with the web v2 plus native-only polish:
+
+- **HDR post-processing** — bloom on the neon (underglow, headlights, brake
+  lights, nitro flames), motion blur, and vignette, straight from `SCNCamera`
+- **Procedural sky cubemap** — sunset gradient, sun disc + glow, and early
+  stars computed per-pixel at launch; pans correctly with the camera and is
+  immune to fog
+- **Countdown start** (3…2…1…¡DALE! with beeps), **pause menu** (auto-pauses
+  when the app is backgrounded), **records** in UserDefaults, **near-miss
+  combos** up to x5, **toolbox repairs** 🧰
+- Wind-streak particles that stretch through the motion blur at speed,
+  camera roll into carves, light haptics on pickups / heavy on hits,
+  and the screen never sleeps mid-run
 
 ## Requirements
 

@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 
 /// All audio is synthesized — no assets. A source node runs the continuous
 /// engine + wind + skid layers; the dembow beat is rendered once into a PCM
@@ -24,6 +25,8 @@ final class SoundEngine: ObservableObject {
     private var coquiBuffer: AVAudioPCMBuffer?
     private var thunkBuffer: AVAudioPCMBuffer?
     private var hornBuffer: AVAudioPCMBuffer?
+    private var beepBuffer: AVAudioPCMBuffer?
+    private var beepHiBuffer: AVAudioPCMBuffer?
 
     func start() {
         guard !started else { return }
@@ -80,6 +83,8 @@ final class SoundEngine: ObservableObject {
         coquiBuffer = renderCoqui()
         thunkBuffer = renderThunk()
         hornBuffer = renderHorn()
+        beepBuffer = renderBeep(freq: 850, dur: 0.12)
+        beepHiBuffer = renderBeep(freq: 1420, dur: 0.3)
         let bar = renderDembowBar()
 
         do {
@@ -101,6 +106,9 @@ final class SoundEngine: ObservableObject {
     func playCoqui() { if let b = coquiBuffer { fxPlayer.scheduleBuffer(b) } }
     func playThunk() { if let b = thunkBuffer { fxPlayer.scheduleBuffer(b) } }
     func playHorn()  { if let b = hornBuffer { fxPlayer.scheduleBuffer(b) } }
+    func playBeep(final: Bool) {
+        if let b = final ? beepHiBuffer : beepBuffer { fxPlayer.scheduleBuffer(b) }
+    }
 
     // MARK: - offline synthesis
 
@@ -131,6 +139,17 @@ final class SoundEngine: ObservableObject {
             let env = max(0, 1 - t / 0.24)
             lp += 0.05 * (Double.random(in: -1...1, using: &rng) - lp)
             d[i] += Float(lp * env * env * 0.9)
+        }
+        return buf
+    }
+
+    private func renderBeep(freq: Double, dur: Double) -> AVAudioPCMBuffer? {
+        guard let (buf, d, n) = makeBuffer(seconds: dur + 0.02) else { return nil }
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            let env = max(0, 1 - t / dur)
+            let sq: Double = sin(2 * .pi * freq * t) > 0 ? 1 : -1
+            d[i] = Float(sq * env * 0.09)
         }
         return buf
     }

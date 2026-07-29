@@ -1,7 +1,91 @@
 import UIKit
+import simd
 
 /// Every texture is generated at launch — no image assets in the bundle.
 enum Textures {
+
+    /// Six cubemap faces: sunset gradient by elevation with the sun disc,
+    /// its glow, and early stars baked in. Used as the scene background, so it
+    /// pans correctly with the camera and is never touched by fog.
+    static func skyCubemap() -> [UIImage] {
+        let n = 256
+        let sunDir = simd_normalize(simd_float3(0.16, 0.13, -0.98))
+        var faces: [UIImage] = []
+        let space = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        for f in 0..<6 {
+            var pixels = [UInt8](repeating: 255, count: n * n * 4)
+            for y in 0..<n {
+                for x in 0..<n {
+                    let u = (Float(x) + 0.5) / Float(n) * 2 - 1
+                    let v = (Float(y) + 0.5) / Float(n) * 2 - 1
+                    var d: simd_float3
+                    switch f {
+                    case 0: d = simd_float3(1, -v, -u)      // +X
+                    case 1: d = simd_float3(-1, -v, u)      // -X
+                    case 2: d = simd_float3(u, 1, v)        // +Y
+                    case 3: d = simd_float3(u, -1, -v)      // -Y
+                    case 4: d = simd_float3(u, -v, 1)       // +Z
+                    default: d = simd_float3(-u, -v, -1)    // -Z
+                    }
+                    d = simd_normalize(d)
+                    var c = skyColor(elevation: d.y)
+                    let sd = simd_dot(d, sunDir)
+                    if sd > 0 {
+                        c += simd_float3(1.0, 0.85, 0.55) * powf(sd, 1400) * 1.3   // disc
+                        c += simd_float3(1.0, 0.55, 0.30) * powf(sd, 50) * 0.38    // glow
+                    }
+                    if d.y > 0.3 {
+                        let h = starHash(d)
+                        if h > 0.9974 {
+                            let tw = Float((h - 0.9974) / 0.0026)
+                            c += simd_float3(repeating: tw * min((d.y - 0.3) * 2.2, 1) * 0.85)
+                        }
+                    }
+                    let i = (y * n + x) * 4
+                    pixels[i] = UInt8(min(max(c.x, 0), 1) * 255)
+                    pixels[i + 1] = UInt8(min(max(c.y, 0), 1) * 255)
+                    pixels[i + 2] = UInt8(min(max(c.z, 0), 1) * 255)
+                    pixels[i + 3] = 255
+                }
+            }
+            let img: UIImage? = pixels.withUnsafeMutableBytes { buf in
+                guard let ctx = CGContext(data: buf.baseAddress, width: n, height: n,
+                                          bitsPerComponent: 8, bytesPerRow: n * 4,
+                                          space: space, bitmapInfo: info),
+                      let cg = ctx.makeImage() else { return nil }
+                return UIImage(cgImage: cg)
+            }
+            if let img = img { faces.append(img) }
+        }
+        return faces
+    }
+
+    private static func skyColor(elevation e: Float) -> simd_float3 {
+        let stops: [(Float, simd_float3)] = [
+            (-1.00, simd_float3(1.00, 0.67, 0.47)),
+            (0.00, simd_float3(1.00, 0.67, 0.47)),
+            (0.06, simd_float3(1.00, 0.83, 0.56)),
+            (0.14, simd_float3(1.00, 0.54, 0.33)),
+            (0.30, simd_float3(0.92, 0.29, 0.50)),
+            (0.55, simd_float3(0.47, 0.16, 0.57)),
+            (1.00, simd_float3(0.14, 0.07, 0.33))
+        ]
+        for k in 0..<(stops.count - 1) {
+            if e <= stops[k + 1].0 {
+                let t = (e - stops[k].0) / (stops[k + 1].0 - stops[k].0)
+                return simd_mix(stops[k].1, stops[k + 1].1, simd_float3(repeating: t))
+            }
+        }
+        return stops[stops.count - 1].1
+    }
+
+    private static func starHash(_ d: simd_float3) -> Float {
+        let q = simd_float3(floorf(d.x * 180), floorf(d.y * 180), floorf(d.z * 180))
+        let s = sinf(simd_dot(q, simd_float3(12.9898, 78.233, 37.719))) * 43758.5453
+        return s - floorf(s)
+    }
 
     /// Sunset gradient used as the scene background.
     static func skyGradient() -> UIImage {

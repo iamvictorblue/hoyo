@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 enum GamePhase {
-    case intro, playing, finished, dead
+    case intro, countdown, playing, finished, dead
 }
 
 /// Live input flags, written by the SwiftUI buttons, read by the render loop.
@@ -18,6 +18,7 @@ final class GameState: ObservableObject {
     @Published var phase: GamePhase = .intro
     @Published var speedKmh: Int = 0
     @Published var score: Int = 0
+    @Published var combo: Int = 0
     @Published var hp: Double = 100
     @Published var nitro: Double = 60
     @Published var timeText: String = "0:00.0"
@@ -28,6 +29,13 @@ final class GameState: ObservableObject {
     @Published var popupText: String = ""
     @Published var popupID: Int = 0
     @Published var musicOn = true
+    @Published var paused = false
+    @Published var countLabel: String = ""      // "3" "2" "1" "¡DALE!"
+
+    // records
+    @Published var recordLine: String = GameState.makeRecordLine()
+    @Published var newRecordScore = false
+    @Published var newRecordTime = false
 
     // final-screen stats
     @Published var statTime = ""
@@ -45,5 +53,22 @@ final class GameState: ObservableObject {
     func popup(_ text: String) {
         popupText = text
         popupID += 1
+    }
+
+    func refreshRecordLine() {
+        recordLine = Self.makeRecordLine()
+    }
+
+    static func makeRecordLine() -> String {
+        let best = UserDefaults.standard.integer(forKey: "hoyo_bestScore")
+        let time = UserDefaults.standard.double(forKey: "hoyo_bestTime")
+        var parts: [String] = []
+        if best > 0 { parts.append("RÉCORD \(best) pts") }
+        if time > 0 {
+            let mm = Int(time) / 60
+            let ss = time.truncatingRemainder(dividingBy: 60)
+            parts.append(String(format: "MEJOR TIEMPO %d:%04.1f", mm, ss))
+        }
+        return parts.isEmpty ? "" : "🏆 " + parts.joined(separator: " · ")
     }
 }

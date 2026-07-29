@@ -31,9 +31,16 @@ struct HUDView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
-            if state.phase == .playing {
+            if state.phase == .playing || state.phase == .countdown {
                 gameHUD
                 touchControls
+            }
+
+            // countdown
+            if !state.countLabel.isEmpty {
+                CountdownView(label: state.countLabel)
+                    .id(state.countLabel)
+                    .allowsHitTesting(false)
             }
 
             // popup
@@ -43,13 +50,17 @@ struct HUDView: View {
                     .allowsHitTesting(false)
             }
 
+            if state.paused && state.phase == .playing {
+                PauseOverlay(state: state)
+            }
+
             switch state.phase {
             case .intro: IntroOverlay(state: state)
             case .finished: EndOverlay(state: state, title: "¡LLEGASTE!",
                                        subtitle: "SOBREVIVISTE LOS HOYOS · A LA PLAYA")
             case .dead: EndOverlay(state: state, title: "¡TE PONCHASTE!",
                                    subtitle: "LOS HOYOS GANARON ESTA VEZ")
-            case .playing: EmptyView()
+            case .playing, .countdown: EmptyView()
             }
         }
     }
@@ -87,11 +98,19 @@ struct HUDView: View {
 
                 Spacer()
 
-                Text("\(state.score)")
-                    .font(.system(size: 34, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(Color.neonTeal)
-                    .shadow(color: .neonTeal.opacity(0.8), radius: 10)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(state.score)")
+                        .font(.system(size: 34, weight: .black, design: .rounded))
+                        .italic()
+                        .foregroundStyle(Color.neonTeal)
+                        .shadow(color: .neonTeal.opacity(0.8), radius: 10)
+                    if state.combo >= 2 {
+                        Text("COMBO x\(state.combo) 🔥")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(Color.sunsetOrange)
+                            .shadow(color: .sunsetOrange.opacity(0.8), radius: 8)
+                    }
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
@@ -119,15 +138,26 @@ struct HUDView: View {
         VStack {
             HStack {
                 Spacer()
-                // music toggle
-                Button {
-                    state.musicOn.toggle()
-                    sound.setMusic(on: state.musicOn)
-                } label: {
-                    Text(state.musicOn ? "🎵" : "🔇")
-                        .font(.system(size: 22))
-                        .frame(width: 44, height: 44)
-                        .background(.black.opacity(0.3), in: Circle())
+                VStack(spacing: 10) {
+                    Button {
+                        state.paused = true
+                    } label: {
+                        Text("⏸")
+                            .font(.system(size: 20))
+                            .frame(width: 44, height: 44)
+                            .background(.black.opacity(0.3), in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
+                    }
+                    Button {
+                        state.musicOn.toggle()
+                        sound.setMusic(on: state.musicOn)
+                    } label: {
+                        Text(state.musicOn ? "🎵" : "🔇")
+                            .font(.system(size: 20))
+                            .frame(width: 44, height: 44)
+                            .background(.black.opacity(0.3), in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
+                    }
                 }
             }
             .padding(.trailing, 16)
@@ -208,6 +238,67 @@ struct HoldButton: View {
     }
 }
 
+struct CountdownView: View {
+    let label: String
+    @State private var shown = false
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 110, weight: .black, design: .rounded))
+            .italic()
+            .foregroundStyle(Color.neonGold)
+            .shadow(color: .sunsetOrange, radius: 22)
+            .shadow(color: Color(red: 0.7, green: 0, blue: 0.37), radius: 3, y: 5)
+            .scaleEffect(shown ? 1.0 : 2.2)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(.spring(response: 0.22, dampingFraction: 0.62)) { shown = true }
+                withAnimation(.easeOut(duration: 0.3).delay(0.65)) { shown = false }
+            }
+    }
+}
+
+struct PauseOverlay: View {
+    @ObservedObject var state: GameState
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.72)
+                .ignoresSafeArea()
+            VStack(spacing: 22) {
+                Text("PAUSA")
+                    .font(.system(size: 54, weight: .black, design: .rounded))
+                    .italic()
+                    .foregroundStyle(.white)
+                    .shadow(color: .neonPink, radius: 18)
+                HStack(spacing: 18) {
+                    Button {
+                        state.paused = false
+                    } label: {
+                        Text("SEGUIR")
+                            .font(.system(size: 18, weight: .black)).tracking(3)
+                            .foregroundStyle(.white)
+                            .padding(.vertical, 12).padding(.horizontal, 30)
+                            .overlay(Capsule().stroke(Color.neonTeal, lineWidth: 2))
+                            .shadow(color: .neonTeal.opacity(0.6), radius: 12)
+                    }
+                    Button {
+                        state.paused = false
+                        state.requestReset = true
+                    } label: {
+                        Text("REINICIAR")
+                            .font(.system(size: 18, weight: .black)).tracking(3)
+                            .foregroundStyle(.white)
+                            .padding(.vertical, 12).padding(.horizontal, 30)
+                            .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
+                            .shadow(color: .neonPink.opacity(0.6), radius: 12)
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct PopupView: View {
     let text: String
     @State private var shown = false
@@ -258,9 +349,18 @@ struct IntroOverlay: View {
                     row("🔥", "NITRO — recarga con 🍧 piraguas")
                     row("🛑", "freno · frena + guía = drift")
                     row("🕳️", "los hoyos rompen el carro, ¡esquívalos!")
+                    row("🧰", "el mecánico ambulante repara el carro")
                 }
                 .font(.system(size: 14))
                 .padding(.top, 10)
+
+                if !state.recordLine.isEmpty {
+                    Text(state.recordLine)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.neonGold)
+                        .shadow(color: .neonGold.opacity(0.6), radius: 8)
+                        .padding(.top, 10)
+                }
 
                 Button { state.requestStart = true } label: {
                     Text("TOCA PA' ARRANCAR")
@@ -306,6 +406,21 @@ struct EndOverlay: View {
                 Text(subtitle)
                     .font(.system(size: 14, weight: .semibold)).tracking(2)
                     .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.69))
+
+                if state.newRecordScore || state.newRecordTime {
+                    VStack(spacing: 2) {
+                        if state.newRecordScore {
+                            Text("★ ¡NUEVO RÉCORD DE PUNTOS! ★")
+                        }
+                        if state.newRecordTime {
+                            Text("★ ¡MEJOR TIEMPO! ★")
+                        }
+                    }
+                    .font(.system(size: 16, weight: .black))
+                    .foregroundStyle(Color.neonTeal)
+                    .shadow(color: .neonTeal.opacity(0.9), radius: 10)
+                    .padding(.top, 6)
+                }
 
                 VStack(spacing: 6) {
                     stat("TIEMPO", state.statTime)

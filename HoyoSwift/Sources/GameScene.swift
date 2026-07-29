@@ -53,6 +53,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var holes: [Hole] = []
     private struct Pickup { var s, x, baseY: Float; var node: SCNNode; var taken = false }
     private var piraguas: [Pickup] = []
+    private var toolboxes: [Pickup] = []
     private struct Iguana {
         var s, x: Float; var dir: Float; var node: SCNNode
         var stateRaw = 0   // 0 wait, 1 run, 2 done
@@ -71,7 +72,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var hp: Float = 100, nitro: Float = 60
     private var score: Float = 0, styleRun: Float = 0
     private var topSpeed: Float = 0
-    private var holesHit = 0, nearMisses = 0
+    private var holesHit = 0, nearMisses = 0, combo = 0
+    private var cd: Float = 0
+    private var cdLabel = ""
+    private var streakSystem = SCNParticleSystem()
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
     private var driftYaw: Float = 0, leanRoll: Float = 0, pitchAng: Float = 0
     private var smokeT: Float = 0
@@ -209,7 +213,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         scene.fogStartDistance = 260
         scene.fogEndDistance = 2400
         scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
-        scene.background.contents = Textures.skyGradient()
+        // cubemap sky: pans with the camera, immune to fog, sun + stars baked in
+        scene.background.contents = Textures.skyCubemap()
 
         let ambient = SCNNode()
         ambient.light = SCNLight()
@@ -231,14 +236,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         sunNode.eulerAngles = SCNVector3(-0.55, 0.45, 0)
         scene.rootNode.addChildNode(sunNode)
 
-        // sun disc within fog range, always facing the camera
-        let sunDisc = SCNNode(geometry: SCNPlane(width: 190, height: 190))
-        sunDisc.geometry!.materials = [constant(UIColor(red: 1, green: 0.78, blue: 0.42, alpha: 1))]
-        (sunDisc.geometry as! SCNPlane).cornerRadius = 95
-        sunDisc.position = SCNVector3(190, 115, -2250)
-        sunDisc.constraints = [SCNBillboardConstraint()]
-        scene.rootNode.addChildNode(sunDisc)
-
         camera()
         clouds()
         ocean()
@@ -248,6 +245,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         props()
         potholes()
         makePiraguas()
+        makeToolboxes()
         makeIguanas()
         makeTraffic()
         buildCar()
@@ -263,6 +261,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cam.zNear = 0.1
         cam.zFar = 9000
         cam.fieldOfView = 72
+        // post-processing: this is what sells the look on device
+        cam.wantsHDR = true
+        cam.wantsExposureAdaptation = false
+        cam.bloomThreshold = 0.85
+        cam.bloomIntensity = 0.9
+        cam.bloomBlurRadius = 12
+        cam.motionBlurIntensity = 0.45
+        cam.vignettingPower = 0.7
+        cam.vignettingIntensity = 0.7
         cameraNode.camera = cam
         cameraNode.position = SCNVector3(0, 3, 8)
         scene.rootNode.addChildNode(cameraNode)
@@ -407,22 +414,42 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     // MARK: - vegetation
 
+    /// Seven drooping fronds built as raw triangles — reads as a real palm
+    /// crown instead of a starburst of boxes.
+    private func palmCanopyGeometry() -> SCNGeometry {
+        var verts: [simd_float3] = []
+        var idx: [Int32] = []
+        let fr = 7
+        for i in 0..<fr {
+            let a = Float(i) / Float(fr) * 2 * .pi + 0.3
+            let dx = cos(a), dz = sin(a)
+            let px = -dz * 0.45, pz = dx * 0.45
+            let m = simd_float3(dx * 1.7, -0.2, dz * 1.7)
+            let tip = simd_float3(dx * 3.2, -1.6, dz * 3.2)
+            let crown = simd_float3(0, 0.15, 0)
+            let base = Int32(verts.count)
+            verts.append(crown)
+            verts.append(simd_float3(m.x + px, m.y, m.z + pz))
+            verts.append(tip)
+            verts.append(crown)
+            verts.append(tip)
+            verts.append(simd_float3(m.x - px, m.y, m.z - pz))
+            idx.append(contentsOf: [base, base + 1, base + 2, base + 3, base + 4, base + 5])
+        }
+        let mat = lambert(UIColor(red: 0.18, green: 0.61, blue: 0.32, alpha: 1))
+        mat.isDoubleSided = true
+        return makeGeometry(verts: verts, indices: idx, material: mat)
+    }
+
     private func palmTemplate() -> SCNNode {
         let palm = SCNNode()
         let trunk = SCNNode(geometry: SCNCylinder(radius: 0.18, height: 7))
         trunk.geometry!.materials = [lambert(UIColor(red: 0.54, green: 0.42, blue: 0.27, alpha: 1))]
         trunk.position.y = 3.5
         palm.addChildNode(trunk)
-        let frondMat = lambert(UIColor(red: 0.18, green: 0.61, blue: 0.32, alpha: 1))
-        for i in 0..<7 {
-            let frond = SCNNode(geometry: SCNBox(width: 0.5, height: 0.06, length: 3.2, chamferRadius: 0))
-            frond.geometry!.materials = [frondMat]
-            frond.pivot = SCNMatrix4MakeTranslation(0, 0, -1.6)   // hinge at the crown
-            frond.position.y = 7
-            frond.eulerAngles = SCNVector3(-0.45 - Float(i % 3) * 0.18,
-                                           Float(i) / 7 * 2 * .pi + 0.3, 0)
-            palm.addChildNode(frond)
-        }
+        let canopy = SCNNode(geometry: palmCanopyGeometry())
+        canopy.position.y = 7
+        palm.addChildNode(canopy)
         return palm
     }
 
@@ -712,7 +739,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let im = SCNMaterial()
             im.lightingModel = .lambert
             im.diffuse.contents = flavors[i % flavors.count]
-            im.emission.contents = flavors[i % flavors.count].withAlphaComponent(0.5)
+            im.emission.contents = flavors[i % flavors.count]
+            im.emission.intensity = 1.5
             ice.geometry!.materials = [im]
             ice.position.y = 0.24
             grp.addChildNode(ice)
@@ -720,6 +748,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             grp.position = SCNVector3(world.x, world.y + 1.0, world.z)
             scene.rootNode.addChildNode(grp)
             piraguas.append(Pickup(s: ps, x: px2, baseY: world.y + 1.0, node: grp))
+        }
+    }
+
+    private func makeToolboxes() {
+        let boxMat = SCNMaterial()
+        boxMat.lightingModel = .lambert
+        boxMat.diffuse.contents = UIColor(red: 0.85, green: 0.21, blue: 0.18, alpha: 1)
+        boxMat.emission.contents = UIColor(red: 0.85, green: 0.21, blue: 0.18, alpha: 1)
+        boxMat.emission.intensity = 0.5
+        let bandMat = lambert(UIColor(white: 0.95, alpha: 1))
+        for i in 0..<10 {
+            let ts = 380 + (Float(i) + rng.next() * 0.5) * (Self.total - 700) / 10
+            let tx = (rng.next() - 0.5) * 6
+            let (pos, _, rgt) = sample(ts)
+            let grp = SCNNode()
+            let box = SCNNode(geometry: SCNBox(width: 0.52, height: 0.34, length: 0.38, chamferRadius: 0.04))
+            box.geometry!.materials = [boxMat]
+            grp.addChildNode(box)
+            let band = SCNNode(geometry: SCNBox(width: 0.54, height: 0.1, length: 0.4, chamferRadius: 0.02))
+            band.geometry!.materials = [bandMat]
+            grp.addChildNode(band)
+            let world = pos + rgt * tx
+            grp.position = SCNVector3(world.x, world.y + 0.9, world.z)
+            scene.rootNode.addChildNode(grp)
+            toolboxes.append(Pickup(s: ts, x: tx, baseY: world.y + 0.9, node: grp))
         }
     }
 
@@ -875,6 +928,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // headlights + beams (front is -Z)
         let hlMat = constant(UIColor(red: 1, green: 0.95, blue: 0.77, alpha: 1))
+        hlMat.emission.contents = UIColor(red: 1, green: 0.95, blue: 0.77, alpha: 1)
+        hlMat.emission.intensity = 2.2
         for xo in [Float(-0.6), Float(0.6)] {
             let hl = SCNNode(geometry: SCNBox(width: 0.32, height: 0.14, length: 0.06, chamferRadius: 0))
             hl.geometry!.materials = [hlMat]
@@ -909,6 +964,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let fm = SCNMaterial()
             fm.lightingModel = .constant
             fm.diffuse.contents = UIColor(red: 0.35, green: 0.84, blue: 1, alpha: 1)
+            fm.emission.contents = UIColor(red: 0.35, green: 0.84, blue: 1, alpha: 1)
+            fm.emission.intensity = 2.6
             fm.blendMode = .add
             fm.writesToDepthBuffer = false
             let flame = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 0.12, height: 1.0))
@@ -922,6 +979,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // underglow
         glowMaterial = constant(UIColor(red: 0.07, green: 0.84, blue: 0.76, alpha: 1))
+        glowMaterial.emission.contents = UIColor(red: 0.07, green: 0.84, blue: 0.76, alpha: 1)
+        glowMaterial.emission.intensity = 2.0
         glowMaterial.blendMode = .add
         glowMaterial.writesToDepthBuffer = false
         glowMaterial.transparency = 0.4
@@ -971,6 +1030,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         dustSystem.spreadingAngle = 180
         dustSystem.particleColor = UIColor(red: 0.54, green: 0.48, blue: 0.36, alpha: 0.7)
         dustNode.addParticleSystem(dustSystem)
+
+        // speed streaks: static motes hanging ahead of the car — the camera's
+        // motion blur stretches them into wind streaks at speed
+        streakSystem.particleImage = puffImg
+        streakSystem.birthRate = 0
+        streakSystem.particleLifeSpan = 1.6
+        streakSystem.particleSize = 0.09
+        streakSystem.particleVelocity = 0
+        streakSystem.emitterShape = SCNBox(width: 26, height: 7, length: 50, chamferRadius: 0)
+        streakSystem.birthLocation = .volume
+        streakSystem.particleColor = UIColor(red: 1, green: 0.95, blue: 0.87, alpha: 0.65)
+        streakSystem.blendMode = .additive
+        let streakNode = SCNNode()
+        streakNode.position = SCNVector3(0, 2.5, -26)
+        streakNode.addParticleSystem(streakSystem)
+        playerNode.addChildNode(streakNode)
     }
 
     // MARK: - game flow
@@ -978,30 +1053,48 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private func resetGame() {
         s = 4; v = 8; x = 0; xd = 0
         hp = 100; nitro = 60
-        score = 0; styleRun = 0
+        score = 0; styleRun = 0; combo = 0
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         playTime = 0
+        cd = 3.4; cdLabel = ""
         for i in 0..<holes.count { holes[i].passed = false; holes[i].hit = false }
         for i in 0..<piraguas.count {
             piraguas[i].taken = false
             piraguas[i].node.isHidden = false
         }
+        for i in 0..<toolboxes.count {
+            toolboxes[i].taken = false
+            toolboxes[i].node.isHidden = false
+        }
         for i in 0..<iguanas.count {
             iguanas[i].stateRaw = 0; iguanas[i].hit = false
             iguanas[i].x = -iguanas[i].dir * (Self.roadHalf + 1.5)
+            iguanas[i].node.eulerAngles.z = 0
             positionIguana(&iguanas[i])
         }
         for i in 0..<traffic.count {
             traffic[i].s = 300 + Float(i) * 420 + rng.next() * 150
             traffic[i].cool = 0; traffic[i].missed = false
         }
-        phase = .playing
+        phase = .countdown
         let (pos, tan, _) = sample(s)
         camPos = pos - tan * 7 + simd_float3(0, 2.6, 0)
         camLook = pos + tan * 8
-        DispatchQueue.main.async { self.state.phase = .playing }
+        cameraNode.simdPosition = camPos
+        cameraNode.simdLook(at: camLook, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        let (carP, carT, _) = sample(s)
+        playerNode.simdPosition = carP + simd_float3(0, 0.02, 0)
+        playerNode.simdLook(at: carP + carT, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        DispatchQueue.main.async {
+            self.state.phase = .countdown
+            self.state.paused = false
+            self.state.combo = 0
+            self.state.countLabel = ""
+            self.state.newRecordScore = false
+            self.state.newRecordTime = false
+        }
     }
 
     private func endGame(dead: Bool) {
@@ -1011,28 +1104,53 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let timeStr = String(format: "%d:%04.1f", mm, ss)
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
+        // records
+        let defaults = UserDefaults.standard
+        let newScoreRec = sc > defaults.integer(forKey: "hoyo_bestScore")
+        if newScoreRec { defaults.set(sc, forKey: "hoyo_bestScore") }
+        var newTimeRec = false
+        if !dead {
+            let bestTime = defaults.double(forKey: "hoyo_bestTime")
+            if bestTime == 0 || playTime < bestTime {
+                newTimeRec = true
+                defaults.set((playTime * 10).rounded() / 10, forKey: "hoyo_bestTime")
+            }
+        }
         DispatchQueue.main.async {
             self.state.statTime = timeStr
             self.state.statScore = sc
             self.state.statTopSpeed = top
             self.state.statHolesHit = hh
             self.state.statNearMisses = nm
+            self.state.newRecordScore = newScoreRec
+            self.state.newRecordTime = newTimeRec
+            self.state.refreshRecordLine()
             self.state.phase = dead ? .dead : .finished
         }
         if !dead { sound.playCoqui() } else { sound.playThunk() }
         sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0; sound.nitroLevel = 0
+        streakSystem.birthRate = 0
+        smokeSystem.birthRate = 0
     }
 
     private func damage(_ amount: Float, _ msg: String?) {
         hp -= amount
         flashT = 1
+        combo = 0
         if let msg = msg {
             DispatchQueue.main.async {
                 self.state.popup(msg)
+                self.state.combo = 0
                 UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
             }
         }
         if hp <= 0 { hp = 0; endGame(dead: true) }
+    }
+
+    private func lightHaptic() {
+        DispatchQueue.main.async {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
     }
 
     private func popupAsync(_ msg: String) {
@@ -1056,6 +1174,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             n.contentsTransform = SCNMatrix4Mult(SCNMatrix4MakeTranslation(fx, fx * 0.6, 0), scaleM)
         }
 
+        if state.paused && phase == .playing {
+            sound.engineLevel = 0; sound.windLevel = 0
+            sound.skidLevel = 0; sound.nitroLevel = 0
+            return
+        }
+
         switch phase {
         case .intro:
             let ft = Float(time * 22).truncatingRemainder(dividingBy: Self.total * 0.6)
@@ -1065,6 +1189,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             cameraNode.simdPosition = camPos
             let (p2, _, _) = sample(ft + 160)
             cameraNode.simdLook(at: p2, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+            return
+        case .countdown:
+            cd -= dt
+            let lbl = cd > 2.4 ? "3" : cd > 1.4 ? "2" : cd > 0.4 ? "1" : "¡DALE!"
+            if lbl != cdLabel {
+                cdLabel = lbl
+                sound.playBeep(final: lbl == "¡DALE!")
+                DispatchQueue.main.async { self.state.countLabel = lbl }
+            }
+            if cd <= -0.4 {
+                phase = .playing
+                DispatchQueue.main.async {
+                    self.state.countLabel = ""
+                    self.state.phase = .playing
+                }
+            }
             return
         case .finished, .dead:
             return
@@ -1101,6 +1241,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         brakeLightMaterial.diffuse.contents = braking
             ? UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1)
             : UIColor(red: 0.33, green: 0.04, blue: 0.04, alpha: 1)
+        brakeLightMaterial.emission.contents = UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1)
+        brakeLightMaterial.emission.intensity = braking ? 2.4 : 0
         for f in flameNodes {
             f.isHidden = !wantNitro
             if wantNitro { f.scale = SCNVector3(1, 0.7 + Float.random(in: 0...0.9), 1) }
@@ -1157,9 +1299,27 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 holes[hIdx].passed = true
                 if abs(h.x - x) < h.r + 2.2 {
                     nearMisses += 1
-                    score += 40
-                    if nearMisses % 4 == 0 { popupAsync("¡CASI! +40") }
+                    combo = min(combo + 1, 5)
+                    score += Float(40 * combo)
+                    let c = combo
+                    DispatchQueue.main.async { self.state.combo = c }
+                    if combo >= 2 { popupAsync("¡CASI! x\(combo) +\(40 * combo)") }
+                    else if nearMisses % 3 == 0 { popupAsync("¡CASI! +40") }
                 }
+            }
+        }
+
+        // toolboxes — el mecánico repairs on the fly
+        for tbi in 0..<toolboxes.count {
+            let tb = toolboxes[tbi]
+            if !tb.taken && abs(tb.s - s) < 2.4 && abs(tb.x - x) < 1.6 {
+                toolboxes[tbi].taken = true
+                tb.node.isHidden = true
+                hp = min(100, hp + 22)
+                score += 50
+                sound.playCoqui()
+                lightHaptic()
+                popupAsync("¡MECÁNICO! +VIDA")
             }
         }
 
@@ -1172,6 +1332,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 nitro = min(100, nitro + 35)
                 score += 100
                 sound.playCoqui()
+                lightHaptic()
                 popupAsync("¡PIRAGUA! +NITRO")
             }
         }
@@ -1220,9 +1381,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             } else if !tc.missed && tDs < -1 && tDs > -8 && abs(tc.x - x) < 3 &&
                       abs(tc.x - x) > 1.7 && v - tc.v > 12 {
                 traffic[ti].missed = true
-                score += 80
+                combo = min(combo + 1, 5)
+                score += Float(80 * combo)
+                let c = combo
+                DispatchQueue.main.async { self.state.combo = c }
                 sound.playHorn()
-                popupAsync("¡FUA! +80")
+                popupAsync("¡FUA! +\(80 * combo)")
             }
             if tDs > -150 && tDs < 700 {
                 tc.node.isHidden = false
@@ -1278,9 +1442,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         finalCam.y += Float.random(in: -1...1) * rumble
         cameraNode.simdPosition = finalCam
         cameraNode.simdLook(at: camLook, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        // subtle camera roll into the carve — sells the speed
+        cameraNode.simdOrientation = simd_mul(cameraNode.simdOrientation,
+            simd_quatf(angle: leanRoll * 0.45, axis: simd_float3(0, 0, 1)))
         let targetFov = CGFloat(72 + v * 0.6 + (wantNitro ? 4 : 0))
         fov += (min(max(targetFov, 72), 116) - fov) * CGFloat(min(1, 4.5 * dt))
         cameraNode.camera?.fieldOfView = fov
+
+        // wind streaks fade in past ~90 km/h
+        streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 6) : 0
 
         // ----- audio -----
         sound.engineFreq = Double(55 + v * 3.2 + (wantNitro ? 30 : 0))
@@ -1293,6 +1463,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         for q in piraguas where !q.taken {
             q.node.position.y = q.baseY + sin(tNow * 3 + q.s) * 0.16
             q.node.eulerAngles.y += 2.4 * dt
+        }
+        for tb in toolboxes where !tb.taken {
+            tb.node.position.y = tb.baseY + sin(tNow * 3 + tb.s * 2) * 0.14
+            tb.node.eulerAngles.y += 1.8 * dt
         }
 
         // ----- HUD -----

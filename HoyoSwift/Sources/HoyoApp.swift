@@ -13,6 +13,7 @@ struct HoyoApp: App {
 struct ContentView: View {
     @StateObject private var state = GameState()
     @StateObject private var sound = SoundEngine()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -23,6 +24,11 @@ struct ContentView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase != .active && state.phase == .playing {
+                state.paused = true
+            }
+        }
     }
 }
 
@@ -43,6 +49,7 @@ struct GameSceneView: UIViewRepresentable {
         view.antialiasingMode = .multisampling4X
         view.backgroundColor = .black
         view.isPlaying = true
+        UIApplication.shared.isIdleTimerDisabled = true   // no screen sleep mid-run
         return view
     }
 
