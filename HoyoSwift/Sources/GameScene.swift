@@ -84,7 +84,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     static let step: Float = 2
     static let count = 1801
     static let total: Float = Float(count - 1) * 2.0
-    static let roadHalf: Float = 4.5
+    /// 11 m of asphalt, up from 9. A 1.8 m car dodging holes spread across the
+    /// full width needed more room to actually thread the gaps.
+    static let roadHalf: Float = 5.5
+    /// Dirt shoulder between the asphalt edge and the guardrail — slow and
+    /// scrapey, but recoverable.
+    static let shoulderWidth: Float = 1.7
+    /// Hard boundary. The guardrail posts are drawn exactly here so the limit you
+    /// hit is the limit you can see.
+    static var barrier: Float { roadHalf + shoulderWidth }
+    /// Where the tapón sits, as a fraction of the half-width.
+    static var trafficLane: Float { roadHalf * 0.42 }
 
     let scene = SCNScene()
     private let state: GameState
@@ -457,8 +467,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             verts.append(p - r * Self.roadHalf)
             verts.append(p + r * Self.roadHalf)
             let vCoord = CGFloat(Float(i) * Self.step / 9)
+            // keep the asphalt tile square now that the road is wider than the
+            // 9 m the V scale assumes, otherwise the speckle stretches sideways
+            let uMax = CGFloat(Self.roadHalf * 2 / 9)
             uvs.append(CGPoint(x: 0, y: vCoord))
-            uvs.append(CGPoint(x: 1, y: vCoord))
+            uvs.append(CGPoint(x: uMax, y: vCoord))
             if i < Self.count - 1 {
                 let a = Int32(i * 2)
                 idx.append(contentsOf: [a, a + 1, a + 2, a + 1, a + 3, a + 2])
@@ -494,8 +507,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             parent.addChildNode(node)
         }
         ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dashed: true)
-        ribbon(-4.32, -4.1, UIColor(white: 0.83, alpha: 1), dashed: false)
-        ribbon(4.1, 4.32, UIColor(white: 0.83, alpha: 1), dashed: false)
+        let edgeOuter = Self.roadHalf - 0.18, edgeInner = Self.roadHalf - 0.4
+        ribbon(-edgeOuter, -edgeInner, UIColor(white: 0.83, alpha: 1), dashed: false)
+        ribbon(edgeInner, edgeOuter, UIColor(white: 0.83, alpha: 1), dashed: false)
     }
 
     /// Grass / rock / sand blend driven by local slope plus three octaves of
@@ -529,8 +543,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     private func terrain(_ parent: SCNNode) {
         // denser near the road, where you can actually see the silhouette
-        let latsL: [Float] = [-4.2, -6, -8.5, -12, -17, -24, -34, -48, -68, -95, -145]
-        let latsR: [Float] = [4.2, 6, 8.5, 12, 17, 24, 34, 48, 68, 95, 145]
+        // first band hugs the asphalt edge, second sits exactly on the guardrail
+        // line so the posts stand on a real terrain vertex rather than floating
+        let e = Self.roadHalf - 0.3, b = Self.barrier
+        let latsL: [Float] = [-e, -b, -9.5, -13, -18, -25, -35, -49, -68, -95, -145]
+        let latsR: [Float] = [e, b, 9.5, 13, 18, 25, 35, 49, 68, 95, 145]
 
         func side(_ lats: [Float]) {
             var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
@@ -613,7 +630,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         while placed < 120 && guard_ < 3000 {
             guard_ += 1
             let pi = 20 + Int(worldRng.next() * Float(Self.count - 60))
-            let lat = (worldRng.next() < 0.55 ? 1 : -1) * (7 + worldRng.next() * 45)
+            let lat = (worldRng.next() < 0.55 ? 1 : -1) * (Self.barrier + 1.2 + worldRng.next() * 45)
             let gy = groundY(pi, lat)
             if gy < -1 { continue }
             let p = pts[pi], r = rights[pi]
@@ -638,7 +655,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         while placed < 40 && guard_ < 2000 {
             guard_ += 1
             let fi = 30 + Int(worldRng.next() * Float(Self.count - 80))
-            let flat = (worldRng.next() < 0.5 ? 1 : -1) * (6.5 + worldRng.next() * 26)
+            let flat = (worldRng.next() < 0.5 ? 1 : -1) * (Self.barrier + 0.8 + worldRng.next() * 26)
             let fgy = groundY(fi, flat)
             if fgy < 0 { continue }
             let fp = pts[fi], fr = rights[fi]
@@ -677,7 +694,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         while placed < 30 && guard_ < 2000 {
             guard_ += 1
             let hi = 40 + Int(worldRng.next() * Float(Self.count - 120))
-            let hlat = (worldRng.next() < 0.5 ? 1 : -1) * (9.5 + worldRng.next() * 9)
+            let hlat = (worldRng.next() < 0.5 ? 1 : -1) * (Self.barrier + 3.5 + worldRng.next() * 9)
             let hgy = groundY(hi, hlat)
             if hgy < 0.5 { continue }
             let hp = pts[hi], hr = rights[hi]
@@ -711,7 +728,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         rockGeo.materials = [lambert(UIColor(red: 0.47, green: 0.44, blue: 0.37, alpha: 1))]
         for _ in 0..<50 {
             let ri = 10 + Int(worldRng.next() * Float(Self.count - 30))
-            let rlat = -(6 + worldRng.next() * 40)
+            let rlat = -(Self.barrier + 0.8 + worldRng.next() * 40)
             let rp = pts[ri], rr2 = rights[ri]
             let rock = SCNNode(geometry: rockGeo)
             rock.position = SCNVector3(rp.x + rr2.x * rlat, groundY(ri, rlat), rp.z + rr2.z * rlat)
@@ -725,12 +742,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let postContainer = SCNNode()
         let postGeo = SCNBox(width: 0.16, height: 0.85, length: 0.16, chamferRadius: 0)
         postGeo.materials = [lambert(UIColor(white: 0.91, alpha: 1))]
+        // Both sides now, and sitting on `barrier` — previously there was a single
+        // line of posts at 5.1 and the actual death boundary was an invisible
+        // cliff out at 8.6, so the rail you could see meant nothing.
         var gi = 0
         while gi < Self.count {
             let gp = pts[gi], gr = rights[gi]
-            let post = SCNNode(geometry: postGeo)
-            post.position = SCNVector3(gp.x + gr.x * 5.1, gp.y + 0.42, gp.z + gr.z * 5.1)
-            postContainer.addChildNode(post)
+            for side in [Float(-1), Float(1)] {
+                let lat = side * Self.barrier
+                let post = SCNNode(geometry: postGeo)
+                post.position = SCNVector3(gp.x + gr.x * lat,
+                                           groundY(gi, lat) + 0.42,
+                                           gp.z + gr.z * lat)
+                postContainer.addChildNode(post)
+            }
             gi += 4
         }
         parent.addChildNode(postContainer.flattenedClone())
@@ -740,7 +765,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let flagImg = Textures.prFlag()
         for i in 0..<10 {
             let fi = 60 + i * (Self.count - 120) / 10
-            let lat: Float = i % 2 == 0 ? -6.1 : 6.1
+            let lat: Float = (i % 2 == 0 ? -1 : 1) * (Self.barrier + 1.4)
             let p = pts[fi], r = rights[fi]
             let gy = max(groundY(fi, lat), p.y)
             let pole = SCNNode(geometry: SCNCylinder(radius: 0.06, height: 4.4))
@@ -762,12 +787,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let grp = SCNNode()
             let postGeo = SCNCylinder(radius: 0.14, height: 6)
             postGeo.materials = [lambert(UIColor(white: 0.95, alpha: 1))]
-            for xo in [Float(-5.1), Float(5.1)] {
+            let archHalf = Self.barrier + 0.5
+            for xo in [-archHalf, archHalf] {
                 let post = SCNNode(geometry: postGeo)
                 post.position = SCNVector3(xo, 3, 0)
                 grp.addChildNode(post)
             }
-            let banner = SCNNode(geometry: SCNPlane(width: 10.6, height: 1.6))
+            let banner = SCNNode(geometry: SCNPlane(width: CGFloat(archHalf * 2 + 0.4), height: 1.6))
             let bm = constant(.white)
             bm.diffuse.contents = Textures.banner(text: text, background: color)
             bm.isDoubleSided = true
@@ -784,7 +810,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let umbCols: [UIColor] = [.neonPinkUI, .neonGoldUI, .neonTealUI, .sunsetOrangeUI]
         for u in 0..<6 {
             let ui = Self.count - 30 - Int(worldRng.next() * 40)
-            let ulat = (worldRng.next() < 0.5 ? 1 : -1) * (6 + worldRng.next() * 12)
+            let ulat = (worldRng.next() < 0.5 ? 1 : -1) * (Self.barrier + 0.5 + worldRng.next() * 12)
             let ugy = groundY(ui, ulat)
             if ugy < -0.5 { continue }
             let up = pts[ui], ur = rights[ui]
@@ -856,11 +882,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         while cs < Self.total - 260 {
             let prog = cs / Self.total
             let n = 1 + Int(runRng.next() * (2.6 + prog * 3.0))
-            let gapC = (runRng.next() - 0.5) * 5.4
+            let gapC = (runRng.next() - 0.5) * (Self.roadHalf * 1.2)
             for _ in 0..<n {
                 var tries = 0
                 var hx: Float = 0
-                repeat { hx = (runRng.next() - 0.5) * 7.4; tries += 1 }
+                repeat { hx = (runRng.next() - 0.5) * (Self.roadHalf * 2 - 1.6); tries += 1 }
                 while abs(hx - gapC) < 2.2 && tries < 12
                 if tries >= 12 { continue }
                 addHole(cs + (runRng.next() - 0.5) * 12, hx,
@@ -883,7 +909,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // pickups
         for i in 0..<piraguas.count {
             let ps = 150 + (Float(i) + runRng.next() * 0.6) * (Self.total - 380) / Float(piraguas.count)
-            let px2 = (runRng.next() - 0.5) * 6.4
+            let px2 = (runRng.next() - 0.5) * (Self.roadHalf * 2 - 2.6)
             let (pos, _, rgt) = sample(ps)
             let world = pos + rgt * px2
             piraguas[i].s = ps
@@ -895,7 +921,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         for i in 0..<toolboxes.count {
             let ts = 380 + (Float(i) + runRng.next() * 0.5) * (Self.total - 700) / Float(toolboxes.count)
-            let tx = (runRng.next() - 0.5) * 6
+            let tx = (runRng.next() - 0.5) * (Self.roadHalf * 2 - 3)
             let (pos, _, rgt) = sample(ts)
             let world = pos + rgt * tx
             toolboxes[i].s = ts
@@ -917,7 +943,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         for i in 0..<traffic.count {
             traffic[i].s = 300 + Float(i) * 420 + runRng.next() * 150
-            traffic[i].x = runRng.next() < 0.5 ? -1.9 : 1.9
+            traffic[i].x = runRng.next() < 0.5 ? -Self.trafficLane : Self.trafficLane
             traffic[i].v = 11 + runRng.next() * 7
             traffic[i].cool = 0
             traffic[i].missed = false
@@ -1549,7 +1575,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         xd += (targetXd - xd) * min(1, grip * dt)
         xd += -curv * v * v * dt * (drifting ? 0.45 : 0.35)
         x += xd * dt
-        x = simd_clamp(x, -10, 10)
+        x = simd_clamp(x, -Self.barrier, Self.barrier)
 
         smokeSystem.birthRate = drifting ? 90 : 0
         if drifting {
@@ -1581,12 +1607,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         updateSkids(dt)
 
         // cliff / offroad
-        if abs(x) > 8.6 && v > 4 {
-            sound.playThunk()
-            shake = 1
-            v *= 0.3
-            x = simd_clamp(x, -3, 3) * 0.3; xd = 0
-            damage(14, "¡AY BENDITO!")
+        // Guardrail. The old rule fired at |x| > 8.6 — 3.8 m past the visible
+        // posts — then teleported you back to near the centre line, which read as
+        // the game randomly yanking the car. Now you scrape along the rail where
+        // you can see it, losing speed and (on the grace timer) some health.
+        if abs(x) >= Self.barrier {
+            let side: Float = x > 0 ? 1 : -1
+            x = side * (Self.barrier - 0.04)
+            xd = -xd * 0.25                 // scrub sideways momentum, don't bounce
+            if v > 6 {
+                v *= 0.72
+                shake = max(shake, 0.8)
+                sound.playThunk()
+                damage(9, "¡GUARDARRAIL!")
+            }
         } else if offroad && v > 8 {
             shake = max(shake, 0.25)
             // scrape damage bypasses the grace window: it's small and continuous,
@@ -1688,7 +1722,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             traffic[ti].s += traffic[ti].v * dt
             if traffic[ti].s > s + 600 || traffic[ti].s < s - 120 || traffic[ti].s > Self.total - 40 {
                 traffic[ti].s = s + 260 + runRng.next() * 320
-                traffic[ti].x = runRng.next() < 0.5 ? -1.9 : 1.9
+                traffic[ti].x = runRng.next() < 0.5 ? -Self.trafficLane : Self.trafficLane
                 traffic[ti].v = 11 + runRng.next() * 7
                 traffic[ti].missed = false; traffic[ti].cool = 0
                 if traffic[ti].s > Self.total - 60 { traffic[ti].s = Self.total * 2 }

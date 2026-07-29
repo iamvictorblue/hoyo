@@ -60,6 +60,9 @@ final class TiltReader {
     func stop() {
         guard manager.isDeviceMotionActive else { return }
         manager.stopDeviceMotionUpdates()
+        // Drop the baseline too, so switching back into tilt re-zeros to how the
+        // phone is being held *then* rather than to a stale earlier pose.
+        haveBaseline = false
         setSteer(0)
     }
 

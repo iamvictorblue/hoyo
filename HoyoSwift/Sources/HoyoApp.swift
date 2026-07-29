@@ -25,10 +25,24 @@ struct ContentView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
-        .onAppear { Haptics.shared.prepare() }
+        .onAppear {
+            Haptics.shared.prepare()
+            tilt.apply(mode: state.steerMode, input: state.input)
+        }
+        // Driving this from GameSceneView.updateUIView did not work: all of that
+        // representable's stored properties are reference types whose identity
+        // never changes, so SwiftUI treats it as unchanged and skips the update —
+        // the mode only ever applied at view creation, i.e. app launch.
+        .onChange(of: state.steerMode) { mode in
+            tilt.apply(mode: mode, input: state.input)
+        }
         .onChange(of: scenePhase) { newPhase in
             if newPhase != .active && state.phase == .playing {
                 state.paused = true
+            }
+            // iOS suspends motion updates in the background; bring them back
+            if newPhase == .active {
+                tilt.apply(mode: state.steerMode, input: state.input)
             }
         }
     }
@@ -92,7 +106,5 @@ struct GameSceneView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: SCNView, context: Context) {
-        tilt.apply(mode: state.steerMode, input: state.input)
-    }
+    func updateUIView(_ uiView: SCNView, context: Context) {}
 }
