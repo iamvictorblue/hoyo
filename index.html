@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>¡HOYO! — Puerto Rico Downhill</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#1a0b2e;
+    font-family:'Segoe UI','Arial Black',system-ui,sans-serif; user-select:none;
+    -webkit-user-select:none; touch-action:none; overscroll-behavior:none; }
+  canvas { display:block; }
+
+  /* ---------- HUD ---------- */
+  #hud { position:fixed; inset:0; pointer-events:none; z-index:10; display:none; }
+
+  #speedbox { position:absolute; left:24px; bottom:22px; text-align:left;
+    filter:drop-shadow(0 0 18px rgba(255,45,120,.55)); }
+  #speed { font-size:min(84px,13vw); font-weight:900; font-style:italic; line-height:.9;
+    color:#fff; letter-spacing:-3px; text-shadow:0 0 12px #ff2d78, 0 0 34px #ff2d78; }
+  #speedunit { font-size:16px; font-weight:700; color:#ffd23f; letter-spacing:6px;
+    text-shadow:0 0 10px rgba(255,210,63,.8); }
+  .touch #speedbox { left:50%; transform:translateX(-50%); bottom:14px; text-align:center; }
+
+  #scorebox { position:absolute; right:22px; top:16px; text-align:right; }
+  #score { font-size:min(40px,7vw); font-weight:900; font-style:italic; color:#12d7c3;
+    text-shadow:0 0 14px rgba(18,215,195,.85); }
+
+  #bars { position:absolute; left:22px; top:16px; width:min(210px,32vw); }
+  .barlabel { font-size:12px; font-weight:800; letter-spacing:3px; color:#ffd9b0;
+    text-shadow:0 1px 3px #000; margin-bottom:3px; }
+  .barwrap { height:13px; border-radius:8px; background:rgba(0,0,0,.42);
+    border:1px solid rgba(255,255,255,.25); overflow:hidden; margin-bottom:8px; }
+  #hpbar { height:100%; width:100%; border-radius:8px;
+    background:linear-gradient(90deg,#3dff8a,#b8ff3d); box-shadow:0 0 10px #3dff8a; }
+  #nitrobar { height:100%; width:100%; border-radius:8px;
+    background:linear-gradient(90deg,#12d7c3,#6ef7ff); box-shadow:0 0 10px #12d7c3; }
+
+  #timer { position:absolute; top:16px; left:50%; transform:translateX(-50%);
+    font-size:min(26px,5vw); font-weight:800; color:#fff; letter-spacing:2px;
+    text-shadow:0 0 12px rgba(255,138,92,.9); }
+  #progresswrap { position:absolute; top:52px; left:50%; transform:translateX(-50%);
+    width:min(380px,46vw); height:7px; border-radius:6px;
+    background:rgba(255,255,255,.14); overflow:hidden; }
+  #progress { height:100%; width:0%; border-radius:6px;
+    background:linear-gradient(90deg,#ff2d78,#ff8a5c,#ffd23f); box-shadow:0 0 14px #ff8a5c; }
+
+  #hint { position:absolute; bottom:20px; right:24px; font-size:13px; color:rgba(255,255,255,.75);
+    text-align:right; line-height:1.7; text-shadow:0 1px 4px #000; transition:opacity 2s; }
+  #hint b { color:#ffd23f; }
+  .touch #hint { display:none; }
+
+  /* ---------- touch controls ---------- */
+  #touchui { display:none; position:fixed; inset:0; z-index:15; pointer-events:none; }
+  .touch #touchui { display:block; }
+  .tbtn { position:absolute; width:min(88px,13vh); height:min(88px,13vh); border-radius:50%;
+    background:rgba(20,8,40,.4); border:2px solid rgba(255,255,255,.4);
+    color:#fff; font-size:min(34px,5vh); font-weight:900; display:flex;
+    align-items:center; justify-content:center; pointer-events:auto;
+    backdrop-filter:blur(2px); }
+  .tbtn.active { background:rgba(255,45,120,.5); border-color:#ff2d78;
+    box-shadow:0 0 18px rgba(255,45,120,.7); }
+  #btnL { left:3vw; bottom:4vh; }
+  #btnR { left:calc(3vw + min(100px,15vh)); bottom:4vh; }
+  #btnBrake { right:calc(3vw + min(100px,15vh)); bottom:4vh; border-color:rgba(255,80,80,.6); }
+  #btnNitro { right:3vw; bottom:4vh; border-color:rgba(18,215,195,.7); font-size:min(26px,4vh); }
+  #btnNitro.active { background:rgba(18,215,195,.5); border-color:#12d7c3;
+    box-shadow:0 0 18px rgba(18,215,195,.8); }
+
+  #rotatehint { display:none; position:fixed; left:50%; bottom:24vh; transform:translateX(-50%);
+    z-index:16; font-size:15px; font-weight:700; color:#ffd23f; text-shadow:0 1px 4px #000;
+    background:rgba(0,0,0,.45); padding:8px 18px; border-radius:30px; pointer-events:none; }
+  @media (orientation:portrait) { .touch #rotatehint { display:block; } }
+
+  /* speed vignette + damage flash */
+  #vignette { position:fixed; inset:0; pointer-events:none; z-index:9; opacity:0;
+    background:radial-gradient(ellipse at center, transparent 50%, rgba(30,0,40,.9) 100%); }
+  #flash { position:fixed; inset:0; pointer-events:none; z-index:11; opacity:0;
+    background:radial-gradient(ellipse at center, rgba(255,60,60,.35), rgba(255,0,60,.65)); }
+
+  #count { position:fixed; left:50%; top:40%; transform:translate(-50%,-50%); z-index:14;
+    font-size:min(150px,24vw); font-weight:900; font-style:italic; color:#ffd23f;
+    text-shadow:0 0 30px #ff8a5c, 0 6px 0 #b3005e; display:none; pointer-events:none; }
+  #count.zoom { animation:cd .95s ease-out forwards; }
+  @keyframes cd {
+    0% { opacity:0; transform:translate(-50%,-50%) scale(2.2) rotate(-4deg); }
+    25% { opacity:1; transform:translate(-50%,-50%) scale(1) rotate(0deg); }
+    80% { opacity:1; }
+    100% { opacity:0; transform:translate(-50%,-50%) scale(.82); }
+  }
+
+  #combo { font-size:min(18px,3.4vw); font-weight:800; color:#ff8a5c;
+    text-shadow:0 0 10px rgba(255,138,92,.8); margin-top:2px; visibility:hidden; }
+
+  #minibtns { position:absolute; right:20px; top:110px; display:flex;
+    flex-direction:column; gap:10px; }
+  .minibtn { width:40px; height:40px; border-radius:50%; background:rgba(0,0,0,.35);
+    border:1px solid rgba(255,255,255,.35); color:#fff; font-size:18px;
+    display:flex; align-items:center; justify-content:center; pointer-events:auto; }
+
+  #pauseov { display:none; position:fixed; inset:0; z-index:18; background:rgba(10,3,22,.72);
+    align-items:center; justify-content:center; flex-direction:column; gap:10px; }
+  #pauseov .ptitle { font-size:min(64px,12vw); font-weight:900; font-style:italic; color:#fff;
+    text-shadow:0 0 20px #ff2d78; letter-spacing:4px; }
+  #pauseov .psub { font-size:16px; color:#ffd9b0; }
+
+  #recordline { margin-top:14px; font-size:min(3.4vw,17px); font-weight:700; color:#ffd23f;
+    text-shadow:0 0 10px rgba(255,210,63,.7); letter-spacing:1px; min-height:20px; }
+  .newrec { color:#12d7c3; text-shadow:0 0 14px rgba(18,215,195,.9); }
+
+  #popup { position:fixed; left:50%; top:32%; transform:translate(-50%,-50%) scale(.5);
+    z-index:12; font-size:min(56px,9vw); font-weight:900; font-style:italic; color:#ffd23f;
+    text-shadow:0 0 18px #ff8a5c, 0 4px 0 #b3005e; opacity:0; pointer-events:none;
+    white-space:nowrap; }
+  #popup.show { animation:pop 1.1s ease-out forwards; }
+  @keyframes pop {
+    0% { opacity:0; transform:translate(-50%,-50%) scale(.4) rotate(-6deg); }
+    15% { opacity:1; transform:translate(-50%,-50%) scale(1.15) rotate(2deg); }
+    30% { transform:translate(-50%,-50%) scale(1) rotate(-1deg); }
+    80% { opacity:1; }
+    100% { opacity:0; transform:translate(-50%,-62%) scale(1.05); }
+  }
+
+  /* ---------- overlays ---------- */
+  .overlay { position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:16px;
+    background:radial-gradient(ellipse at 50% 110%, rgba(255,90,60,.28), transparent 55%),
+               linear-gradient(180deg, rgba(20,6,46,.9), rgba(46,10,60,.86)); }
+  .title { font-size:min(16vw,110px); font-weight:900; font-style:italic; letter-spacing:-2px;
+    background:linear-gradient(90deg,#ff2d78,#ff8a5c,#ffd23f,#12d7c3);
+    background-size:300% 100%; -webkit-background-clip:text; background-clip:text;
+    color:transparent; animation:grad 4s linear infinite;
+    filter:drop-shadow(0 0 22px rgba(255,45,120,.6)); }
+  @keyframes grad { 0%{background-position:0% 0} 100%{background-position:300% 0} }
+  .subtitle { margin-top:4px; font-size:min(4vw,22px); color:#ffd9b0; font-weight:600;
+    letter-spacing:3px; text-shadow:0 0 12px rgba(255,138,92,.7); }
+  .controls { margin-top:26px; display:grid; grid-template-columns:auto auto; gap:8px 20px;
+    font-size:min(3.6vw,17px); color:#e9ddff; text-align:left; }
+  .controls b { color:#12d7c3; font-weight:800; text-shadow:0 0 8px rgba(18,215,195,.6); }
+  .go { margin-top:32px; font-size:min(5vw,25px); font-weight:900; letter-spacing:4px; color:#fff;
+    padding:14px 42px; border:2px solid #ff2d78; border-radius:60px;
+    box-shadow:0 0 24px rgba(255,45,120,.55), 0 0 24px rgba(255,45,120,.35) inset;
+    animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.05);opacity:.82} }
+  .stats { margin-top:22px; font-size:min(4.4vw,21px); color:#ffe9c9; line-height:2; }
+  .stats b { color:#ffd23f; font-size:min(6vw,29px); text-shadow:0 0 12px rgba(255,210,63,.8); }
+  .flagrow { margin-top:14px; font-size:min(7vw,32px); letter-spacing:10px; }
+  #finish, #dead { display:none; }
+  #dead .title { background:linear-gradient(90deg,#ff3b3b,#ff8a5c,#ffd23f);
+    background-size:300% 100%; -webkit-background-clip:text; background-clip:text; }
+  #errbox { display:none; position:fixed; inset:0; z-index:99; background:#300; color:#fff;
+    padding:40px; font-size:15px; white-space:pre-wrap; font-family:monospace; overflow:auto; }
+</style>
+</head>
+<body>
+  <div id="vignette"></div>
+  <div id="flash"></div>
+
+  <div id="hud">
+    <div id="timer">0:00.0</div>
+    <div id="progresswrap"><div id="progress"></div></div>
+    <div id="bars">
+      <div class="barlabel">CARRO</div>
+      <div class="barwrap"><div id="hpbar"></div></div>
+      <div class="barlabel">NITRO</div>
+      <div class="barwrap"><div id="nitrobar"></div></div>
+    </div>
+    <div id="speedbox">
+      <div id="speed">0</div>
+      <div id="speedunit">KM/H</div>
+    </div>
+    <div id="scorebox"><div id="score">0</div><div id="combo">COMBO x2 🔥</div></div>
+    <div id="minibtns">
+      <div class="minibtn" id="btnPause">⏸</div>
+      <div class="minibtn" id="btnMusic">🎵</div>
+    </div>
+    <div id="hint">
+      <b>◀ ▶</b> guía &nbsp; <b>▲</b> NITRO &nbsp; <b>▼</b> freno<br>
+      <b>ESPACIO</b> drift &nbsp; <b>P</b> pausa &nbsp; <b>M</b> música &nbsp; <b>R</b> reinicia
+    </div>
+  </div>
+
+  <div id="touchui">
+    <div class="tbtn" id="btnL">◀</div>
+    <div class="tbtn" id="btnR">▶</div>
+    <div class="tbtn" id="btnBrake">🛑</div>
+    <div class="tbtn" id="btnNitro">🔥</div>
+  </div>
+  <div id="rotatehint">📱 mejor en horizontal, gira el celu</div>
+
+  <div id="count">3</div>
+  <div id="pauseov">
+    <div class="ptitle">PAUSA</div>
+    <div class="psub">P o toca pa' seguir</div>
+  </div>
+
+  <div id="popup"></div>
+
+  <div id="intro" class="overlay">
+    <div class="title">¡HOYO!</div>
+    <div class="subtitle">CARRERA CUESTA ABAJO · ESQUIVA LOS HOYOS DE PR</div>
+    <div class="flagrow">🚗 🕳️ 🦎 🌴 🍧</div>
+    <div class="controls">
+      <span><b>◀ ▶</b> / A D</span><span>guía el carro</span>
+      <span><b>▲</b> / W</span><span>NITRO (recarga con 🍧 piraguas)</span>
+      <span><b>▼</b> / S</span><span>freno</span>
+      <span><b>ESPACIO</b></span><span>drift — gana estilo</span>
+      <span><b>🕳️</b></span><span>los hoyos rompen el carro, ¡esquívalos!</span>
+      <span><b>🧰</b></span><span>el mecánico ambulante repara el carro</span>
+    </div>
+    <div id="recordline"></div>
+    <div class="go">ENTER / TOCA PA' ARRANCAR</div>
+  </div>
+
+  <div id="finish" class="overlay">
+    <div class="title">¡LLEGASTE!</div>
+    <div class="subtitle">SOBREVIVISTE LOS HOYOS · A LA PLAYA</div>
+    <div class="stats" id="finalstats"></div>
+    <div class="go">R / TOCA PA' CORRER OTRA VEZ</div>
+  </div>
+
+  <div id="dead" class="overlay">
+    <div class="title">¡TE PONCHASTE!</div>
+    <div class="subtitle">LOS HOYOS GANARON ESTA VEZ</div>
+    <div class="stats" id="deadstats"></div>
+    <div class="go">R / TOCA PA' INTENTAR DE NUEVO</div>
+  </div>
+
+  <div id="errbox"></div>
+
+  <script src="three.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
