@@ -1,0 +1,31 @@
+# XcodeGen spec — run `xcodegen` in this folder to generate Hoyo.xcodeproj
+# (brew install xcodegen)
+name: Hoyo
+options:
+  bundleIdPrefix: com.victorhernandez
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  Hoyo:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: ¡HOYO!
+        UILaunchScreen: {}
+        UIStatusBarHidden: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight

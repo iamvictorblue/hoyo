@@ -27,7 +27,25 @@ Feature parity with the web v2 plus native-only polish:
   the complete source, ready to drop in)
 - iOS 16+ device or simulator (a real device is much faster for SceneKit)
 
-## Setup (about 2 minutes)
+## Setup — fast path (XcodeGen)
+
+```bash
+git clone https://github.com/iamvictorblue/hoyo.git
+cd hoyo/HoyoSwift
+brew install xcodegen     # once
+xcodegen                  # generates Hoyo.xcodeproj from project.yml
+open Hoyo.xcodeproj
+```
+
+Then in Xcode: pick a simulator (or your iPhone) in the toolbar and hit **⌘R**.
+Landscape orientation, bundle id, and deployment target are already configured
+by `project.yml`.
+
+To run on a real iPhone: target **Hoyo → Signing & Capabilities → Team →**
+your Apple ID (personal team works), then on the phone accept
+**Settings → General → VPN & Device Management → trust developer**.
+
+## Setup — manual path (no XcodeGen)
 
 1. Xcode → **File → New → Project → iOS App**
    - Product Name: `Hoyo`
