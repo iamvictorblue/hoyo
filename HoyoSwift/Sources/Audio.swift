@@ -21,6 +21,8 @@ final class SoundEngine: ObservableObject {
     var windLevel: Double = 0
     var skidLevel: Double = 0
     var nitroLevel: Double = 0
+    /// Rumble-strip / off-asphalt buzz: lowpassed noise gated at ~34 Hz.
+    var rumbleLevel: Double = 0
 
     private var coquiBuffer: AVAudioPCMBuffer?
     private var thunkBuffer: AVAudioPCMBuffer?
@@ -39,8 +41,9 @@ final class SoundEngine: ObservableObject {
         sampleRate = 44100
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
 
-        var phase1 = 0.0, phase2 = 0.0
+        var phase1 = 0.0, phase2 = 0.0, rumblePhase = 0.0
         var lpEngine = 0.0, lpWind = 0.0, bpSkid = 0.0, lastNoise = 0.0
+        var lpRumble = 0.0
         var rng = SystemRandomNumberGenerator()
 
         let node = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
@@ -51,6 +54,8 @@ final class SoundEngine: ObservableObject {
             let f2 = (self.engineFreq * 1.007 + 3) / self.sampleRate
             let eLvl = self.engineLevel, wLvl = self.windLevel
             let sLvl = self.skidLevel, nLvl = self.nitroLevel
+            let rLvl = self.rumbleLevel
+            let rumbleStep = 34.0 / self.sampleRate
             for frame in 0..<Int(frameCount) {
                 phase1 += f1; if phase1 >= 1 { phase1 -= 1 }
                 phase2 += f2; if phase2 >= 1 { phase2 -= 1 }
@@ -64,8 +69,15 @@ final class SoundEngine: ObservableObject {
                 bpSkid += 0.25 * (noise - bpSkid)
                 let skid = (noise - bpSkid)                       // mid-band screech
 
+                // rumble strips: heavy lowpassed noise chopped by a slow square,
+                // which is what makes it read as ridges rather than static
+                lpRumble += 0.055 * (noise - lpRumble)
+                rumblePhase += rumbleStep; if rumblePhase >= 1 { rumblePhase -= 1 }
+                let chop = rumblePhase < 0.55 ? 1.0 : 0.25
+
                 let sample = lpEngine * eLvl + lpWind * wLvl * 2.2
                            + skid * sLvl + hp * nLvl
+                           + lpRumble * rLvl * chop * 3.0
                 buf[frame] = Float(max(-1, min(1, sample)))
             }
             return noErr

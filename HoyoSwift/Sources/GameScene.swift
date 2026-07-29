@@ -127,6 +127,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var smokeSystem = SCNParticleSystem()
     private var dustSystem = SCNParticleSystem()
     private let dustNode = SCNNode()
+    private var sparkSystem = SCNParticleSystem()
+    private let sparkNode = SCNNode()
     private var oceanNormal: SCNMaterialProperty?
     private let holeNode = SCNNode()
     private let rimNode = SCNNode()
@@ -176,6 +178,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
     private var invuln: Float = 0
     private var dustT: Float = 0
+    private var sparkT: Float = 0
+    private var rumbleHapticT: Float = 0
     private var driftYaw: Float = 0, leanRoll: Float = 0, pitchAng: Float = 0
     private var playTime: Double = 0
     private var lastTime: TimeInterval = -1
@@ -368,6 +372,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         world.addChildNode(playerNode)
         playerNode.addChildNode(chassisNode)
         world.addChildNode(dustNode)
+        world.addChildNode(sparkNode)
         world.addChildNode(blobNode)
 
         return (world, sky)
@@ -501,11 +506,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         node.castsShadow = false
         parent.addChildNode(node)
 
-        func ribbon(_ l0: Float, _ l1: Float, _ color: UIColor, dashed: Bool) {
+        /// `dash` of 0 draws a solid stripe; otherwise it draws for the first half
+        /// of every `dash` segments — 8 for the centre line, 2 for rumble strips.
+        func ribbon(_ l0: Float, _ l1: Float, _ color: UIColor, dash: Int) {
             var v: [simd_float3] = [], id: [Int32] = []
             var n: Int32 = 0
             for j in 0..<(Self.count - 1) {
-                if dashed && (j % 8) > 3 { continue }
+                if dash > 0 && (j % dash) >= dash / 2 { continue }
                 let p0 = pts[j], r0 = rights[j], p1 = pts[j + 1], r1 = rights[j + 1]
                 let up = simd_float3(0, 0.03, 0)
                 v.append(p0 + r0 * l0 + up); v.append(p0 + r0 * l1 + up)
@@ -517,10 +524,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             node.castsShadow = false
             parent.addChildNode(node)
         }
-        ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dashed: true)
+        ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dash: 8)
         let edgeOuter = Self.roadHalf - 0.18, edgeInner = Self.roadHalf - 0.4
-        ribbon(-edgeOuter, -edgeInner, UIColor(white: 0.83, alpha: 1), dashed: false)
-        ribbon(edgeInner, edgeOuter, UIColor(white: 0.83, alpha: 1), dashed: false)
+        ribbon(-edgeOuter, -edgeInner, UIColor(white: 0.83, alpha: 1), dash: 0)
+        ribbon(edgeInner, edgeOuter, UIColor(white: 0.83, alpha: 1), dash: 0)
+        // rumble strips just past the asphalt edge: the boundary should be
+        // something you feel and hear approaching, not a surprise
+        let rumbleIn = Self.roadHalf, rumbleOut = Self.roadHalf + 0.62
+        ribbon(-rumbleOut, -rumbleIn, UIColor(white: 0.70, alpha: 1), dash: 2)
+        ribbon(rumbleIn, rumbleOut, UIColor(white: 0.70, alpha: 1), dash: 2)
     }
 
     /// Grass / rock / sand blend driven by local slope plus three octaves of
@@ -571,7 +583,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let latsL: [Float] = [-e, -b, -9.5, -13, -18, -25, -35, -49, -68, -95, -145, -240]
         let latsR: [Float] = [e, b, 9.5, 13, 18, 25, 35, 49, 68, 95, 145, 330, 900]
 
-        func side(_ lats: [Float]) {
+        func side(_ lats: [Float], flip: Bool) {
             var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
             var uvs: [CGPoint] = []
             var rows = 0
@@ -594,8 +606,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             for row in 0..<(rows - 1) {
                 for j in 0..<(w - 1) {
                     let a = Int32(row * w + j)
-                    idx.append(contentsOf: [a, a + Int32(w), a + 1,
-                                            a + 1, a + Int32(w), a + Int32(w) + 1])
+                    let b = a + Int32(w)        // next row, same band
+                    let c = a + 1               // same row, next band outward
+                    let d = b + 1
+                    // Both sides used to share this one index order — but +j walks
+                    // in opposite world directions (lats are negative on the left,
+                    // positive on the right), so the right side came out wound
+                    // backwards: normals pointing down, so it never caught the sun,
+                    // and back-facing, so grazing angles culled it and you saw
+                    // straight through the ground.
+                    if flip {
+                        idx.append(contentsOf: [a, c, b, c, d, b])
+                    } else {
+                        idx.append(contentsOf: [a, b, c, c, b, d])
+                    }
                 }
             }
             let mat = SCNMaterial()
@@ -610,8 +634,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             node.castsShadow = false
             parent.addChildNode(node)
         }
-        side(latsL)
-        side(latsR)
+        side(latsL, flip: false)
+        side(latsR, flip: true)
     }
 
     // MARK: - vegetation
@@ -790,6 +814,37 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             gi += 4
         }
         parent.addChildNode(postContainer.flattenedClone())
+
+        // A continuous beam between the posts. Isolated posts read as scenery;
+        // a rail reads as a wall you must not cross, which is the whole point of
+        // having a boundary you can see.
+        let railMat = SCNMaterial()
+        railMat.lightingModel = .physicallyBased
+        railMat.diffuse.contents = UIColor(white: 0.74, alpha: 1)
+        railMat.metalness.contents = 0.85
+        railMat.roughness.contents = 0.34
+        railMat.isDoubleSided = true
+        for side in [Float(-1), Float(1)] {
+            var rvv: [simd_float3] = [], rii: [Int32] = []
+            var n: Int32 = 0
+            let lat = side * Self.barrier
+            var i = 0
+            while i < Self.count - 2 {
+                let p0 = pts[i], r0 = rights[i]
+                let p1 = pts[i + 2], r1 = rights[i + 2]
+                let y0 = groundY(i, lat), y1 = groundY(i + 2, lat)
+                let b0 = simd_float3(p0.x + r0.x * lat, y0 + 0.46, p0.z + r0.z * lat)
+                let b1 = simd_float3(p1.x + r1.x * lat, y1 + 0.46, p1.z + r1.z * lat)
+                rvv.append(b0); rvv.append(b0 + simd_float3(0, 0.30, 0))
+                rvv.append(b1); rvv.append(b1 + simd_float3(0, 0.30, 0))
+                rii.append(contentsOf: [n, n + 1, n + 2, n + 1, n + 3, n + 2])
+                n += 4
+                i += 2
+            }
+            let rail = SCNNode(geometry: makeGeometry(verts: rvv, indices: rii, material: railMat))
+            rail.castsShadow = false
+            parent.addChildNode(rail)
+        }
     }
 
     private func props(_ parent: SCNNode) {
@@ -1379,6 +1434,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         dustSystem.particleColor = UIColor(red: 0.54, green: 0.48, blue: 0.36, alpha: 0.7)
         dustNode.addParticleSystem(dustSystem)
 
+        // guardrail sparks
+        sparkSystem.particleImage = puffImg
+        sparkSystem.birthRate = 0
+        sparkSystem.particleLifeSpan = 0.32
+        sparkSystem.particleLifeSpanVariation = 0.2
+        sparkSystem.particleSize = 0.075
+        sparkSystem.particleVelocity = 9
+        sparkSystem.particleVelocityVariation = 7
+        sparkSystem.spreadingAngle = 65
+        sparkSystem.emittingDirection = SCNVector3(0, 0.35, 1)
+        sparkSystem.acceleration = SCNVector3(0, -14, 0)
+        sparkSystem.particleColor = UIColor(red: 1, green: 0.78, blue: 0.32, alpha: 1)
+        sparkSystem.particleColorVariation = SCNVector4(0.04, 0.2, 0.2, 0)
+        sparkSystem.blendMode = .additive
+        sparkNode.addParticleSystem(sparkSystem)
+
         streakSystem.particleImage = puffImg
         streakSystem.birthRate = 0
         streakSystem.particleLifeSpan = 1.2
@@ -1473,9 +1544,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.phase = dead ? .dead : .finished
         }
         if !dead { sound.playCoqui() } else { sound.playThunk() }
-        sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0; sound.nitroLevel = 0
+        sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
+        sound.nitroLevel = 0; sound.rumbleLevel = 0
         streakSystem.birthRate = 0
         smokeSystem.birthRate = 0
+        sparkSystem.birthRate = 0
+        dustSystem.birthRate = 0
     }
 
     /// Collision damage. `grace` hits are ignored while the post-hit invulnerable
@@ -1521,7 +1595,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         if state.paused && phase == .playing {
             sound.engineLevel = 0; sound.windLevel = 0
-            sound.skidLevel = 0; sound.nitroLevel = 0
+            sound.skidLevel = 0; sound.nitroLevel = 0; sound.rumbleLevel = 0
             return
         }
 
@@ -1667,6 +1741,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 v *= 0.78
                 shake = max(shake, 0.9)
                 sound.playThunk()
+                let (rp, _, rr5) = sample(s)
+                sparkNode.simdPosition = rp + rr5 * x + simd_float3(0, 0.5, 0)
+                sparkSystem.birthRate = 900
+                sparkT = 0.12
                 damage(9, "¡AY BENDITO!")
             }
         } else if offroad && v > 8 {
@@ -1712,6 +1790,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if dustT > 0 {
             dustT -= dt
             if dustT <= 0 { dustSystem.birthRate = 0 }
+        }
+        if sparkT > 0 {
+            sparkT -= dt
+            if sparkT <= 0 { sparkSystem.birthRate = 0 }
         }
 
         // toolboxes
@@ -1861,11 +1943,28 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0
 
         // ----- audio -----
-        sound.engineFreq = Double(55 + v * 3.2 + (wantNitro ? 30 : 0))
+        // Six gears instead of one long rising whine: pitch climbs through each
+        // gear and drops on the shift, which is most of what sells acceleration.
+        let gearSpan: Float = 64.0 / 6
+        let gear = min(5, Int(v / gearSpan))
+        let inGear = (v - Float(gear) * gearSpan) / gearSpan
+        sound.engineFreq = Double(52 + inGear * 118 + Float(gear) * 9 + (wantNitro ? 26 : 0))
         sound.engineLevel = Double(0.05 + simd_clamp(v / 64, 0, 1) * 0.075)
         sound.windLevel = Double(simd_clamp(v / 90, 0, 0.35))
         sound.skidLevel = drifting ? Double(simd_clamp(v / 140, 0, 0.22)) : 0
         sound.nitroLevel = wantNitro ? 0.05 : 0
+        sound.rumbleLevel = offroad ? Double(simd_clamp(v / 55, 0, 0.32)) : 0
+
+        // matching haptic while you're on the strips / dirt
+        if offroad && v > 8 {
+            rumbleHapticT -= dt
+            if rumbleHapticT <= 0 {
+                Haptics.shared.rumble(duration: 0.22, intensity: min(0.75, 0.3 + v / 90))
+                rumbleHapticT = 0.2
+            }
+        } else {
+            rumbleHapticT = 0
+        }
 
         for q in piraguas where !q.taken {
             q.node.position.y = q.baseY + sin(tNow * 3 + q.s) * 0.16
