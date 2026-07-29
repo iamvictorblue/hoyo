@@ -52,8 +52,9 @@ the island's most authentic hazard: potholes.
 
 ## Native iOS port
 
-`HoyoSwift/` contains a complete SwiftUI + SceneKit port (same seeded track,
-same physics, plus haptics) ready to build in Xcode on a Mac — see
+`HoyoSwift/` contains a complete SwiftUI + SceneKit port — same mountain road,
+plus analog/tilt steering, per-run hazard layouts, skid marks, Core Haptics and
+adaptive render quality — ready to build in Xcode on a Mac; see
 [HoyoSwift/README.md](HoyoSwift/README.md). It also includes an optional
 WKWebView wrapper that ships the JS game as an app instead.
 

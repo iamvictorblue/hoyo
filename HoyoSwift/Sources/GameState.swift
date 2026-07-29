@@ -5,32 +5,72 @@ enum GamePhase {
     case intro, countdown, playing, finished, dead
 }
 
-/// Live input flags, written by the SwiftUI buttons, read by the render loop.
+/// How the player steers. Persisted across launches.
+enum SteerMode: Int {
+    case drag = 0      // analog thumb pad, bottom-left
+    case tilt = 1      // device roll via CoreMotion
+}
+
+/// Live input, written by the HUD / motion manager, read by the render loop.
+/// `steer` is analog in -1…1 — the old binary left/right buttons were the
+/// single worst thing about how the car felt.
 final class GameInput {
-    var left = false
-    var right = false
+    var steer: Float = 0
     var brake = false
     var nitro = false
 }
 
-/// Observable HUD state. The render loop pushes into this on the main queue.
+/// One frame's worth of HUD numbers. Published as a single value so a frame
+/// costs one SwiftUI invalidation instead of ten.
+struct HudSnapshot: Equatable {
+    var speedKmh = 0
+    var score = 0
+    var hp: Double = 100
+    var nitro: Double = 60
+    var progress: Double = 0
+    var speedNorm: Double = 0      // 0…1, drives the speed vignette
+    var flash: Double = 0          // damage flash opacity
+    var nitroActive = false
+    var invuln = false             // post-hit grace period, blinks the car
+    var timeText = "0:00.0"
+}
+
+enum Medal: Int {
+    case none = 0, bronze, silver, gold
+
+    var label: String {
+        switch self {
+        case .none: return ""
+        case .bronze: return "🥉 BRONCE"
+        case .silver: return "🥈 PLATA"
+        case .gold: return "🥇 ORO"
+        }
+    }
+
+    static func forScore(_ score: Int) -> Medal {
+        if score >= 26000 { return .gold }
+        if score >= 16000 { return .silver }
+        if score >= 8000 { return .bronze }
+        return .none
+    }
+}
+
+/// Observable bridge between the render loop and SwiftUI.
 final class GameState: ObservableObject {
     @Published var phase: GamePhase = .intro
-    @Published var speedKmh: Int = 0
-    @Published var score: Int = 0
+    @Published var hud = HudSnapshot()
     @Published var combo: Int = 0
-    @Published var hp: Double = 100
-    @Published var nitro: Double = 60
-    @Published var timeText: String = "0:00.0"
-    @Published var progress: Double = 0
-    @Published var speedNorm: Double = 0        // 0…1 for the vignette
-    @Published var flash: Double = 0            // damage flash opacity
-    @Published var nitroActive = false
     @Published var popupText: String = ""
     @Published var popupID: Int = 0
     @Published var musicOn = true
     @Published var paused = false
     @Published var countLabel: String = ""      // "3" "2" "1" "¡DALE!"
+    @Published var sceneReady = false           // false while the world builds
+
+    @Published var steerMode: SteerMode = SteerMode(
+        rawValue: UserDefaults.standard.integer(forKey: "hoyo_steerMode")) ?? .drag {
+        didSet { UserDefaults.standard.set(steerMode.rawValue, forKey: "hoyo_steerMode") }
+    }
 
     // records
     @Published var recordLine: String = GameState.makeRecordLine()
@@ -43,6 +83,9 @@ final class GameState: ObservableObject {
     @Published var statTopSpeed = 0
     @Published var statHolesHit = 0
     @Published var statNearMisses = 0
+    @Published var statMedal: Medal = .none
+    @Published var statSeed: UInt64 = 0
+    @Published var statFinished = false
 
     let input = GameInput()
 

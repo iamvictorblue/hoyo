@@ -13,17 +13,19 @@ struct HoyoApp: App {
 struct ContentView: View {
     @StateObject private var state = GameState()
     @StateObject private var sound = SoundEngine()
+    @StateObject private var tilt = TiltObserver()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
-            GameSceneView(state: state, sound: sound)
+            GameSceneView(state: state, sound: sound, tilt: tilt)
                 .ignoresSafeArea()
-            HUDView(state: state, sound: sound)
+            HUDView(state: state, sound: sound, tilt: tilt)
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
+        .onAppear { Haptics.shared.prepare() }
         .onChange(of: scenePhase) { newPhase in
             if newPhase != .active && state.phase == .playing {
                 state.paused = true
@@ -32,26 +34,65 @@ struct ContentView: View {
     }
 }
 
+/// Owns the `TiltReader` so SwiftUI keeps one instance, and drives it from the
+/// selected steering mode.
+final class TiltObserver: ObservableObject {
+    let reader = TiltReader()
+
+    var invert: Bool {
+        get { reader.invert }
+        set { reader.invert = newValue; objectWillChange.send() }
+    }
+
+    var isAvailable: Bool { reader.isAvailable }
+
+    func apply(mode: SteerMode, input: GameInput) {
+        reader.attach(input)
+        if mode == .tilt { reader.start() } else { reader.stop() }
+    }
+}
+
 /// Wraps the SceneKit view and owns the game controller.
 struct GameSceneView: UIViewRepresentable {
     let state: GameState
     let sound: SoundEngine
+    let tilt: TiltObserver
 
     func makeCoordinator() -> GameScene {
-        GameScene(state: state, sound: sound)
+        GameScene(state: state, sound: sound, quality: Quality.detect())
     }
 
     func makeUIView(context: Context) -> SCNView {
+        let quality = Quality.detect()
         let view = SCNView()
-        view.scene = context.coordinator.scene
-        view.delegate = context.coordinator
+        let controller = context.coordinator
+        view.scene = controller.scene
+        view.delegate = controller
         view.rendersContinuously = true
-        view.antialiasingMode = .multisampling4X
+        view.antialiasingMode = quality.antialiasing
         view.backgroundColor = .black
         view.isPlaying = true
         UIApplication.shared.isIdleTimerDisabled = true   // no screen sleep mid-run
+
+        // The world build — 400k sky-cubemap pixels, the road and terrain meshes,
+        // 120 palms — used to run synchronously in init and froze the launch for
+        // ~5 s. It builds detached on a background queue now, then gets attached
+        // in one main-thread step.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let built = controller.buildWorld()
+            DispatchQueue.main.async {
+                controller.attach(world: built.world, sky: built.sky)
+                view.pointOfView = controller.pointOfView
+                state.sceneReady = true
+                if ProcessInfo.processInfo.arguments.contains("-autoplay") {
+                    state.requestStart = true
+                }
+            }
+        }
         return view
     }
 
-    func updateUIView(_ uiView: SCNView, context: Context) {}
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        tilt.apply(mode: state.steerMode, input: state.input)
+    }
 }

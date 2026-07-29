@@ -7,6 +7,7 @@ extension Color {
     static let neonTeal = Color(red: 0.07, green: 0.84, blue: 0.76)
     static let neonGold = Color(red: 1.0, green: 0.82, blue: 0.25)
     static let sunsetOrange = Color(red: 1.0, green: 0.54, blue: 0.36)
+    static let creamText = Color(red: 1, green: 0.85, blue: 0.69)
 }
 
 // MARK: - HUD
@@ -14,20 +15,21 @@ extension Color {
 struct HUDView: View {
     @ObservedObject var state: GameState
     let sound: SoundEngine
+    let tilt: TiltObserver
 
     var body: some View {
         ZStack {
             // speed vignette
             RadialGradient(colors: [.clear, .clear, Color(red: 0.12, green: 0, blue: 0.16)],
                            center: .center, startRadius: 100, endRadius: 500)
-                .opacity(state.speedNorm * 0.9)
+                .opacity(state.hud.speedNorm * 0.9)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
             // damage flash
             RadialGradient(colors: [Color.red.opacity(0.3), Color(red: 1, green: 0, blue: 0.23).opacity(0.6)],
                            center: .center, startRadius: 80, endRadius: 500)
-                .opacity(state.flash * 0.8)
+                .opacity(state.hud.flash * 0.8)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
@@ -36,14 +38,12 @@ struct HUDView: View {
                 touchControls
             }
 
-            // countdown
             if !state.countLabel.isEmpty {
                 CountdownView(label: state.countLabel)
                     .id(state.countLabel)
                     .allowsHitTesting(false)
             }
 
-            // popup
             if !state.popupText.isEmpty {
                 PopupView(text: state.popupText)
                     .id(state.popupID)
@@ -51,11 +51,11 @@ struct HUDView: View {
             }
 
             if state.paused && state.phase == .playing {
-                PauseOverlay(state: state)
+                PauseOverlay(state: state, tilt: tilt)
             }
 
             switch state.phase {
-            case .intro: IntroOverlay(state: state)
+            case .intro: IntroOverlay(state: state, tilt: tilt)
             case .finished: EndOverlay(state: state, title: "¡LLEGASTE!",
                                        subtitle: "SOBREVIVISTE LOS HOYOS · A LA PLAYA")
             case .dead: EndOverlay(state: state, title: "¡TE PONCHASTE!",
@@ -65,72 +65,67 @@ struct HUDView: View {
         }
     }
 
+    // Top row only — the speed readout moved to the bottom-right dashboard so
+    // nothing sits in the road ahead of the car.
     private var gameHUD: some View {
         VStack {
             HStack(alignment: .top) {
-                // damage + nitro bars
                 VStack(alignment: .leading, spacing: 4) {
-                    BarView(label: "CARRO", value: state.hp / 100,
-                            color: state.hp > 50 ? .green : (state.hp > 25 ? .neonGold : .neonPink))
-                    BarView(label: "NITRO", value: state.nitro / 100, color: .neonTeal)
+                    BarView(label: "CARRO", value: state.hud.hp / 100,
+                            color: state.hud.hp > 50 ? .green
+                                 : (state.hud.hp > 25 ? .neonGold : .neonPink))
+                    BarView(label: "NITRO", value: state.hud.nitro / 100, color: .neonTeal)
                 }
-                .frame(width: 170)
+                .frame(width: 168)
 
                 Spacer()
 
-                VStack(spacing: 4) {
-                    Text(state.timeText)
-                        .font(.system(size: 22, weight: .heavy, design: .rounded))
+                VStack(spacing: 5) {
+                    Text(state.hud.timeText)
+                        .font(.system(size: 21, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
                         .foregroundStyle(.white)
                         .shadow(color: .sunsetOrange, radius: 8)
-                    // progress
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule().fill(.white.opacity(0.15))
                             Capsule()
                                 .fill(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold],
                                                      startPoint: .leading, endPoint: .trailing))
-                                .frame(width: geo.size.width * state.progress)
+                                .frame(width: geo.size.width * state.hud.progress)
                         }
                     }
-                    .frame(width: 220, height: 6)
+                    .frame(width: 216, height: 6)
                 }
 
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(state.score)")
-                        .font(.system(size: 34, weight: .black, design: .rounded))
+                    Text("\(state.hud.score)")
+                        .font(.system(size: 32, weight: .black, design: .rounded))
                         .italic()
+                        .monospacedDigit()
                         .foregroundStyle(Color.neonTeal)
                         .shadow(color: .neonTeal.opacity(0.8), radius: 10)
                     if state.combo >= 2 {
                         Text("COMBO x\(state.combo) 🔥")
-                            .font(.system(size: 15, weight: .heavy))
+                            .font(.system(size: 14, weight: .heavy))
                             .foregroundStyle(Color.sunsetOrange)
                             .shadow(color: .sunsetOrange.opacity(0.8), radius: 8)
                     }
+                    if state.hud.invuln {
+                        Text("INMUNE")
+                            .font(.system(size: 12, weight: .black)).tracking(2)
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
                 }
+                .frame(width: 168, alignment: .trailing)
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
 
             Spacer()
-
-            HStack(alignment: .lastTextBaseline, spacing: 8) {
-                Text("\(state.speedKmh)")
-                    .font(.system(size: 64, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(state.nitroActive ? Color.neonTeal :
-                                     (state.speedKmh > 150 ? Color.neonGold : .white))
-                    .shadow(color: .neonPink, radius: 14)
-                Text("KM/H")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .tracking(4)
-                    .foregroundStyle(Color.neonGold)
-            }
         }
-        .padding(.bottom, 6)
         .allowsHitTesting(false)
     }
 
@@ -138,51 +133,78 @@ struct HUDView: View {
         VStack {
             HStack {
                 Spacer()
-                VStack(spacing: 10) {
-                    Button {
-                        state.paused = true
-                    } label: {
-                        Text("⏸")
-                            .font(.system(size: 20))
-                            .frame(width: 44, height: 44)
-                            .background(.black.opacity(0.3), in: Circle())
-                            .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
-                    }
-                    Button {
+                HStack(spacing: 8) {
+                    IconButton("⏸") { state.paused = true }
+                    IconButton(state.musicOn ? "🎵" : "🔇") {
                         state.musicOn.toggle()
                         sound.setMusic(on: state.musicOn)
-                    } label: {
-                        Text(state.musicOn ? "🎵" : "🔇")
-                            .font(.system(size: 20))
-                            .frame(width: 44, height: 44)
-                            .background(.black.opacity(0.3), in: Circle())
-                            .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
                     }
                 }
             }
-            .padding(.trailing, 16)
-            .padding(.top, 60)
+            .padding(.trailing, 20)
+            .padding(.top, 74)
 
             Spacer()
 
-            HStack {
-                HStack(spacing: 14) {
-                    HoldButton(label: "◀") { state.input.left = $0 }
-                    HoldButton(label: "▶") { state.input.right = $0 }
+            HStack(alignment: .bottom) {
+                if state.steerMode == .drag {
+                    SteerPad { state.input.steer = $0 }
+                } else {
+                    TiltHint()
                 }
+
                 Spacer()
-                HStack(spacing: 14) {
-                    HoldButton(label: "🛑", tint: .red) { state.input.brake = $0 }
-                    HoldButton(label: "🔥", tint: .neonTeal) { state.input.nitro = $0 }
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    // dashboard: speed reads next to the controls, not over the road
+                    HStack(alignment: .lastTextBaseline, spacing: 6) {
+                        Text("\(state.hud.speedKmh)")
+                            .font(.system(size: 50, weight: .black, design: .rounded))
+                            .italic()
+                            .monospacedDigit()
+                            .foregroundStyle(state.hud.nitroActive ? Color.neonTeal :
+                                             (state.hud.speedKmh > 150 ? Color.neonGold : .white))
+                            .shadow(color: .black.opacity(0.8), radius: 4, y: 2)
+                        Text("KM/H")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .tracking(3)
+                            .foregroundStyle(Color.neonGold)
+                    }
+                    .allowsHitTesting(false)
+
+                    HStack(spacing: 14) {
+                        HoldButton(label: "🛑", tint: .red) { state.input.brake = $0 }
+                        HoldButton(label: "🔥", tint: .neonTeal) { state.input.nitro = $0 }
+                    }
                 }
             }
-            .padding(.horizontal, 26)
-            .padding(.bottom, 18)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
         }
     }
 }
 
 // MARK: - components
+
+struct IconButton: View {
+    let glyph: String
+    let action: () -> Void
+
+    init(_ glyph: String, action: @escaping () -> Void) {
+        self.glyph = glyph
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(glyph)
+                .font(.system(size: 18))
+                .frame(width: 42, height: 42)
+                .background(.black.opacity(0.35), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
+        }
+    }
+}
 
 struct BarView: View {
     let label: String
@@ -194,7 +216,7 @@ struct BarView: View {
             Text(label)
                 .font(.system(size: 10, weight: .heavy))
                 .tracking(3)
-                .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.69))
+                .foregroundStyle(Color.creamText)
             ZStack(alignment: .leading) {
                 Capsule().fill(.black.opacity(0.42))
                     .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
@@ -210,6 +232,76 @@ struct BarView: View {
     }
 }
 
+/// Analog steering. The original two arrow buttons were on/off, so the car only
+/// ever knew full lock — this reports a continuous -1…1 from the thumb's
+/// position across the pad.
+struct SteerPad: View {
+    let onSteer: (Float) -> Void
+    @State private var value: Float = 0
+    @State private var active = false
+
+    private let padWidth: CGFloat = 218
+    private let padHeight: CGFloat = 94
+    private let thumb: CGFloat = 58
+
+    private var travel: CGFloat { padWidth / 2 - thumb / 2 - 6 }
+
+    var body: some View {
+        ZStack {
+            Capsule().fill(.black.opacity(0.34))
+                .overlay(Capsule().stroke(.white.opacity(active ? 0.55 : 0.26), lineWidth: 2))
+
+            Rectangle()
+                .fill(.white.opacity(0.16))
+                .frame(width: 2, height: 24)
+
+            HStack {
+                Text("◀")
+                Spacer()
+                Text("▶")
+            }
+            .font(.system(size: 15, weight: .black))
+            .foregroundStyle(.white.opacity(0.45))
+            .padding(.horizontal, 14)
+
+            Circle()
+                .fill(active ? Color.neonPink.opacity(0.85) : Color.white.opacity(0.5))
+                .frame(width: thumb, height: thumb)
+                .overlay(Circle().stroke(.white.opacity(0.7), lineWidth: 1.5))
+                .shadow(color: active ? .neonPink : .clear, radius: 14)
+                .offset(x: CGFloat(value) * travel)
+        }
+        .frame(width: padWidth, height: padHeight)
+        .contentShape(Capsule())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { g in
+                    active = true
+                    let raw = (g.location.x - padWidth / 2) / travel
+                    let clamped = Float(min(1, max(-1, raw)))
+                    value = clamped
+                    onSteer(clamped)
+                }
+                .onEnded { _ in
+                    active = false
+                    value = 0
+                    onSteer(0)
+                }
+        )
+    }
+}
+
+struct TiltHint: View {
+    var body: some View {
+        Text("INCLINA PA' GUIAR")
+            .font(.system(size: 12, weight: .heavy)).tracking(2)
+            .foregroundStyle(.white.opacity(0.5))
+            .padding(.vertical, 10).padding(.horizontal, 16)
+            .background(.black.opacity(0.28), in: Capsule())
+            .frame(height: 94)
+    }
+}
+
 /// A press-and-hold circular control that reports its pressed state.
 struct HoldButton: View {
     let label: String
@@ -221,7 +313,7 @@ struct HoldButton: View {
         Text(label)
             .font(.system(size: 30, weight: .black))
             .foregroundStyle(.white)
-            .frame(width: 78, height: 78)
+            .frame(width: 80, height: 80)
             .background(pressed ? Color.neonPink.opacity(0.5) : Color.black.opacity(0.35),
                         in: Circle())
             .overlay(Circle().stroke(pressed ? Color.neonPink : tint.opacity(0.5), lineWidth: 2))
@@ -258,61 +350,20 @@ struct CountdownView: View {
     }
 }
 
-struct PauseOverlay: View {
-    @ObservedObject var state: GameState
-
-    var body: some View {
-        ZStack {
-            Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.72)
-                .ignoresSafeArea()
-            VStack(spacing: 22) {
-                Text("PAUSA")
-                    .font(.system(size: 54, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(.white)
-                    .shadow(color: .neonPink, radius: 18)
-                HStack(spacing: 18) {
-                    Button {
-                        state.paused = false
-                    } label: {
-                        Text("SEGUIR")
-                            .font(.system(size: 18, weight: .black)).tracking(3)
-                            .foregroundStyle(.white)
-                            .padding(.vertical, 12).padding(.horizontal, 30)
-                            .overlay(Capsule().stroke(Color.neonTeal, lineWidth: 2))
-                            .shadow(color: .neonTeal.opacity(0.6), radius: 12)
-                    }
-                    Button {
-                        state.paused = false
-                        state.requestReset = true
-                    } label: {
-                        Text("REINICIAR")
-                            .font(.system(size: 18, weight: .black)).tracking(3)
-                            .foregroundStyle(.white)
-                            .padding(.vertical, 12).padding(.horizontal, 30)
-                            .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
-                            .shadow(color: .neonPink.opacity(0.6), radius: 12)
-                    }
-                }
-            }
-        }
-    }
-}
-
 struct PopupView: View {
     let text: String
     @State private var shown = false
 
     var body: some View {
         Text(text)
-            .font(.system(size: 44, weight: .black, design: .rounded))
+            .font(.system(size: 40, weight: .black, design: .rounded))
             .italic()
             .foregroundStyle(Color.neonGold)
             .shadow(color: .sunsetOrange, radius: 12)
             .shadow(color: Color(red: 0.7, green: 0, blue: 0.37), radius: 2, y: 3)
             .scaleEffect(shown ? 1.0 : 0.4)
             .opacity(shown ? 1 : 0)
-            .offset(y: -60)
+            .offset(y: -96)
             .onAppear {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { shown = true }
                 withAnimation(.easeOut(duration: 0.4).delay(0.8)) { shown = false }
@@ -320,68 +371,191 @@ struct PopupView: View {
     }
 }
 
-// MARK: - overlays
-
-struct IntroOverlay: View {
+/// Shared control-scheme switch, offered on the intro and in the pause menu.
+struct SteerModePicker: View {
     @ObservedObject var state: GameState
+    let tilt: TiltObserver
 
     var body: some View {
-        ZStack {
-            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.92),
-                                    Color(red: 0.18, green: 0.04, blue: 0.24).opacity(0.88)],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-            VStack(spacing: 10) {
-                Text("¡HOYO!")
-                    .font(.system(size: 76, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold, .neonTeal],
-                                                    startPoint: .leading, endPoint: .trailing))
-                    .shadow(color: .neonPink.opacity(0.6), radius: 18)
-                Text("CARRERA CUESTA ABAJO · ESQUIVA LOS HOYOS DE PR")
-                    .font(.system(size: 15, weight: .semibold))
-                    .tracking(2)
-                    .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.69))
-                Text("🚗 🕳️ 🦎 🌴 🍧").font(.system(size: 24)).padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    row("◀ ▶", "guía el carro")
-                    row("🔥", "NITRO — recarga con 🍧 piraguas")
-                    row("🛑", "freno · frena + guía = drift")
-                    row("🕳️", "los hoyos rompen el carro, ¡esquívalos!")
-                    row("🧰", "el mecánico ambulante repara el carro")
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                pill("PAD", active: state.steerMode == .drag) { state.steerMode = .drag }
+                if tilt.isAvailable {
+                    pill("INCLINAR", active: state.steerMode == .tilt) { state.steerMode = .tilt }
                 }
-                .font(.system(size: 14))
-                .padding(.top, 10)
-
-                if !state.recordLine.isEmpty {
-                    Text(state.recordLine)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(Color.neonGold)
-                        .shadow(color: .neonGold.opacity(0.6), radius: 8)
-                        .padding(.top, 10)
+            }
+            if state.steerMode == .tilt {
+                Button {
+                    tilt.invert.toggle()
+                } label: {
+                    Text(tilt.invert ? "SENTIDO: INVERTIDO" : "SENTIDO: NORMAL")
+                        .font(.system(size: 11, weight: .heavy)).tracking(2)
+                        .foregroundStyle(Color.creamText)
                 }
-
-                Button { state.requestStart = true } label: {
-                    Text("TOCA PA' ARRANCAR")
-                        .font(.system(size: 20, weight: .black))
-                        .tracking(3)
-                        .foregroundStyle(.white)
-                        .padding(.vertical, 13).padding(.horizontal, 38)
-                        .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
-                        .shadow(color: .neonPink.opacity(0.6), radius: 14)
-                }
-                .padding(.top, 22)
             }
         }
     }
 
-    private func row(_ key: String, _ text: String) -> some View {
-        HStack(spacing: 12) {
-            Text(key).font(.system(size: 14, weight: .black)).foregroundStyle(Color.neonTeal)
-                .frame(width: 46, alignment: .trailing)
-            Text(text).foregroundStyle(Color(red: 0.91, green: 0.87, blue: 1.0))
+    private func pill(_ text: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 12, weight: .black)).tracking(2)
+                .foregroundStyle(active ? .black : .white)
+                .padding(.vertical, 8).padding(.horizontal, 18)
+                .background(active ? Color.neonTeal : Color.white.opacity(0.09), in: Capsule())
+                .overlay(Capsule().stroke(active ? Color.neonTeal : .white.opacity(0.3), lineWidth: 1.5))
         }
+    }
+}
+
+struct PauseOverlay: View {
+    @ObservedObject var state: GameState
+    let tilt: TiltObserver
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.72)
+                .ignoresSafeArea()
+            VStack(spacing: 18) {
+                Text("PAUSA")
+                    .font(.system(size: 50, weight: .black, design: .rounded))
+                    .italic()
+                    .foregroundStyle(.white)
+                    .shadow(color: .neonPink, radius: 18)
+
+                SteerModePicker(state: state, tilt: tilt)
+
+                HStack(spacing: 18) {
+                    CapsuleButton("SEGUIR", color: .neonTeal) { state.paused = false }
+                    CapsuleButton("REINICIAR", color: .neonPink) {
+                        state.paused = false
+                        state.requestReset = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CapsuleButton: View {
+    let title: String
+    let color: Color
+    let action: () -> Void
+
+    init(_ title: String, color: Color, action: @escaping () -> Void) {
+        self.title = title
+        self.color = color
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 18, weight: .black)).tracking(3)
+                .foregroundStyle(.white)
+                .padding(.vertical, 12).padding(.horizontal, 30)
+                .overlay(Capsule().stroke(color, lineWidth: 2))
+                .shadow(color: color.opacity(0.6), radius: 12)
+        }
+    }
+}
+
+// MARK: - overlays
+
+struct IntroOverlay: View {
+    @ObservedObject var state: GameState
+    let tilt: TiltObserver
+
+    var body: some View {
+        ZStack {
+            // lighter than before — the camera flythrough behind this was almost
+            // completely hidden at 0.92/0.88
+            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.68),
+                                    Color(red: 0.18, green: 0.04, blue: 0.24).opacity(0.56)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+
+            VStack(spacing: 8) {
+                Text("¡HOYO!")
+                    .font(.system(size: 68, weight: .black, design: .rounded))
+                    .italic()
+                    .foregroundStyle(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold, .neonTeal],
+                                                    startPoint: .leading, endPoint: .trailing))
+                    .shadow(color: .black.opacity(0.7), radius: 10, y: 3)
+                    .shadow(color: .neonPink.opacity(0.6), radius: 18)
+                Text("CARRERA CUESTA ABAJO · ESQUIVA LOS HOYOS DE PR")
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(2)
+                    .foregroundStyle(Color.creamText)
+                    .shadow(color: .black.opacity(0.8), radius: 4)
+
+                HStack(spacing: 22) {
+                    legend("◀▶", "guía")
+                    legend("🔥", "nitro · 🍧 recarga")
+                    legend("🛑", "freno · +guía = drift")
+                    legend("🧰", "repara")
+                }
+                .padding(.top, 10)
+
+                SteerModePicker(state: state, tilt: tilt)
+                    .padding(.top, 12)
+
+                if !state.recordLine.isEmpty {
+                    Text(state.recordLine)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.neonGold)
+                        .shadow(color: .neonGold.opacity(0.6), radius: 8)
+                        .padding(.top, 8)
+                }
+
+                if state.sceneReady {
+                    Button {
+                        tilt.reader.recalibrate()
+                        state.requestStart = true
+                    } label: {
+                        Text("TOCA PA' ARRANCAR")
+                            .font(.system(size: 19, weight: .black))
+                            .tracking(3)
+                            .foregroundStyle(.white)
+                            .padding(.vertical, 13).padding(.horizontal, 36)
+                            .background(.black.opacity(0.35), in: Capsule())
+                            .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
+                            .shadow(color: .neonPink.opacity(0.6), radius: 14)
+                    }
+                    .padding(.top, 16)
+                } else {
+                    LoadingLabel()
+                        .padding(.top, 16)
+                }
+            }
+        }
+    }
+
+    private func legend(_ key: String, _ text: String) -> some View {
+        VStack(spacing: 3) {
+            Text(key).font(.system(size: 15, weight: .black))
+                .foregroundStyle(Color.neonTeal)
+            Text(text).font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color(red: 0.91, green: 0.87, blue: 1.0))
+        }
+        .shadow(color: .black.opacity(0.8), radius: 4)
+    }
+}
+
+struct LoadingLabel: View {
+    @State private var dots = 0
+
+    var body: some View {
+        Text("CARGANDO" + String(repeating: ".", count: dots))
+            .font(.system(size: 16, weight: .black)).tracking(3)
+            .foregroundStyle(Color.creamText)
+            .frame(width: 220)
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 320_000_000)
+                    dots = (dots + 1) % 4
+                }
+            }
     }
 }
 
@@ -392,62 +566,69 @@ struct EndOverlay: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.92),
-                                    Color(red: 0.18, green: 0.04, blue: 0.24).opacity(0.88)],
+            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.90),
+                                    Color(red: 0.18, green: 0.04, blue: 0.24).opacity(0.84)],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
-            VStack(spacing: 12) {
+            VStack(spacing: 10) {
                 Text(title)
-                    .font(.system(size: 56, weight: .black, design: .rounded))
+                    .font(.system(size: 52, weight: .black, design: .rounded))
                     .italic()
                     .foregroundStyle(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold],
                                                     startPoint: .leading, endPoint: .trailing))
                     .shadow(color: .neonPink.opacity(0.6), radius: 16)
                 Text(subtitle)
-                    .font(.system(size: 14, weight: .semibold)).tracking(2)
-                    .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.69))
+                    .font(.system(size: 13, weight: .semibold)).tracking(2)
+                    .foregroundStyle(Color.creamText)
+
+                if state.statMedal != .none {
+                    Text(state.statMedal.label)
+                        .font(.system(size: 26, weight: .black)).tracking(2)
+                        .foregroundStyle(Color.neonGold)
+                        .shadow(color: .neonGold.opacity(0.8), radius: 12)
+                        .padding(.top, 4)
+                }
 
                 if state.newRecordScore || state.newRecordTime {
                     VStack(spacing: 2) {
-                        if state.newRecordScore {
-                            Text("★ ¡NUEVO RÉCORD DE PUNTOS! ★")
-                        }
-                        if state.newRecordTime {
-                            Text("★ ¡MEJOR TIEMPO! ★")
-                        }
+                        if state.newRecordScore { Text("★ ¡NUEVO RÉCORD DE PUNTOS! ★") }
+                        if state.newRecordTime { Text("★ ¡MEJOR TIEMPO! ★") }
                     }
-                    .font(.system(size: 16, weight: .black))
+                    .font(.system(size: 15, weight: .black))
                     .foregroundStyle(Color.neonTeal)
                     .shadow(color: .neonTeal.opacity(0.9), radius: 10)
-                    .padding(.top, 6)
+                    .padding(.top, 2)
                 }
 
-                VStack(spacing: 6) {
+                HStack(spacing: 26) {
                     stat("TIEMPO", state.statTime)
                     stat("PUNTOS", "\(state.statScore)")
-                    stat("VELOCIDAD MÁXIMA", "\(state.statTopSpeed) km/h")
-                    stat("HOYOS COMÍOS", "\(state.statHolesHit) · ESQUIVES \(state.statNearMisses)")
+                    stat("MÁXIMA", "\(state.statTopSpeed) km/h")
                 }
-                .padding(.top, 10)
+                .padding(.top, 8)
 
-                Button { state.requestReset = true } label: {
-                    Text("CORRER OTRA VEZ")
-                        .font(.system(size: 19, weight: .black)).tracking(3)
-                        .foregroundStyle(.white)
-                        .padding(.vertical, 12).padding(.horizontal, 34)
-                        .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
-                        .shadow(color: .neonPink.opacity(0.6), radius: 14)
+                stat("HOYOS COMÍOS", "\(state.statHolesHit) · ESQUIVES \(state.statNearMisses)")
+
+                // verbatim: interpolating an integer into Text localises it, and
+                // a track id reads oddly as "42,250"
+                Text(verbatim: "PISTA #\(state.statSeed % 100000)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.top, 2)
+
+                CapsuleButton("CORRER OTRA VEZ", color: .neonPink) {
+                    state.requestReset = true
                 }
-                .padding(.top, 18)
+                .padding(.top, 12)
             }
         }
     }
 
     private func stat(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).font(.system(size: 14, weight: .semibold))
+        VStack(spacing: 1) {
+            Text(label).font(.system(size: 11, weight: .semibold)).tracking(1)
                 .foregroundStyle(Color(red: 1, green: 0.91, blue: 0.79))
-            Text(value).font(.system(size: 19, weight: .black))
+            Text(value).font(.system(size: 18, weight: .black))
                 .foregroundStyle(Color.neonGold)
                 .shadow(color: .neonGold.opacity(0.7), radius: 8)
         }

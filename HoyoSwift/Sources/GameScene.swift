@@ -1,14 +1,78 @@
 import SceneKit
 import SwiftUI
+import Metal
 import simd
 
-// MARK: - deterministic rng (same course every run, same as the JS version)
+// MARK: - deterministic rng
 
-private struct Lcg {
-    var seed: UInt64 = 20260727
+/// Park–Miller LCG. Two instances are used: one seeded once for the *world*
+/// (road path, terrain, vegetation, props — built a single time), and one
+/// reseeded per run for the *hazard layout*, so no two races are the same.
+struct Lcg {
+    var seed: UInt64
+    init(_ s: UInt64) {
+        let m = s % 2147483647
+        seed = m == 0 ? 1 : m
+    }
     mutating func next() -> Float {
         seed = (seed &* 16807) % 2147483647
         return Float(seed - 1) / Float(2147483646)
+    }
+}
+
+// MARK: - render quality tiers
+
+/// SceneKit's HDR pipeline plus 4× MSAA plus a 2048 shadow map is a lot to ask
+/// of an A12. Pick the budget from the GPU family instead of hoping.
+enum Quality {
+    case low, medium, high
+
+    static func detect() -> Quality {
+        guard let device = MTLCreateSystemDefaultDevice() else { return .low }
+        if device.supportsFamily(.apple8) { return .high }        // A15 and up
+        if device.supportsFamily(.apple6) { return .medium }      // A13 / A14
+        return .low
+    }
+
+    var antialiasing: SCNAntialiasingMode {
+        switch self {
+        case .high: return .multisampling4X
+        case .medium: return .multisampling2X
+        case .low: return .none
+        }
+    }
+
+    var shadowMapSize: CGFloat {
+        switch self {
+        case .high: return 2048
+        case .medium: return 1536
+        case .low: return 1024
+        }
+    }
+
+    var motionBlur: CGFloat {
+        switch self {
+        case .high: return 0.35
+        case .medium: return 0.25
+        case .low: return 0
+        }
+    }
+
+    /// Skid-trail segments per wheel.
+    var skidSegments: Int {
+        switch self {
+        case .high: return 52
+        case .medium: return 36
+        case .low: return 22
+        }
+    }
+
+    var streakScale: CGFloat {
+        switch self {
+        case .high: return 1.0
+        case .medium: return 0.7
+        case .low: return 0.4
+        }
     }
 }
 
@@ -25,8 +89,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     let scene = SCNScene()
     private let state: GameState
     private let sound: SoundEngine
+    private let quality: Quality
 
-    private var rng = Lcg()
+    private var worldRng = Lcg(20260727)
+    private var runRng = Lcg(1)
+    private var runSeed: UInt64 = 0
+
     private var pts: [simd_float3] = []
     private var tans: [simd_float3] = []
     private var rights: [simd_float3] = []
@@ -47,21 +115,37 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var dustSystem = SCNParticleSystem()
     private let dustNode = SCNNode()
     private var oceanNormal: SCNMaterialProperty?
+    private let holeNode = SCNNode()
+    private let rimNode = SCNNode()
+
+    // skid trail — a pool of unit quads, transform-only (no per-frame geometry churn)
+    private var skidNodes: [SCNNode] = []
+    private var skidAge: [Float] = []
+    private var skidCursor = 0
+    private var lastSkidL: simd_float3?
+    private var lastSkidR: simd_float3?
+    private var skidTimer: Float = 0
+    private static let skidInterval: Float = 0.06
+    /// Derived from the pool size: if marks outlived the ring buffer, the cursor
+    /// would recycle a slot that was still supposed to be on screen and the tail
+    /// of the trail would teleport to the front.
+    private var skidLife: Float { Float(quality.skidSegments) * Self.skidInterval * 0.95 }
 
     // entities
     private struct Hole { var s, x, r: Float; var passed = false; var hit = false }
     private var holes: [Hole] = []
-    private struct Pickup { var s, x, baseY: Float; var node: SCNNode; var taken = false }
+    private struct Pickup { var s: Float = 0, x: Float = 0, baseY: Float = 0
+                            var node: SCNNode; var taken = false }
     private var piraguas: [Pickup] = []
     private var toolboxes: [Pickup] = []
     private struct Iguana {
-        var s, x: Float; var dir: Float; var node: SCNNode
+        var s: Float = 0, x: Float = 0; var dir: Float = 1; var node: SCNNode
         var stateRaw = 0   // 0 wait, 1 run, 2 done
         var hit = false
     }
     private var iguanas: [Iguana] = []
     private struct Traffic {
-        var s, x, v: Float; var node: SCNNode
+        var s: Float = 0, x: Float = 0, v: Float = 0; var node: SCNNode
         var cool: Float = 0; var missed = false
     }
     private var traffic: [Traffic] = []
@@ -77,21 +161,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var cdLabel = ""
     private var streakSystem = SCNParticleSystem()
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
+    private var invuln: Float = 0
+    private var dustT: Float = 0
     private var driftYaw: Float = 0, leanRoll: Float = 0, pitchAng: Float = 0
-    private var smokeT: Float = 0
     private var playTime: Double = 0
     private var lastTime: TimeInterval = -1
     private var camPos = simd_float3(0, 3, 8)
     private var camLook = simd_float3(0, 0, 0)
-    private var fov: CGFloat = 72
+    private var fov: CGFloat = 62
     private var wheelSpin: Float = 0
+    private var hudClock: Float = 0
+    private var lastCombo = -1
 
-    init(state: GameState, sound: SoundEngine) {
+    /// Camera framing. The old values sat 6.4–10 m back with a 72° lens, which
+    /// shrank the car to a few percent of the screen.
+    private static let baseFov: CGFloat = 62
+
+    /// `-autoplay` launch argument: self-driving smoke-test mode.
+    static let autoplay = ProcessInfo.processInfo.arguments.contains("-autoplay")
+
+    init(state: GameState, sound: SoundEngine, quality: Quality) {
         self.state = state
         self.sound = sound
+        self.quality = quality
         super.init()
         buildPath()
-        buildScene()
     }
 
     // MARK: - path
@@ -154,12 +248,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return max(yy, -3.6)
     }
 
-    // MARK: - geometry helper
+    // MARK: - geometry helpers
 
     private func makeGeometry(verts: [simd_float3], indices: [Int32],
                               uvs: [CGPoint]? = nil, colors: [simd_float3]? = nil,
                               material: SCNMaterial) -> SCNGeometry {
-        // accumulate face normals
         var normals = [simd_float3](repeating: .zero, count: verts.count)
         var k = 0
         while k < indices.count {
@@ -207,95 +300,130 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return m
     }
 
-    // MARK: - scene build
+    // MARK: - world build (runs off the main thread)
 
-    private func buildScene() {
-        scene.fogStartDistance = 260
-        scene.fogEndDistance = 2400
-        scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
-        // cubemap sky: pans with the camera, immune to fog, sun + stars baked in
-        scene.background.contents = Textures.skyCubemap()
+    /// Everything expensive — the sky cubemap's 400k `powf` calls, the road and
+    /// terrain meshes, 120 palms — happens here, on a background queue, into a
+    /// *detached* node. `attach` then hooks it up in one main-thread step.
+    /// Building straight into a live scene from another thread would race the
+    /// renderer; building detached does not.
+    func buildWorld() -> (world: SCNNode, sky: [UIImage]) {
+        let world = SCNNode()
+        let sky = Textures.skyCubemap()
 
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light!.type = .ambient
-        ambient.light!.color = UIColor(red: 0.62, green: 0.5, blue: 0.58, alpha: 1)
-        scene.rootNode.addChildNode(ambient)
+        ambient.light!.color = UIColor(red: 0.50, green: 0.42, blue: 0.50, alpha: 1)
+        world.addChildNode(ambient)
 
         let sunNode = SCNNode()
         sunNode.light = SCNLight()
         sunNode.light!.type = .directional
         sunNode.light!.color = UIColor(red: 1.0, green: 0.82, blue: 0.63, alpha: 1)
-        sunNode.light!.intensity = 1100
+        sunNode.light!.intensity = 1280
         sunNode.light!.castsShadow = true
-        sunNode.light!.shadowMapSize = CGSize(width: 2048, height: 2048)
-        sunNode.light!.shadowSampleCount = 4
+        sunNode.light!.shadowMapSize = CGSize(width: quality.shadowMapSize,
+                                              height: quality.shadowMapSize)
+        sunNode.light!.shadowSampleCount = quality == .low ? 1 : 4
         sunNode.light!.shadowRadius = 3
         sunNode.light!.shadowColor = UIColor(white: 0, alpha: 0.5)
         sunNode.light!.maximumShadowDistance = 150
         sunNode.eulerAngles = SCNVector3(-0.55, 0.45, 0)
-        scene.rootNode.addChildNode(sunNode)
+        world.addChildNode(sunNode)
 
-        camera()
-        clouds()
-        ocean()
-        road()
-        terrain()
-        vegetation()
-        props()
-        potholes()
-        makePiraguas()
-        makeToolboxes()
-        makeIguanas()
-        makeTraffic()
+        camera(world)
+        clouds(world)
+        ocean(world)
+        road(world)
+        terrain(world)
+        vegetation(world)
+        props(world)
+        makePiraguas(world)
+        makeToolboxes(world)
+        makeIguanas(world)
+        makeTraffic(world)
         buildCar()
+        skidPool(world)
         particles()
 
-        scene.rootNode.addChildNode(playerNode)
+        world.addChildNode(holeNode)
+        world.addChildNode(rimNode)
+        world.addChildNode(playerNode)
         playerNode.addChildNode(chassisNode)
-        scene.rootNode.addChildNode(dustNode)
+        world.addChildNode(dustNode)
+        world.addChildNode(blobNode)
+
+        return (world, sky)
     }
 
-    private func camera() {
+    /// Gates the render loop until the world is fully installed. Without it the
+    /// intro camera code would be posing `cameraNode` on the render thread while
+    /// the background build was still parenting and configuring that same node.
+    private var worldAttached = false
+
+    /// Main thread: install the finished world.
+    func attach(world: SCNNode, sky: [UIImage]) {
+        scene.fogStartDistance = 280
+        scene.fogEndDistance = 2400
+        scene.fogDensityExponent = 1.6
+        scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
+        scene.background.contents = sky
+        scene.rootNode.addChildNode(world)
+        worldAttached = true
+    }
+
+    var pointOfView: SCNNode { cameraNode }
+
+    private func camera(_ parent: SCNNode) {
         let cam = SCNCamera()
         cam.zNear = 0.1
         cam.zFar = 9000
-        cam.fieldOfView = 72
-        // post-processing: this is what sells the look on device
+        cam.fieldOfView = Self.baseFov
         cam.wantsHDR = true
         cam.wantsExposureAdaptation = false
-        cam.bloomThreshold = 0.85
-        cam.bloomIntensity = 0.9
-        cam.bloomBlurRadius = 12
-        cam.motionBlurIntensity = 0.45
-        cam.vignettingPower = 0.7
-        cam.vignettingIntensity = 0.7
+        // Bloom was set so low (threshold 0.85) that the headlights smeared into
+        // a white blob directly over the car. Raised, dimmed, and widened.
+        cam.bloomThreshold = 1.05
+        cam.bloomIntensity = 0.55
+        cam.bloomBlurRadius = 18
+        cam.motionBlurIntensity = quality.motionBlur
+        cam.vignettingPower = 0.55
+        cam.vignettingIntensity = 0.45
+        cam.saturation = 1.12
+        cam.contrast = 0.08
         cameraNode.camera = cam
         cameraNode.position = SCNVector3(0, 3, 8)
-        scene.rootNode.addChildNode(cameraNode)
+        parent.addChildNode(cameraNode)
     }
 
-    private func clouds() {
+    private func clouds(_ parent: SCNNode) {
         let container = SCNNode()
-        let mat = constant(UIColor(red: 1, green: 0.8, blue: 0.72, alpha: 1))
+        // lambert rather than constant, so the sun actually shapes them instead
+        // of leaving flat beige blobs pasted on the sky
+        let mat = lambert(UIColor(red: 1, green: 0.86, blue: 0.80, alpha: 1))
         for _ in 0..<14 {
-            let cx = (rng.next() - 0.5) * 2400
-            let cy = 430 + rng.next() * 260
-            let cz = -300 - rng.next() * 2700
+            let cx = (worldRng.next() - 0.5) * 2400
+            let cy = 430 + worldRng.next() * 260
+            let cz = -300 - worldRng.next() * 2700
             for _ in 0..<3 {
                 let ball = SCNNode(geometry: SCNSphere(radius: 1))
                 ball.geometry!.materials = [mat]
-                ball.position = SCNVector3(cx + (rng.next() - 0.5) * 90,
-                                           cy + (rng.next() - 0.5) * 14,
-                                           cz + (rng.next() - 0.5) * 50)
-                ball.scale = SCNVector3(45 + rng.next() * 70, 10 + rng.next() * 9, 26 + rng.next() * 34)
+                ball.position = SCNVector3(cx + (worldRng.next() - 0.5) * 90,
+                                           cy + (worldRng.next() - 0.5) * 14,
+                                           cz + (worldRng.next() - 0.5) * 50)
+                ball.scale = SCNVector3(45 + worldRng.next() * 70,
+                                        10 + worldRng.next() * 9,
+                                        26 + worldRng.next() * 34)
                 container.addChildNode(ball)
             }
         }
-        scene.rootNode.addChildNode(container.flattenedClone())
+        let flat = container.flattenedClone()
+        flat.castsShadow = false
+        parent.addChildNode(flat)
     }
 
-    private func ocean() {
+    private func ocean(_ parent: SCNNode) {
         let plane = SCNPlane(width: 9000, height: 9000)
         plane.widthSegmentCount = 110
         plane.heightSegmentCount = 110
@@ -308,7 +436,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         m.normal.wrapS = .repeat
         m.normal.wrapT = .repeat
         oceanNormal = m.normal
-        // gentle swell, displaced in the vertex stage
         m.shaderModifiers = [.geometry: """
             float2 p = _geometry.position.xy;
             float t = scn_frame.time;
@@ -319,10 +446,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let node = SCNNode(geometry: plane)
         node.eulerAngles.x = -.pi / 2
         node.position = SCNVector3(0, -3, -1600)
-        scene.rootNode.addChildNode(node)
+        node.castsShadow = false
+        parent.addChildNode(node)
     }
 
-    private func road() {
+    private func road(_ parent: SCNNode) {
         var verts: [simd_float3] = [], uvs: [CGPoint] = [], idx: [Int32] = []
         for i in 0..<Self.count {
             let p = pts[i], r = rights[i]
@@ -337,13 +465,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
         }
         let mat = SCNMaterial()
-        mat.lightingModel = .lambert
+        // blinn + a low warm specular gives the asphalt a grazing sheen under the
+        // low sun; pure lambert read as dead grey
+        mat.lightingModel = .blinn
         mat.diffuse.contents = Textures.asphalt()
         mat.diffuse.wrapS = .repeat
         mat.diffuse.wrapT = .repeat
+        mat.specular.contents = UIColor(red: 0.42, green: 0.30, blue: 0.22, alpha: 1)
+        mat.shininess = 0.16
         let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx, uvs: uvs, material: mat))
         node.castsShadow = false
-        scene.rootNode.addChildNode(node)
+        parent.addChildNode(node)
 
         func ribbon(_ l0: Float, _ l1: Float, _ color: UIColor, dashed: Bool) {
             var v: [simd_float3] = [], id: [Int32] = []
@@ -359,16 +491,46 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
             let node = SCNNode(geometry: makeGeometry(verts: v, indices: id, material: constant(color)))
             node.castsShadow = false
-            scene.rootNode.addChildNode(node)
+            parent.addChildNode(node)
         }
         ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dashed: true)
         ribbon(-4.32, -4.1, UIColor(white: 0.83, alpha: 1), dashed: false)
         ribbon(4.1, 4.32, UIColor(white: 0.83, alpha: 1), dashed: false)
     }
 
-    private func terrain() {
-        let latsL: [Float] = [-4.2, -7, -12, -20, -34, -60, -95, -145]
-        let latsR: [Float] = [4.2, 7, 12, 20, 34, 60, 95, 145]
+    /// Grass / rock / sand blend driven by local slope plus three octaves of
+    /// cheap sinusoidal noise. The old two-branch version left the hillsides a
+    /// flat olive wall.
+    private func terrainColor(_ i: Int, _ lat: Float, _ y: Float) -> simd_float3 {
+        let sd = Float(i) * Self.step
+        if y < 1.6 {
+            let l = 0.66 + 0.05 * sin(Float(i) * 0.7 + lat)
+            return simd_float3(0.93 * l + 0.1, 0.82 * l + 0.08, 0.55 * l)
+        }
+        let n = 0.5
+            + 0.26 * sin(sd * 0.031 + lat * 0.11)
+            + 0.14 * sin(sd * 0.087 - lat * 0.23)
+            + 0.08 * sin(sd * 0.190 + lat * 0.41)
+
+        let dLat: Float = 1.5
+        let slope = abs(groundY(i, lat + dLat) - groundY(i, lat - dLat)) / (2 * dLat)
+
+        let hue = CGFloat(0.30 - n * 0.055)
+        let ui = UIColor(hue: hue, saturation: CGFloat(0.44 + n * 0.20),
+                         brightness: CGFloat(0.26 + n * 0.26), alpha: 1)
+        var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
+        ui.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
+        let green = simd_float3(Float(rr), Float(gg), Float(bb))
+
+        let rock = simd_float3(0.40, 0.36, 0.32) * (0.80 + n * 0.42)
+        let rockAmt = simd_clamp((slope - 0.55) / 0.9, 0, 0.82)
+        return simd_mix(green, rock, simd_float3(repeating: rockAmt))
+    }
+
+    private func terrain(_ parent: SCNNode) {
+        // denser near the road, where you can actually see the silhouette
+        let latsL: [Float] = [-4.2, -6, -8.5, -12, -17, -24, -34, -48, -68, -95, -145]
+        let latsR: [Float] = [4.2, 6, 8.5, 12, 17, 24, 34, 48, 68, 95, 145]
 
         func side(_ lats: [Float]) {
             var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
@@ -379,17 +541,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 for (j, lat) in lats.enumerated() {
                     let y = j == 0 ? p.y - 0.09 : groundY(i, lat)
                     verts.append(simd_float3(p.x + r.x * lat, y, p.z + r.z * lat))
-                    if y < 1.8 {
-                        let l = 0.66 + 0.05 * sin(Float(i) * 0.7 + Float(j))
-                        cols.append(simd_float3(0.93 * l + 0.1, 0.82 * l + 0.08, 0.55 * l))
-                    } else {
-                        let n = 0.5 + 0.5 * sin(Float(i) * 0.085 + Float(j) * 1.6) * sin(Float(i) * 0.041 + 2.0)
-                        let ui = UIColor(hue: CGFloat(0.33 - n * 0.05), saturation: 0.58,
-                                         brightness: CGFloat(0.30 + n * 0.22), alpha: 1)
-                        var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
-                        ui.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
-                        cols.append(simd_float3(Float(rr), Float(gg), Float(bb)))
-                    }
+                    cols.append(terrainColor(i, lat, y))
                 }
                 rows += 1
                 i += 2
@@ -398,15 +550,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             for row in 0..<(rows - 1) {
                 for j in 0..<(w - 1) {
                     let a = Int32(row * w + j)
-                    idx.append(contentsOf: [a, a + Int32(w), a + 1, a + 1, a + Int32(w), a + Int32(w) + 1])
+                    idx.append(contentsOf: [a, a + Int32(w), a + 1,
+                                            a + 1, a + Int32(w), a + Int32(w) + 1])
                 }
             }
             let mat = SCNMaterial()
             mat.lightingModel = .lambert
             mat.diffuse.contents = UIColor.white       // modulated by vertex colors
-            let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx, colors: cols, material: mat))
+            let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
+                                                      colors: cols, material: mat))
             node.castsShadow = false
-            scene.rootNode.addChildNode(node)
+            parent.addChildNode(node)
         }
         side(latsL)
         side(latsR)
@@ -414,8 +568,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     // MARK: - vegetation
 
-    /// Seven drooping fronds built as raw triangles — reads as a real palm
-    /// crown instead of a starburst of boxes.
     private func palmCanopyGeometry() -> SCNGeometry {
         var verts: [simd_float3] = []
         var idx: [Int32] = []
@@ -453,30 +605,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return palm
     }
 
-    private func vegetation() {
+    private func vegetation(_ parent: SCNNode) {
         var guard_ = 0
-        // palms
         let palmContainer = SCNNode()
         let template = palmTemplate()
         var placed = 0
         while placed < 120 && guard_ < 3000 {
             guard_ += 1
-            let pi = 20 + Int(rng.next() * Float(Self.count - 60))
-            let lat = (rng.next() < 0.55 ? 1 : -1) * (7 + rng.next() * 45)
+            let pi = 20 + Int(worldRng.next() * Float(Self.count - 60))
+            let lat = (worldRng.next() < 0.55 ? 1 : -1) * (7 + worldRng.next() * 45)
             let gy = groundY(pi, lat)
             if gy < -1 { continue }
             let p = pts[pi], r = rights[pi]
             let clone = template.clone()
             clone.position = SCNVector3(p.x + r.x * lat, gy - 0.3, p.z + r.z * lat)
-            let sc = 0.8 + rng.next() * 0.7
+            let sc = 0.8 + worldRng.next() * 0.7
             clone.scale = SCNVector3(sc, sc, sc)
-            clone.eulerAngles = SCNVector3((rng.next() - 0.5) * 0.2, rng.next() * 6.28, (rng.next() - 0.5) * 0.2)
+            clone.eulerAngles = SCNVector3((worldRng.next() - 0.5) * 0.2,
+                                           worldRng.next() * 6.28,
+                                           (worldRng.next() - 0.5) * 0.2)
             palmContainer.addChildNode(clone)
             placed += 1
         }
         let flatPalms = palmContainer.flattenedClone()
         flatPalms.castsShadow = true
-        scene.rootNode.addChildNode(flatPalms)
+        parent.addChildNode(flatPalms)
 
         // flamboyanes
         let flamContainer = SCNNode()
@@ -484,8 +637,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         placed = 0; guard_ = 0
         while placed < 40 && guard_ < 2000 {
             guard_ += 1
-            let fi = 30 + Int(rng.next() * Float(Self.count - 80))
-            let flat = (rng.next() < 0.5 ? 1 : -1) * (6.5 + rng.next() * 26)
+            let fi = 30 + Int(worldRng.next() * Float(Self.count - 80))
+            let flat = (worldRng.next() < 0.5 ? 1 : -1) * (6.5 + worldRng.next() * 26)
             let fgy = groundY(fi, flat)
             if fgy < 0 { continue }
             let fp = pts[fi], fr = rights[fi]
@@ -495,18 +648,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             trunk.position.y = 1.3
             tree.addChildNode(trunk)
             let can = SCNNode(geometry: SCNSphere(radius: 2.4))
-            can.geometry!.materials = [lambert(UIColor(hue: CGFloat(0.02 + rng.next() * 0.04),
+            can.geometry!.materials = [lambert(UIColor(hue: CGFloat(0.02 + worldRng.next() * 0.04),
                 saturation: 0.92, brightness: 0.85, alpha: 1))]
             can.scale = SCNVector3(1, 0.55, 1)
             can.position.y = 2.9
             tree.addChildNode(can)
-            let fsc = 0.8 + rng.next() * 0.9
+            let fsc = 0.8 + worldRng.next() * 0.9
             tree.scale = SCNVector3(fsc, fsc, fsc)
             tree.position = SCNVector3(fp.x + fr.x * flat, fgy - 0.2, fp.z + fr.z * flat)
             flamContainer.addChildNode(tree)
             placed += 1
         }
-        scene.rootNode.addChildNode(flamContainer.flattenedClone())
+        parent.addChildNode(flamContainer.flattenedClone())
 
         // casitas
         let houseContainer = SCNNode()
@@ -523,12 +676,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         placed = 0; guard_ = 0
         while placed < 30 && guard_ < 2000 {
             guard_ += 1
-            let hi = 40 + Int(rng.next() * Float(Self.count - 120))
-            let hlat = (rng.next() < 0.5 ? 1 : -1) * (9.5 + rng.next() * 9)
+            let hi = 40 + Int(worldRng.next() * Float(Self.count - 120))
+            let hlat = (worldRng.next() < 0.5 ? 1 : -1) * (9.5 + worldRng.next() * 9)
             let hgy = groundY(hi, hlat)
             if hgy < 0.5 { continue }
             let hp = pts[hi], hr = rights[hi]
-            let color = palette[Int(rng.next() * Float(palette.count)) % palette.count]
+            let color = palette[Int(worldRng.next() * Float(palette.count)) % palette.count]
             let house = SCNNode()
             let base = SCNNode(geometry: SCNBox(width: 4.2, height: 3, length: 5, chamferRadius: 0))
             base.geometry!.materials = [lambert(color)]
@@ -537,17 +690,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let roof = SCNNode(geometry: SCNPyramid(width: 5.2, height: 1.7, length: 6))
             var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
             color.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
-            roof.geometry!.materials = [lambert(UIColor(red: rr * 0.55, green: gg * 0.55, blue: bb * 0.55, alpha: 1))]
+            roof.geometry!.materials = [lambert(UIColor(red: rr * 0.55, green: gg * 0.55,
+                                                        blue: bb * 0.55, alpha: 1))]
             roof.position.y = 3
             house.addChildNode(roof)
-            let hsc = 0.9 + rng.next() * 0.5
+            let hsc = 0.9 + worldRng.next() * 0.5
             house.scale = SCNVector3(hsc, hsc, hsc)
             house.position = SCNVector3(hp.x + hr.x * hlat, hgy - 0.3, hp.z + hr.z * hlat)
-            house.eulerAngles.y = atan2(tans[hi].x, -tans[hi].z) + (rng.next() - 0.5) * 0.5
+            house.eulerAngles.y = atan2(tans[hi].x, -tans[hi].z) + (worldRng.next() - 0.5) * 0.5
             houseContainer.addChildNode(house)
             placed += 1
         }
-        scene.rootNode.addChildNode(houseContainer.flattenedClone())
+        parent.addChildNode(houseContainer.flattenedClone())
 
         // rocks + guardrail posts
         let rockContainer = SCNNode()
@@ -556,17 +710,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         rockGeo.segmentCount = 4
         rockGeo.materials = [lambert(UIColor(red: 0.47, green: 0.44, blue: 0.37, alpha: 1))]
         for _ in 0..<50 {
-            let ri = 10 + Int(rng.next() * Float(Self.count - 30))
-            let rlat = -(6 + rng.next() * 40)
+            let ri = 10 + Int(worldRng.next() * Float(Self.count - 30))
+            let rlat = -(6 + worldRng.next() * 40)
             let rp = pts[ri], rr2 = rights[ri]
             let rock = SCNNode(geometry: rockGeo)
             rock.position = SCNVector3(rp.x + rr2.x * rlat, groundY(ri, rlat), rp.z + rr2.z * rlat)
-            let rs = 0.5 + rng.next() * 1.6
-            rock.scale = SCNVector3(rs, rs * (0.7 + rng.next() * 0.5), rs)
-            rock.eulerAngles.y = rng.next() * 3
+            let rs = 0.5 + worldRng.next() * 1.6
+            rock.scale = SCNVector3(rs, rs * (0.7 + worldRng.next() * 0.5), rs)
+            rock.eulerAngles.y = worldRng.next() * 3
             rockContainer.addChildNode(rock)
         }
-        scene.rootNode.addChildNode(rockContainer.flattenedClone())
+        parent.addChildNode(rockContainer.flattenedClone())
 
         let postContainer = SCNNode()
         let postGeo = SCNBox(width: 0.16, height: 0.85, length: 0.16, chamferRadius: 0)
@@ -579,11 +733,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             postContainer.addChildNode(post)
             gi += 4
         }
-        scene.rootNode.addChildNode(postContainer.flattenedClone())
+        parent.addChildNode(postContainer.flattenedClone())
     }
 
-    private func props() {
-        // PR flags
+    private func props(_ parent: SCNNode) {
         let flagImg = Textures.prFlag()
         for i in 0..<10 {
             let fi = 60 + i * (Self.count - 120) / 10
@@ -599,9 +752,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             fm.isDoubleSided = true
             flag.geometry!.materials = [fm]
             flag.position = SCNVector3(0.82, 1.55, 0)
-            flag.eulerAngles.y = rng.next() * 6.28
+            flag.eulerAngles.y = worldRng.next() * 6.28
             pole.addChildNode(flag)
-            scene.rootNode.addChildNode(pole)
+            parent.addChildNode(pole)
         }
 
         func arch(_ i2: Int, _ text: String, _ color: UIColor) {
@@ -623,16 +776,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             grp.addChildNode(banner)
             grp.simdPosition = p
             grp.simdLook(at: p + t, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
-            scene.rootNode.addChildNode(grp)
+            parent.addChildNode(grp)
         }
         arch(6, "¡SALIDA!", UIColor(red: 0.88, green: 0.13, blue: 0.22, alpha: 1))
         arch(Self.count - 8, "¡META!", UIColor(red: 0, green: 0.31, blue: 0.63, alpha: 1))
 
-        // beach umbrellas
         let umbCols: [UIColor] = [.neonPinkUI, .neonGoldUI, .neonTealUI, .sunsetOrangeUI]
         for u in 0..<6 {
-            let ui = Self.count - 30 - Int(rng.next() * 40)
-            let ulat = (rng.next() < 0.5 ? 1 : -1) * (6 + rng.next() * 12)
+            let ui = Self.count - 30 - Int(worldRng.next() * 40)
+            let ulat = (worldRng.next() < 0.5 ? 1 : -1) * (6 + worldRng.next() * 12)
             let ugy = groundY(ui, ulat)
             if ugy < -0.5 { continue }
             let up = pts[ui], ur = rights[ui]
@@ -646,14 +798,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             top.position.y = 1.9
             umb.addChildNode(top)
             umb.position = SCNVector3(up.x + ur.x * ulat, ugy, up.z + ur.z * ulat)
-            umb.eulerAngles.z = (rng.next() - 0.5) * 0.3
-            scene.rootNode.addChildNode(umb)
+            umb.eulerAngles.z = (worldRng.next() - 0.5) * 0.3
+            parent.addChildNode(umb)
         }
     }
 
-    // MARK: - potholes (merged into two geometries)
+    // MARK: - hazard layout (reseeded every run)
 
-    private func potholes() {
+    /// Generates the pothole field and re-places pickups, iguanas and traffic
+    /// from `runRng`. Called on the render thread from `resetGame`, which is the
+    /// sanctioned place to mutate the graph, so rebuilding the two merged
+    /// pothole meshes here is safe.
+    private func layoutHazards() {
+        holes.removeAll(keepingCapacity: true)
+
         var hv: [simd_float3] = [], hi_: [Int32] = []
         var rv: [simd_float3] = [], ri_: [Int32] = []
         var hn: Int32 = 0, rn2: Int32 = 0
@@ -662,8 +820,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         func addHole(_ hs: Float, _ hx: Float, _ hr: Float) {
             let (pos, tan, rgt) = sample(hs)
             let c = pos + rgt * hx
-            let rot = rng.next() * 6.28
-            let sq = 0.75 + rng.next() * 0.5
+            let rot = runRng.next() * 6.28
+            let sq = 0.75 + runRng.next() * 0.5
             hv.append(simd_float3(c.x, c.y + 0.045, c.z))
             for k in 0...seg {
                 let a = rot + Float(k) / Float(seg) * 2 * .pi
@@ -680,7 +838,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 let ca = cos(a) * wob, sa = sin(a) * sq * wob
                 rv.append(simd_float3(c.x + (rgt.x * ca + tan.x * sa) * hr, c.y + 0.038,
                                       c.z + (rgt.z * ca + tan.z * sa) * hr))
-                let r2 = hr * 1.45
+                let r2 = hr * 1.62
                 rv.append(simd_float3(c.x + (rgt.x * ca + tan.x * sa) * r2, c.y + 0.038,
                                       c.z + (rgt.z * ca + tan.z * sa) * r2))
             }
@@ -692,34 +850,83 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             holes.append(Hole(s: hs, x: hx, r: hr * sq + 0.15))
         }
 
+        // density and cluster size ramp with distance — the back half of the
+        // mountain should feel worse than the top
         var cs: Float = 230
         while cs < Self.total - 260 {
-            let n = 1 + Int(rng.next() * 4)
-            let gapC = (rng.next() - 0.5) * 5.4
+            let prog = cs / Self.total
+            let n = 1 + Int(runRng.next() * (2.6 + prog * 3.0))
+            let gapC = (runRng.next() - 0.5) * 5.4
             for _ in 0..<n {
                 var tries = 0
                 var hx: Float = 0
-                repeat { hx = (rng.next() - 0.5) * 7.4; tries += 1 }
+                repeat { hx = (runRng.next() - 0.5) * 7.4; tries += 1 }
                 while abs(hx - gapC) < 2.2 && tries < 12
                 if tries >= 12 { continue }
-                addHole(cs + (rng.next() - 0.5) * 12, hx, 0.55 + rng.next() * 1.0)
+                addHole(cs + (runRng.next() - 0.5) * 12, hx,
+                        0.55 + runRng.next() * (0.9 + prog * 0.35))
             }
-            cs += 46 + rng.next() * 72
+            cs += (52 - prog * 18) + runRng.next() * (76 - prog * 34)
         }
 
-        let holeMat = constant(UIColor(red: 0.043, green: 0.043, blue: 0.063, alpha: 1))
-        let rimMat = constant(UIColor(red: 0.34, green: 0.36, blue: 0.39, alpha: 1))
-        let holeNode = SCNNode(geometry: makeGeometry(verts: hv, indices: hi_, material: holeMat))
-        let rimNode = SCNNode(geometry: makeGeometry(verts: rv, indices: ri_, material: rimMat))
+        // Rim is much brighter and warmer than before (was 0.34 grey against
+        // 0.22 asphalt — invisible at 200 km/h) and slightly emissive so it
+        // still reads inside the hillside shadows.
+        let holeMat = constant(UIColor(red: 0.035, green: 0.035, blue: 0.055, alpha: 1))
+        let rimMat = constant(UIColor(red: 0.66, green: 0.62, blue: 0.55, alpha: 1))
+        rimMat.emission.contents = UIColor(red: 0.30, green: 0.24, blue: 0.18, alpha: 1)
+        holeNode.geometry = makeGeometry(verts: hv, indices: hi_, material: holeMat)
+        rimNode.geometry = makeGeometry(verts: rv, indices: ri_, material: rimMat)
         holeNode.castsShadow = false
         rimNode.castsShadow = false
-        scene.rootNode.addChildNode(holeNode)
-        scene.rootNode.addChildNode(rimNode)
+
+        // pickups
+        for i in 0..<piraguas.count {
+            let ps = 150 + (Float(i) + runRng.next() * 0.6) * (Self.total - 380) / Float(piraguas.count)
+            let px2 = (runRng.next() - 0.5) * 6.4
+            let (pos, _, rgt) = sample(ps)
+            let world = pos + rgt * px2
+            piraguas[i].s = ps
+            piraguas[i].x = px2
+            piraguas[i].baseY = world.y + 1.0
+            piraguas[i].taken = false
+            piraguas[i].node.position = SCNVector3(world.x, world.y + 1.0, world.z)
+            piraguas[i].node.isHidden = false
+        }
+        for i in 0..<toolboxes.count {
+            let ts = 380 + (Float(i) + runRng.next() * 0.5) * (Self.total - 700) / Float(toolboxes.count)
+            let tx = (runRng.next() - 0.5) * 6
+            let (pos, _, rgt) = sample(ts)
+            let world = pos + rgt * tx
+            toolboxes[i].s = ts
+            toolboxes[i].x = tx
+            toolboxes[i].baseY = world.y + 0.9
+            toolboxes[i].taken = false
+            toolboxes[i].node.position = SCNVector3(world.x, world.y + 0.9, world.z)
+            toolboxes[i].node.isHidden = false
+        }
+        for i in 0..<iguanas.count {
+            iguanas[i].s = 400 + Float(i) * (Self.total - 700) / Float(iguanas.count)
+                         + runRng.next() * 80
+            iguanas[i].dir = runRng.next() < 0.5 ? 1 : -1
+            iguanas[i].stateRaw = 0
+            iguanas[i].hit = false
+            iguanas[i].x = -iguanas[i].dir * (Self.roadHalf + 1.5)
+            iguanas[i].node.eulerAngles.z = 0
+            positionIguana(&iguanas[i])
+        }
+        for i in 0..<traffic.count {
+            traffic[i].s = 300 + Float(i) * 420 + runRng.next() * 150
+            traffic[i].x = runRng.next() < 0.5 ? -1.9 : 1.9
+            traffic[i].v = 11 + runRng.next() * 7
+            traffic[i].cool = 0
+            traffic[i].missed = false
+        }
     }
 
-    // MARK: - pickups, iguanas, traffic
+    // MARK: - pickups, iguanas, traffic (nodes only; layout assigns positions)
 
-    private func makePiraguas() {
+    private func makePiraguas(_ parent: SCNNode) {
         let flavors: [UIColor] = [
             UIColor(red: 1, green: 0.18, blue: 0.31, alpha: 1),
             UIColor(red: 1, green: 0.54, blue: 0.1, alpha: 1),
@@ -727,10 +934,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             UIColor(red: 1, green: 0.82, blue: 0.25, alpha: 1),
             UIColor(red: 0.76, green: 0.23, blue: 1, alpha: 1)
         ]
-        for i in 0..<24 {
-            let ps = 150 + (Float(i) + rng.next() * 0.6) * (Self.total - 380) / 24
-            let px2 = (rng.next() - 0.5) * 6.4
-            let (pos, _, rgt) = sample(ps)
+        for i in 0..<26 {
             let grp = SCNNode()
             let cup = SCNNode(geometry: SCNCone(topRadius: 0.26, bottomRadius: 0, height: 0.4))
             cup.geometry!.materials = [lambert(UIColor(red: 0.96, green: 0.94, blue: 0.9, alpha: 1))]
@@ -744,24 +948,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             ice.geometry!.materials = [im]
             ice.position.y = 0.24
             grp.addChildNode(ice)
-            let world = pos + rgt * px2
-            grp.position = SCNVector3(world.x, world.y + 1.0, world.z)
-            scene.rootNode.addChildNode(grp)
-            piraguas.append(Pickup(s: ps, x: px2, baseY: world.y + 1.0, node: grp))
+            parent.addChildNode(grp)
+            piraguas.append(Pickup(node: grp))
         }
     }
 
-    private func makeToolboxes() {
+    private func makeToolboxes(_ parent: SCNNode) {
         let boxMat = SCNMaterial()
         boxMat.lightingModel = .lambert
         boxMat.diffuse.contents = UIColor(red: 0.85, green: 0.21, blue: 0.18, alpha: 1)
         boxMat.emission.contents = UIColor(red: 0.85, green: 0.21, blue: 0.18, alpha: 1)
         boxMat.emission.intensity = 0.5
         let bandMat = lambert(UIColor(white: 0.95, alpha: 1))
-        for i in 0..<10 {
-            let ts = 380 + (Float(i) + rng.next() * 0.5) * (Self.total - 700) / 10
-            let tx = (rng.next() - 0.5) * 6
-            let (pos, _, rgt) = sample(ts)
+        // 14, up from 10 — with the damage rebalance the mechanic is the main
+        // way a long run stays alive
+        for _ in 0..<14 {
             let grp = SCNNode()
             let box = SCNNode(geometry: SCNBox(width: 0.52, height: 0.34, length: 0.38, chamferRadius: 0.04))
             box.geometry!.materials = [boxMat]
@@ -769,15 +970,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let band = SCNNode(geometry: SCNBox(width: 0.54, height: 0.1, length: 0.4, chamferRadius: 0.02))
             band.geometry!.materials = [bandMat]
             grp.addChildNode(band)
-            let world = pos + rgt * tx
-            grp.position = SCNVector3(world.x, world.y + 0.9, world.z)
-            scene.rootNode.addChildNode(grp)
-            toolboxes.append(Pickup(s: ts, x: tx, baseY: world.y + 0.9, node: grp))
+            parent.addChildNode(grp)
+            toolboxes.append(Pickup(node: grp))
         }
     }
 
-    private func makeIguanas() {
-        for i in 0..<12 {
+    private func makeIguanas(_ parent: SCNNode) {
+        for _ in 0..<12 {
             let mat = lambert(UIColor(red: 0.35, green: 0.56, blue: 0.24, alpha: 1))
             let grp = SCNNode()
             let body = SCNNode(geometry: SCNBox(width: 0.34, height: 0.22, length: 0.9, chamferRadius: 0.04))
@@ -791,12 +990,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             tail.eulerAngles.x = -.pi / 2
             tail.position = SCNVector3(0, 0.14, 0.9)
             grp.addChildNode(tail)
-            scene.rootNode.addChildNode(grp)
-            let igS = 400 + Float(i) * (Self.total - 700) / 12 + rng.next() * 80
-            let dir: Float = rng.next() < 0.5 ? 1 : -1
-            var ig = Iguana(s: igS, x: -dir * (Self.roadHalf + 1.5), dir: dir, node: grp)
-            positionIguana(&ig)
-            iguanas.append(ig)
+            parent.addChildNode(grp)
+            iguanas.append(Iguana(node: grp))
         }
     }
 
@@ -837,7 +1032,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return grp
     }
 
-    private func makeTraffic() {
+    private func makeTraffic(_ parent: SCNNode) {
         let colors: [UIColor] = [
             UIColor(white: 0.85, alpha: 1),
             UIColor(red: 0.25, green: 0.42, blue: 0.85, alpha: 1),
@@ -849,10 +1044,86 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         ]
         for i in 0..<7 {
             let node = trafficCar(colors[i % colors.count])
-            scene.rootNode.addChildNode(node)
-            traffic.append(Traffic(s: 300 + Float(i) * 420 + rng.next() * 150,
-                                   x: i % 2 == 0 ? -1.9 : 1.9,
-                                   v: 11 + rng.next() * 7, node: node))
+            parent.addChildNode(node)
+            traffic.append(Traffic(node: node))
+        }
+    }
+
+    // MARK: - skid marks
+
+    /// A ring buffer of unit quads. Each drift segment reuses a slot by
+    /// transform only — no geometry is rebuilt while driving.
+    private func skidPool(_ parent: SCNNode) {
+        let mat = SCNMaterial()
+        mat.lightingModel = .constant
+        mat.diffuse.contents = UIColor(red: 0.04, green: 0.036, blue: 0.04, alpha: 1)
+        // asphalt is already dark (~0.22), so a timid mark is invisible
+        mat.transparency = 0.7
+        mat.writesToDepthBuffer = false
+        mat.blendMode = .alpha
+        let geo = SCNPlane(width: 1, height: 1)
+        geo.materials = [mat]
+
+        let n = quality.skidSegments * 2      // two rear wheels
+        let container = SCNNode()
+        for _ in 0..<n {
+            let node = SCNNode(geometry: geo)
+            node.castsShadow = false
+            node.isHidden = true
+            node.opacity = 0
+            container.addChildNode(node)
+            skidNodes.append(node)
+        }
+        skidAge = [Float](repeating: -1, count: n)
+        parent.addChildNode(container)
+    }
+
+    private func clearSkids() {
+        for i in 0..<skidNodes.count {
+            skidNodes[i].isHidden = true
+            skidAge[i] = -1
+        }
+        skidCursor = 0
+        lastSkidL = nil
+        lastSkidR = nil
+    }
+
+    private func emitSkidSegment(from a: simd_float3, to b: simd_float3, tan: simd_float3) {
+        let d = b - a
+        // Orient along the road, not along the raw contact-patch delta. While
+        // drifting that delta is dominated by *lateral* travel, which turned the
+        // trail into diagonal slashes; the lateral offset between consecutive
+        // segments is what should show the trail curving.
+        let forward = abs(simd_dot(d, tan))
+        let len = max(forward, 0.35) * 1.18
+        guard len < 40 else { return }
+        let node = skidNodes[skidCursor]
+        let mid = (a + b) * 0.5
+        node.simdPosition = simd_float3(mid.x, mid.y + 0.025, mid.z)
+        // Compose explicitly: pitch the quad flat in its own space, *then* yaw it
+        // about world Y. Setting eulerAngles composes in an order that leaves the
+        // quad skewed rather than lying flat and aligned.
+        let flat = simd_quatf(angle: -.pi / 2, axis: simd_float3(1, 0, 0))
+        let yaw = simd_quatf(angle: atan2(tan.x, -tan.z), axis: simd_float3(0, 1, 0))
+        node.simdOrientation = simd_mul(yaw, flat)
+        node.scale = SCNVector3(0.28, len, 1)
+        node.isHidden = false
+        node.opacity = 1
+        skidAge[skidCursor] = 0
+        skidCursor = (skidCursor + 1) % skidNodes.count
+    }
+
+    private func updateSkids(_ dt: Float) {
+        for i in 0..<skidAge.count where skidAge[i] >= 0 {
+            skidAge[i] += dt
+            let a = skidAge[i]
+            if a >= skidLife {
+                skidAge[i] = -1
+                skidNodes[i].isHidden = true
+            } else if a > skidLife * 0.55 {
+                let f = 1 - (a - skidLife * 0.55) / (skidLife * 0.45)
+                skidNodes[i].opacity = CGFloat(max(0, f))
+            }
         }
     }
 
@@ -900,7 +1171,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         spoiler.position = SCNVector3(0, 0.95, 1.95)
         chassisNode.addChildNode(spoiler)
 
-        // wheels: steer pivot > spin node
         let tireGeo = SCNCylinder(radius: 0.34, height: 0.26)
         tireGeo.materials = [lambert(UIColor(red: 0.08, green: 0.09, blue: 0.1, alpha: 1))]
         let hubGeo = SCNCylinder(radius: 0.18, height: 0.27)
@@ -909,8 +1179,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         hubMat.diffuse.contents = UIColor(red: 0.84, green: 0.71, blue: 0.29, alpha: 1)
         hubMat.specular.contents = UIColor.white
         hubGeo.materials = [hubMat]
-        for o in [(x: Float(-0.85), z: Float(-1.28), front: true), (x: Float(0.85), z: Float(-1.28), front: true),
-                  (x: Float(-0.85), z: Float(1.28), front: false), (x: Float(0.85), z: Float(1.28), front: false)] {
+        for o in [(x: Float(-0.85), z: Float(-1.28), front: true),
+                  (x: Float(0.85), z: Float(-1.28), front: true),
+                  (x: Float(-0.85), z: Float(1.28), front: false),
+                  (x: Float(0.85), z: Float(1.28), front: false)] {
             let steer = SCNNode()
             steer.position = SCNVector3(o.x, 0.34, o.z)
             let spin = SCNNode()
@@ -926,31 +1198,38 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if o.front { frontWheelNodes.append(steer) }
         }
 
-        // headlights + beams (front is -Z)
-        let hlMat = constant(UIColor(red: 1, green: 0.95, blue: 0.77, alpha: 1))
-        hlMat.emission.contents = UIColor(red: 1, green: 0.95, blue: 0.77, alpha: 1)
-        hlMat.emission.intensity = 2.2
+        // Headlights: emission was 2.2 with a 0.85 bloom threshold, which is
+        // what produced the white blob swallowing the car. Much dimmer now.
+        let hlMat = constant(UIColor(red: 1, green: 0.95, blue: 0.80, alpha: 1))
+        hlMat.emission.contents = UIColor(red: 1, green: 0.94, blue: 0.76, alpha: 1)
+        hlMat.emission.intensity = 0.55
         for xo in [Float(-0.6), Float(0.6)] {
             let hl = SCNNode(geometry: SCNBox(width: 0.32, height: 0.14, length: 0.06, chamferRadius: 0))
             hl.geometry!.materials = [hlMat]
             hl.position = SCNVector3(xo, 0.58, -2.01)
             chassisNode.addChildNode(hl)
-
-            let beamMat = SCNMaterial()
-            beamMat.lightingModel = .constant
-            beamMat.diffuse.contents = UIColor(red: 1, green: 0.93, blue: 0.69, alpha: 1)
-            beamMat.transparency = 0.09
-            beamMat.blendMode = .add
-            beamMat.writesToDepthBuffer = false
-            beamMat.isDoubleSided = true
-            let beam = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 1.5, height: 11))
-            beam.geometry!.materials = [beamMat]
-            beam.eulerAngles.x = .pi / 2        // wide end forward (-Z)
-            beam.position = SCNVector3(xo, 0.55, -7.5)
-            chassisNode.addChildNode(beam)
         }
 
-        // brake lights
+        // Headlights used to throw two additive cones forward. From a chase
+        // camera you look straight into them, which is what put a white blob
+        // over the car. Replaced with a soft pool of light lying on the asphalt
+        // ahead — reads as headlights, never occludes anything.
+        let poolMat = SCNMaterial()
+        poolMat.lightingModel = .constant
+        poolMat.diffuse.contents = Textures.softCircle()
+        poolMat.multiply.contents = UIColor(red: 1, green: 0.93, blue: 0.72, alpha: 1)
+        poolMat.blendMode = .add
+        poolMat.writesToDepthBuffer = false
+        poolMat.transparency = 0.24
+        let pool = SCNNode(geometry: SCNPlane(width: 7, height: 16))
+        pool.geometry!.materials = [poolMat]
+        pool.eulerAngles.x = -.pi / 2
+        pool.position = SCNVector3(0, 0.045, -9.5)
+        pool.castsShadow = false
+        // on playerNode, not the chassis, so it stays flat on the road while the
+        // body pitches and rolls
+        playerNode.addChildNode(pool)
+
         brakeLightMaterial = constant(UIColor(red: 0.33, green: 0.04, blue: 0.04, alpha: 1))
         for xo in [Float(-0.62), Float(0.62)] {
             let bl = SCNNode(geometry: SCNBox(width: 0.4, height: 0.13, length: 0.06, chamferRadius: 0))
@@ -959,38 +1238,41 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             chassisNode.addChildNode(bl)
         }
 
-        // nitro flames (rear, +Z)
         for xo in [Float(-0.45), Float(0.45)] {
             let fm = SCNMaterial()
             fm.lightingModel = .constant
             fm.diffuse.contents = UIColor(red: 0.35, green: 0.84, blue: 1, alpha: 1)
             fm.emission.contents = UIColor(red: 0.35, green: 0.84, blue: 1, alpha: 1)
-            fm.emission.intensity = 2.6
+            fm.emission.intensity = 1.6
             fm.blendMode = .add
             fm.writesToDepthBuffer = false
             let flame = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 0.12, height: 1.0))
             flame.geometry!.materials = [fm]
-            flame.eulerAngles.x = -.pi / 2     // point backward
+            flame.eulerAngles.x = -.pi / 2
             flame.position = SCNVector3(xo, 0.36, 2.5)
             flame.isHidden = true
+            flame.castsShadow = false
             chassisNode.addChildNode(flame)
             flameNodes.append(flame)
         }
 
-        // underglow
-        glowMaterial = constant(UIColor(red: 0.07, green: 0.84, blue: 0.76, alpha: 1))
-        glowMaterial.emission.contents = UIColor(red: 0.07, green: 0.84, blue: 0.76, alpha: 1)
-        glowMaterial.emission.intensity = 2.0
+        // Underglow was a flat cyan quad with no falloff, which read as a mat
+        // taped to the road. A radial gradient tinted through `multiply` gives it
+        // an actual glow edge.
+        glowMaterial = SCNMaterial()
+        glowMaterial.lightingModel = .constant
+        glowMaterial.diffuse.contents = Textures.softCircle()
+        glowMaterial.multiply.contents = UIColor(red: 0.07, green: 0.84, blue: 0.76, alpha: 1)
         glowMaterial.blendMode = .add
         glowMaterial.writesToDepthBuffer = false
-        glowMaterial.transparency = 0.4
-        let glow = SCNNode(geometry: SCNPlane(width: 2.6, height: 4.6))
+        glowMaterial.transparency = 0.5
+        let glow = SCNNode(geometry: SCNPlane(width: 3.3, height: 5.6))
         glow.geometry!.materials = [glowMaterial]
         glow.eulerAngles.x = -.pi / 2
         glow.position.y = 0.08
+        glow.castsShadow = false
         chassisNode.addChildNode(glow)
 
-        // soft blob under the car
         let blobMat = constant(UIColor.black)
         blobMat.diffuse.contents = Textures.blobShadow()
         blobMat.transparency = 1
@@ -999,7 +1281,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         blobNode.geometry!.materials = [blobMat]
         blobNode.eulerAngles.x = -.pi / 2
         blobNode.castsShadow = false
-        scene.rootNode.addChildNode(blobNode)
     }
 
     private func particles() {
@@ -1031,12 +1312,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         dustSystem.particleColor = UIColor(red: 0.54, green: 0.48, blue: 0.36, alpha: 0.7)
         dustNode.addParticleSystem(dustSystem)
 
-        // speed streaks: static motes hanging ahead of the car — the camera's
-        // motion blur stretches them into wind streaks at speed
         streakSystem.particleImage = puffImg
         streakSystem.birthRate = 0
-        streakSystem.particleLifeSpan = 1.6
-        streakSystem.particleSize = 0.09
+        streakSystem.particleLifeSpan = 1.2
+        streakSystem.particleSize = 0.07
         streakSystem.particleVelocity = 0
         streakSystem.emitterShape = SCNBox(width: 26, height: 7, length: 50, chamferRadius: 0)
         streakSystem.birthLocation = .volume
@@ -1053,40 +1332,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private func resetGame() {
         s = 4; v = 8; x = 0; xd = 0
         hp = 100; nitro = 60
-        score = 0; styleRun = 0; combo = 0
+        score = 0; styleRun = 0; combo = 0; lastCombo = -1
         topSpeed = 0; holesHit = 0; nearMisses = 0
-        shake = 0; flashT = 0; jolt = 0
+        shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         playTime = 0
+        hudClock = 0
         cd = 3.4; cdLabel = ""
-        for i in 0..<holes.count { holes[i].passed = false; holes[i].hit = false }
-        for i in 0..<piraguas.count {
-            piraguas[i].taken = false
-            piraguas[i].node.isHidden = false
-        }
-        for i in 0..<toolboxes.count {
-            toolboxes[i].taken = false
-            toolboxes[i].node.isHidden = false
-        }
-        for i in 0..<iguanas.count {
-            iguanas[i].stateRaw = 0; iguanas[i].hit = false
-            iguanas[i].x = -iguanas[i].dir * (Self.roadHalf + 1.5)
-            iguanas[i].node.eulerAngles.z = 0
-            positionIguana(&iguanas[i])
-        }
-        for i in 0..<traffic.count {
-            traffic[i].s = 300 + Float(i) * 420 + rng.next() * 150
-            traffic[i].cool = 0; traffic[i].missed = false
-        }
+        fov = Self.baseFov
+        clearSkids()
+        dustSystem.birthRate = 0
+
+        // fresh course every race
+        runSeed = UInt64.random(in: 1..<2147483646)
+        runRng = Lcg(runSeed)
+        layoutHazards()
+
         phase = .countdown
         let (pos, tan, _) = sample(s)
         camPos = pos - tan * 7 + simd_float3(0, 2.6, 0)
         camLook = pos + tan * 8
         cameraNode.simdPosition = camPos
         cameraNode.simdLook(at: camLook, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
-        let (carP, carT, _) = sample(s)
-        playerNode.simdPosition = carP + simd_float3(0, 0.02, 0)
-        playerNode.simdLook(at: carP + carT, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        playerNode.simdPosition = pos + simd_float3(0, 0.02, 0)
+        playerNode.simdLook(at: pos + tan, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        let seed = runSeed
         DispatchQueue.main.async {
             self.state.phase = .countdown
             self.state.paused = false
@@ -1094,6 +1364,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.countLabel = ""
             self.state.newRecordScore = false
             self.state.newRecordTime = false
+            self.state.statSeed = seed
+            self.state.hud = HudSnapshot()
         }
     }
 
@@ -1104,7 +1376,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let timeStr = String(format: "%d:%04.1f", mm, ss)
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
-        // records
+        let medal = Medal.forScore(sc)
         let defaults = UserDefaults.standard
         let newScoreRec = sc > defaults.integer(forKey: "hoyo_bestScore")
         if newScoreRec { defaults.set(sc, forKey: "hoyo_bestScore") }
@@ -1122,6 +1394,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.statTopSpeed = top
             self.state.statHolesHit = hh
             self.state.statNearMisses = nm
+            self.state.statMedal = medal
+            self.state.statFinished = !dead
             self.state.newRecordScore = newScoreRec
             self.state.newRecordTime = newTimeRec
             self.state.refreshRecordLine()
@@ -1133,24 +1407,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         smokeSystem.birthRate = 0
     }
 
-    private func damage(_ amount: Float, _ msg: String?) {
+    /// Collision damage. `grace` hits are ignored while the post-hit invulnerable
+    /// window is open — without it a pothole cluster chain-killed you in a
+    /// single second, which is what made the old balance feel unfair.
+    private func damage(_ amount: Float, _ msg: String?, grace: Bool = true) {
+        if grace && invuln > 0 { return }
+        if grace { invuln = 0.85 }
         hp -= amount
         flashT = 1
         combo = 0
         if let msg = msg {
+            Haptics.shared.crash(intensity: min(1, 0.45 + amount / 40))
             DispatchQueue.main.async {
                 self.state.popup(msg)
                 self.state.combo = 0
-                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
             }
+            lastCombo = 0
         }
         if hp <= 0 { hp = 0; endGame(dead: true) }
-    }
-
-    private func lightHaptic() {
-        DispatchQueue.main.async {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        }
     }
 
     private func popupAsync(_ msg: String) {
@@ -1160,6 +1434,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     // MARK: - per-frame update
 
     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+        guard worldAttached else { return }
         if lastTime < 0 { lastTime = time }
         let dt = Float(min(time - lastTime, 0.033))
         lastTime = time
@@ -1167,7 +1442,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if state.requestStart { state.requestStart = false; sound.start(); resetGame() }
         if state.requestReset { state.requestReset = false; resetGame() }
 
-        // scroll the water sparkle
         if let n = oceanNormal {
             let fx = Float(time * 0.015).truncatingRemainder(dividingBy: 1)
             let scaleM = SCNMatrix4MakeScale(60, 60, 1)
@@ -1196,6 +1470,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if lbl != cdLabel {
                 cdLabel = lbl
                 sound.playBeep(final: lbl == "¡DALE!")
+                Haptics.shared.tap(intensity: lbl == "¡DALE!" ? 0.9 : 0.5,
+                                   sharpness: lbl == "¡DALE!" ? 0.9 : 0.5)
                 DispatchQueue.main.async { self.state.countLabel = lbl }
             }
             if cd <= -0.4 {
@@ -1207,24 +1483,44 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
             return
         case .finished, .dead:
+            updateSkids(dt)
             return
         case .playing:
             break
         }
 
         playTime += Double(dt)
+        if invuln > 0 { invuln = max(0, invuln - dt) }
 
         // ----- physics -----
         let i = Int(simd_clamp(s / Self.step, 0, Float(Self.count - 2)))
         let grade = grades[i]
         let curv = curvs[i]
-        let input = state.input
-        let braking = input.brake
-        let wantNitro = input.nitro && nitro > 0
-        var steer: Float = 0
-        if input.left { steer -= 1 }
-        if input.right { steer += 1 }
-        let drifting = braking && steer != 0 && v > 12
+        var steerIn = state.input.steer
+        var brakeIn = state.input.brake
+        var nitroIn = state.input.nitro
+        if Self.autoplay {
+            // Smoke-test driver, same idea as the web build's `?autoplay`. A PD
+            // controller tracks a weaving lane target so it stays on the asphalt
+            // instead of driving off the mountain, while still sweeping the full
+            // analog steering range and brake-drifting periodically.
+            // The lane controller stays in charge the whole time so the car never
+            // drives off the mountain; brake pulses are what tip it into a drift
+            // (brake + steer), which is what lays the skid marks.
+            let t = Float(playTime)
+            let laneTarget = sin(t * 0.7) * 2.4
+            steerIn = simd_clamp((laneTarget - x) * 0.42 - xd * 0.14, -1, 1)
+            // short pulses only: holding the brake bleeds speed below the drift
+            // threshold and nothing ever slides
+            // short pulses only: holding the brake bleeds speed below the drift
+            // threshold and nothing ever slides
+            brakeIn = t > 5 && t.truncatingRemainder(dividingBy: 6) < 2.0
+            nitroIn = !brakeIn && t.truncatingRemainder(dividingBy: 6) > 3.5
+        }
+        let braking = brakeIn
+        let wantNitro = nitroIn && nitro > 0
+        let steer = simd_clamp(steerIn, -1, 1)
+        let drifting = braking && abs(steer) > 0.28 && v > 12
         let offroad = abs(x) > Self.roadHalf + 0.3
 
         var acc: Float = 9.0 - grade * 9.81 * 4
@@ -1242,7 +1538,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             ? UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1)
             : UIColor(red: 0.33, green: 0.04, blue: 0.04, alpha: 1)
         brakeLightMaterial.emission.contents = UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1)
-        brakeLightMaterial.emission.intensity = braking ? 2.4 : 0
+        brakeLightMaterial.emission.intensity = braking ? 1.6 : 0
         for f in flameNodes {
             f.isHidden = !wantNitro
             if wantNitro { f.scale = SCNVector3(1, 0.7 + Float.random(in: 0...0.9), 1) }
@@ -1265,16 +1561,37 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         score += v * dt * 1.2
 
+        // ----- skid trail -----
+        let (skidPos, skidTan, skidRgt) = sample(s)
+        let contactL = skidPos + skidRgt * (x - 0.85) - skidTan * 1.28
+        let contactR = skidPos + skidRgt * (x + 0.85) - skidTan * 1.28
+        if drifting && !offroad {
+            skidTimer += dt
+            if let l = lastSkidL, let r = lastSkidR, skidTimer >= Self.skidInterval {
+                emitSkidSegment(from: l, to: contactL, tan: skidTan)
+                emitSkidSegment(from: r, to: contactR, tan: skidTan)
+                lastSkidL = contactL; lastSkidR = contactR
+                skidTimer = 0
+            } else if lastSkidL == nil {
+                lastSkidL = contactL; lastSkidR = contactR
+            }
+        } else {
+            lastSkidL = nil; lastSkidR = nil; skidTimer = 0
+        }
+        updateSkids(dt)
+
         // cliff / offroad
         if abs(x) > 8.6 && v > 4 {
             sound.playThunk()
             shake = 1
             v *= 0.3
             x = simd_clamp(x, -3, 3) * 0.3; xd = 0
-            damage(22, "¡AY BENDITO!")
+            damage(14, "¡AY BENDITO!")
         } else if offroad && v > 8 {
             shake = max(shake, 0.25)
-            if Float.random(in: 0...1) < dt * 2.2 { damage(3, nil) }
+            // scrape damage bypasses the grace window: it's small and continuous,
+            // and shouldn't be free just because you clipped a pothole a moment ago
+            if Float.random(in: 0...1) < dt * 2.2 { damage(2, nil, grace: false) }
         }
 
         // potholes
@@ -1284,16 +1601,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let h = holes[hIdx]
             if !h.hit && abs(ds) < 1.8 && abs(h.x - x) < h.r + 0.75 {
                 holes[hIdx].hit = true
-                holesHit += 1
-                v *= 0.62
-                shake = 1.1; jolt = 1
-                sound.playThunk()
-                damage(9 + h.r * 9 + v * 0.18, "¡HOYO!")
-                let (pp, _, rr3) = sample(s)
-                dustNode.simdPosition = pp + rr3 * x + simd_float3(0, 0.3, 0)
-                dustSystem.birthRate = 350
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                    self?.dustSystem.birthRate = 0
+                if invuln <= 0 {
+                    holesHit += 1
+                    v *= 0.62
+                    shake = 1.1; jolt = 1
+                    sound.playThunk()
+                    // was 9 + r*9 + v*0.18 ≈ 25–30 per hit on a 100 HP car
+                    damage(5 + h.r * 5 + v * 0.10, "¡HOYO!")
+                    let (pp, _, rr3) = sample(s)
+                    dustNode.simdPosition = pp + rr3 * x + simd_float3(0, 0.3, 0)
+                    dustSystem.birthRate = 350
+                    dustT = 0.14
                 }
             } else if !h.passed && !h.hit && ds < -2 {
                 holes[hIdx].passed = true
@@ -1301,24 +1619,29 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     nearMisses += 1
                     combo = min(combo + 1, 5)
                     score += Float(40 * combo)
-                    let c = combo
-                    DispatchQueue.main.async { self.state.combo = c }
                     if combo >= 2 { popupAsync("¡CASI! x\(combo) +\(40 * combo)") }
                     else if nearMisses % 3 == 0 { popupAsync("¡CASI! +40") }
                 }
             }
         }
 
-        // toolboxes — el mecánico repairs on the fly
+        // the dust puff used to be cancelled by a stale dispatched timer when two
+        // holes landed close together; it's frame-driven now
+        if dustT > 0 {
+            dustT -= dt
+            if dustT <= 0 { dustSystem.birthRate = 0 }
+        }
+
+        // toolboxes
         for tbi in 0..<toolboxes.count {
             let tb = toolboxes[tbi]
             if !tb.taken && abs(tb.s - s) < 2.4 && abs(tb.x - x) < 1.6 {
                 toolboxes[tbi].taken = true
                 tb.node.isHidden = true
-                hp = min(100, hp + 22)
+                hp = min(100, hp + 26)
                 score += 50
                 sound.playCoqui()
-                lightHaptic()
+                Haptics.shared.tap(intensity: 0.5, sharpness: 0.35)
                 popupAsync("¡MECÁNICO! +VIDA")
             }
         }
@@ -1332,7 +1655,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 nitro = min(100, nitro + 35)
                 score += 100
                 sound.playCoqui()
-                lightHaptic()
+                Haptics.shared.tap(intensity: 0.4, sharpness: 0.7)
                 popupAsync("¡PIRAGUA! +NITRO")
             }
         }
@@ -1354,7 +1677,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 iguanas[gi].node.eulerAngles.z = 2.6
                 shake = max(shake, 0.6)
                 sound.playThunk()
-                damage(8, "¡LA IGUANA!")
+                damage(5, "¡LA IGUANA!")
             }
             if iguanas[gi].stateRaw != 0 { positionIguana(&iguanas[gi]) }
         }
@@ -1364,9 +1687,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             traffic[ti].cool = max(0, traffic[ti].cool - dt)
             traffic[ti].s += traffic[ti].v * dt
             if traffic[ti].s > s + 600 || traffic[ti].s < s - 120 || traffic[ti].s > Self.total - 40 {
-                traffic[ti].s = s + 260 + rng.next() * 320
-                traffic[ti].x = rng.next() < 0.5 ? -1.9 : 1.9
-                traffic[ti].v = 11 + rng.next() * 7
+                traffic[ti].s = s + 260 + runRng.next() * 320
+                traffic[ti].x = runRng.next() < 0.5 ? -1.9 : 1.9
+                traffic[ti].v = 11 + runRng.next() * 7
                 traffic[ti].missed = false; traffic[ti].cool = 0
                 if traffic[ti].s > Self.total - 60 { traffic[ti].s = Self.total * 2 }
             }
@@ -1377,14 +1700,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 v = min(v, tc.v * 0.8)
                 shake = 1.2; jolt = 1
                 sound.playThunk(); sound.playHorn()
-                damage(30, "¡EL TAPÓN!")
+                damage(16, "¡EL TAPÓN!")
             } else if !tc.missed && tDs < -1 && tDs > -8 && abs(tc.x - x) < 3 &&
                       abs(tc.x - x) > 1.7 && v - tc.v > 12 {
                 traffic[ti].missed = true
                 combo = min(combo + 1, 5)
                 score += Float(80 * combo)
-                let c = combo
-                DispatchQueue.main.async { self.state.combo = c }
                 sound.playHorn()
                 popupAsync("¡FUA! +\(80 * combo)")
             }
@@ -1412,24 +1733,28 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if jolt > 0 { jolt = max(0, jolt - dt * 4) }
         chassisNode.eulerAngles = SCNVector3(pitchAng + jolt * 0.08 * sin(tNow * 60), driftYaw, leanRoll)
         chassisNode.position.y = -jolt * 0.12 * abs(sin(tNow * 42))
+        // blink through the grace window so the player can read that it's active
+        chassisNode.opacity = invuln > 0 ? CGFloat(0.45 + 0.55 * abs(sin(tNow * 22))) : 1
 
         wheelSpin += v * dt / 0.34
         for w in spinWheelNodes { w.eulerAngles.x = -wheelSpin }
         for w in frontWheelNodes { w.eulerAngles.y = -steer * 0.35 }
-        glowMaterial.transparency = CGFloat(0.3 + 0.18 * sin(tNow * 9))
+        glowMaterial.transparency = CGFloat(0.42 + 0.14 * sin(tNow * 9))
 
         blobNode.simdPosition = simd_float3(carPos.x, pos.y + 0.03, carPos.z)
         blobNode.eulerAngles = SCNVector3(-.pi / 2, atan2(tan.x, -tan.z), 0)
 
         // ----- camera -----
-        let camDist = 6.4 + v * 0.055
+        // closer and tighter than the original 6.4–10 m / 72° rig, so the car is
+        // a real presence on screen instead of a distant speck
+        let camDist = 4.5 + v * 0.028
         var target = carPos - tan * camDist
-        target.y += 2.2 + v * 0.012
+        target.y += 1.70 + v * 0.009
         target += rgt * (x * 0.1)
         let k = 1 - exp(-dt * 5.5)
         camPos = simd_mix(camPos, target, simd_float3(repeating: k))
-        var lookTarget = carPos + tan * 10
-        lookTarget.y += 1.0
+        var lookTarget = carPos + tan * 12
+        lookTarget.y += 1.15
         camLook = simd_mix(camLook, lookTarget, simd_float3(repeating: k))
         var finalCam = camPos
         let rumble: Float = v > 40 ? (v - 40) * 0.004 : 0
@@ -1442,15 +1767,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         finalCam.y += Float.random(in: -1...1) * rumble
         cameraNode.simdPosition = finalCam
         cameraNode.simdLook(at: camLook, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
-        // subtle camera roll into the carve — sells the speed
         cameraNode.simdOrientation = simd_mul(cameraNode.simdOrientation,
             simd_quatf(angle: leanRoll * 0.45, axis: simd_float3(0, 0, 1)))
-        let targetFov = CGFloat(72 + v * 0.6 + (wantNitro ? 4 : 0))
-        fov += (min(max(targetFov, 72), 116) - fov) * CGFloat(min(1, 4.5 * dt))
+        // A gentler ramp than the original 72 + v*0.6 → 116. Widening to ~100 at
+        // top speed shrank the car right back down at exactly the moment you most
+        // need to read it against the road.
+        let targetFov = Self.baseFov + CGFloat(v * 0.32) + (wantNitro ? 4 : 0)
+        fov += (min(max(targetFov, Self.baseFov), 86) - fov) * CGFloat(min(1, 4.5 * dt))
         cameraNode.camera?.fieldOfView = fov
 
-        // wind streaks fade in past ~90 km/h
-        streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 6) : 0
+        streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0
 
         // ----- audio -----
         sound.engineFreq = Double(55 + v * 3.2 + (wantNitro ? 30 : 0))
@@ -1459,7 +1785,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         sound.skidLevel = drifting ? Double(simd_clamp(v / 140, 0, 0.22)) : 0
         sound.nitroLevel = wantNitro ? 0.05 : 0
 
-        // pickups idle animation
         for q in piraguas where !q.taken {
             q.node.position.y = q.baseY + sin(tNow * 3 + q.s) * 0.16
             q.node.eulerAngles.y += 2.4 * dt
@@ -1471,21 +1796,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // ----- HUD -----
         if flashT > 0 { flashT -= dt * 2.2 }
-        let hud = (speed: Int(v * 3.6), score: Int(score), hp: Double(hp), nitroV: Double(nitro),
-                   prog: Double(s / Self.total), norm: Double(simd_clamp((v - 20) / 30, 0, 1)),
-                   fl: Double(max(0, flashT)), nitroOn: wantNitro, time: playTime)
-        DispatchQueue.main.async {
-            self.state.speedKmh = hud.speed
-            self.state.score = hud.score
-            self.state.hp = hud.hp
-            self.state.nitro = hud.nitroV
-            self.state.progress = hud.prog
-            self.state.speedNorm = hud.norm
-            self.state.flash = hud.fl
-            self.state.nitroActive = hud.nitroOn
-            let mm = Int(hud.time) / 60
-            let ss = hud.time.truncatingRemainder(dividingBy: 60)
-            self.state.timeText = String(format: "%d:%04.1f", mm, ss)
+        // One batched snapshot at ~30 Hz. The old code fired ten separate
+        // @Published writes every frame — sixty dispatches and ~600 SwiftUI
+        // invalidations a second for numbers that change by a pixel.
+        if combo != lastCombo {
+            let c = combo
+            lastCombo = c
+            DispatchQueue.main.async { self.state.combo = c }
+        }
+        hudClock += dt
+        if hudClock >= 1.0 / 30.0 {
+            hudClock = 0
+            let mm = Int(playTime) / 60
+            let ss = playTime.truncatingRemainder(dividingBy: 60)
+            var snap = HudSnapshot()
+            snap.speedKmh = Int(v * 3.6)
+            snap.score = Int(score)
+            snap.hp = Double(hp)
+            snap.nitro = Double(nitro)
+            snap.progress = Double(s / Self.total)
+            snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1))
+            snap.flash = Double(max(0, flashT))
+            snap.nitroActive = wantNitro
+            snap.invuln = invuln > 0
+            snap.timeText = String(format: "%d:%04.1f", mm, ss)
+            DispatchQueue.main.async { self.state.hud = snap }
         }
     }
 }
