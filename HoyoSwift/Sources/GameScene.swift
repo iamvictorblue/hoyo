@@ -95,6 +95,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     static var barrier: Float { roadHalf + shoulderWidth }
     /// Where the tapón sits, as a fraction of the half-width.
     static var trafficLane: Float { roadHalf * 0.42 }
+    /// Flat sea bed the terrain bottoms out on, and the water level just above it.
+    static let seaFloor: Float = -6.5
+    static let seaLevel: Float = -6.0
 
     let scene = SCNScene()
     private let state: GameState
@@ -252,10 +255,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let k = 0.42 + 0.18 * sin(sd / 140 + 1) + 0.10 * sin(sd / 47)
             yy = p.y + d * k + sin(d * 0.22 + sd * 0.013) * min(d * 0.15, 4)
         } else {
-            let k2 = 0.34 + 0.12 * sin(sd / 120 + 2)
+            // Gentler seaward slope (was 0.34) so the ground reaches the water
+            // line much further out — the sea used to lap almost at the road edge
+            // wherever the road ran low.
+            let k2 = 0.20 + 0.07 * sin(sd / 120 + 2)
             yy = p.y - d * k2 + sin(d * 0.19 + sd * 0.017) * min(d * 0.12, 3)
         }
-        return max(yy, -3.6)
+        return max(yy, Self.seaFloor)
     }
 
     // MARK: - geometry helpers
@@ -379,6 +385,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         scene.fogDensityExponent = 1.6
         scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
         scene.background.contents = sky
+        // Same cubemap as the image-based lighting source, so the car's paint and
+        // glass actually reflect the sunset instead of a flat specular dot. Only
+        // the physicallyBased materials sample it.
+        scene.lightingEnvironment.contents = sky
+        scene.lightingEnvironment.intensity = 0.85
         scene.rootNode.addChildNode(world)
         worldAttached = true
     }
@@ -455,7 +466,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         plane.materials = [m]
         let node = SCNNode(geometry: plane)
         node.eulerAngles.x = -.pi / 2
-        node.position = SCNVector3(0, -3, -1600)
+        node.position = SCNVector3(0, Self.seaLevel, -1600)
         node.castsShadow = false
         parent.addChildNode(node)
     }
@@ -530,8 +541,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let slope = abs(groundY(i, lat + dLat) - groundY(i, lat - dLat)) / (2 * dLat)
 
         let hue = CGFloat(0.30 - n * 0.055)
+        // brightness lifted a little to offset the ~0.88 average of the detail
+        // texture that now multiplies these
         let ui = UIColor(hue: hue, saturation: CGFloat(0.44 + n * 0.20),
-                         brightness: CGFloat(0.26 + n * 0.26), alpha: 1)
+                         brightness: CGFloat(0.30 + n * 0.28), alpha: 1)
         var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
         ui.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
         let green = simd_float3(Float(rr), Float(gg), Float(bb))
@@ -541,16 +554,26 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return simd_mix(green, rock, simd_float3(repeating: rockAmt))
     }
 
+    /// Built once and shared by both terrain sides.
+    private static let groundTexture = Textures.groundDetail()
+    /// Rebuilt pothole meshes reuse this rather than regenerating it every race.
+    private static let holeTexture = Textures.holeDepth()
+
     private func terrain(_ parent: SCNNode) {
         // denser near the road, where you can actually see the silhouette
         // first band hugs the asphalt edge, second sits exactly on the guardrail
         // line so the posts stand on a real terrain vertex rather than floating
         let e = Self.roadHalf - 0.3, b = Self.barrier
-        let latsL: [Float] = [-e, -b, -9.5, -13, -18, -25, -35, -49, -68, -95, -145]
-        let latsR: [Float] = [e, b, 9.5, 13, 18, 25, 35, 49, 68, 95, 145]
+        // Both sides now run far enough out to close the horizon. The old strips
+        // stopped at 145 m, and past that edge was nothing — so on the seaward
+        // side you could see straight over the lip to the ocean plane hundreds of
+        // metres below, which read as the sea leaking into the bottom of frame.
+        let latsL: [Float] = [-e, -b, -9.5, -13, -18, -25, -35, -49, -68, -95, -145, -240]
+        let latsR: [Float] = [e, b, 9.5, 13, 18, 25, 35, 49, 68, 95, 145, 330, 900]
 
         func side(_ lats: [Float]) {
             var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
+            var uvs: [CGPoint] = []
             var rows = 0
             var i = 0
             while i < Self.count {
@@ -559,6 +582,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     let y = j == 0 ? p.y - 0.09 : groundY(i, lat)
                     verts.append(simd_float3(p.x + r.x * lat, y, p.z + r.z * lat))
                     cols.append(terrainColor(i, lat, y))
+                    // planar UVs from (distance along road, lateral offset), so the
+                    // detail texture tiles every 12 m in both directions
+                    uvs.append(CGPoint(x: CGFloat(lat / 12),
+                                       y: CGFloat(Float(i) * Self.step / 12)))
                 }
                 rows += 1
                 i += 2
@@ -573,9 +600,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
             let mat = SCNMaterial()
             mat.lightingModel = .lambert
-            mat.diffuse.contents = UIColor.white       // modulated by vertex colors
+            // detail texture multiplies against the per-vertex colours, which keep
+            // driving hue (grass / rock / sand); the texture only adds grain
+            mat.diffuse.contents = Self.groundTexture
+            mat.diffuse.wrapS = .repeat
+            mat.diffuse.wrapT = .repeat
             let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
-                                                      colors: cols, material: mat))
+                                                      uvs: uvs, colors: cols, material: mat))
             node.castsShadow = false
             parent.addChildNode(node)
         }
@@ -804,7 +835,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             grp.simdLook(at: p + t, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
             parent.addChildNode(grp)
         }
-        arch(6, "¡SALIDA!", UIColor(red: 0.88, green: 0.13, blue: 0.22, alpha: 1))
+        // sits just ahead of the 40 m starting point
+        arch(24, "¡SALIDA!", UIColor(red: 0.88, green: 0.13, blue: 0.22, alpha: 1))
         arch(Self.count - 8, "¡META!", UIColor(red: 0, green: 0.31, blue: 0.63, alpha: 1))
 
         let umbCols: [UIColor] = [.neonPinkUI, .neonGoldUI, .neonTealUI, .sunsetOrangeUI]
@@ -838,7 +870,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private func layoutHazards() {
         holes.removeAll(keepingCapacity: true)
 
-        var hv: [simd_float3] = [], hi_: [Int32] = []
+        var hv: [simd_float3] = [], hi_: [Int32] = [], huv: [CGPoint] = []
         var rv: [simd_float3] = [], ri_: [Int32] = []
         var hn: Int32 = 0, rn2: Int32 = 0
         let seg = 12
@@ -849,12 +881,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let rot = runRng.next() * 6.28
             let sq = 0.75 + runRng.next() * 0.5
             hv.append(simd_float3(c.x, c.y + 0.045, c.z))
+            huv.append(CGPoint(x: 0.5, y: 0.5))
             for k in 0...seg {
                 let a = rot + Float(k) / Float(seg) * 2 * .pi
                 let wob = 1 + 0.18 * sin(a * 3 + rot * 7)
                 let ca = cos(a) * hr * wob, sa = sin(a) * hr * sq * wob
                 hv.append(simd_float3(c.x + rgt.x * ca + tan.x * sa, c.y + 0.045,
                                       c.z + rgt.z * ca + tan.z * sa))
+                // unit-circle UV so the depth gradient maps centre-out regardless
+                // of how the rim is wobbled or squashed
+                huv.append(CGPoint(x: CGFloat(0.5 + 0.5 * cos(a)),
+                                   y: CGFloat(0.5 + 0.5 * sin(a))))
             }
             for k in 0..<seg { hi_.append(contentsOf: [hn, hn + 1 + Int32(k), hn + 2 + Int32(k)]) }
             hn += Int32(seg + 2)
@@ -898,10 +935,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // Rim is much brighter and warmer than before (was 0.34 grey against
         // 0.22 asphalt — invisible at 200 km/h) and slightly emissive so it
         // still reads inside the hillside shadows.
-        let holeMat = constant(UIColor(red: 0.035, green: 0.035, blue: 0.055, alpha: 1))
+        let holeMat = SCNMaterial()
+        holeMat.lightingModel = .constant
+        holeMat.diffuse.contents = Self.holeTexture
         let rimMat = constant(UIColor(red: 0.66, green: 0.62, blue: 0.55, alpha: 1))
         rimMat.emission.contents = UIColor(red: 0.30, green: 0.24, blue: 0.18, alpha: 1)
-        holeNode.geometry = makeGeometry(verts: hv, indices: hi_, material: holeMat)
+        holeNode.geometry = makeGeometry(verts: hv, indices: hi_, uvs: huv, material: holeMat)
         rimNode.geometry = makeGeometry(verts: rv, indices: ri_, material: rimMat)
         holeNode.castsShadow = false
         rimNode.castsShadow = false
@@ -1156,11 +1195,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     // MARK: - the car
 
     private func buildCar() {
+        // automotive paint: metallic flake with a tight highlight, lit by the sky
         let paint = SCNMaterial()
-        paint.lightingModel = .blinn
-        paint.diffuse.contents = UIColor(red: 0.88, green: 0.13, blue: 0.22, alpha: 1)
-        paint.specular.contents = UIColor.white
-        paint.shininess = 0.6
+        paint.lightingModel = .physicallyBased
+        paint.diffuse.contents = UIColor(red: 0.82, green: 0.10, blue: 0.18, alpha: 1)
+        paint.metalness.contents = 0.55
+        paint.roughness.contents = 0.26
 
         let body = SCNNode(geometry: SCNBox(width: 1.8, height: 0.42, length: 4.0, chamferRadius: 0.08))
         body.geometry!.materials = [paint]; body.position.y = 0.5
@@ -1177,10 +1217,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         chassisNode.addChildNode(stripe)
 
         let glass = SCNMaterial()
-        glass.lightingModel = .blinn
-        glass.diffuse.contents = UIColor(red: 0.09, green: 0.11, blue: 0.15, alpha: 1)
-        glass.specular.contents = UIColor(red: 0.67, green: 0.8, blue: 1, alpha: 1)
-        glass.shininess = 0.9
+        glass.lightingModel = .physicallyBased
+        glass.diffuse.contents = UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1)
+        glass.metalness.contents = 0.9
+        glass.roughness.contents = 0.06
         let cabin = SCNNode(geometry: SCNBox(width: 1.55, height: 0.5, length: 1.8, chamferRadius: 0.1))
         cabin.geometry!.materials = [glass]
         cabin.position = SCNVector3(0, 0.96, 0.25)
@@ -1201,9 +1241,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         tireGeo.materials = [lambert(UIColor(red: 0.08, green: 0.09, blue: 0.1, alpha: 1))]
         let hubGeo = SCNCylinder(radius: 0.18, height: 0.27)
         let hubMat = SCNMaterial()
-        hubMat.lightingModel = .blinn
-        hubMat.diffuse.contents = UIColor(red: 0.84, green: 0.71, blue: 0.29, alpha: 1)
-        hubMat.specular.contents = UIColor.white
+        hubMat.lightingModel = .physicallyBased
+        hubMat.diffuse.contents = UIColor(red: 0.86, green: 0.72, blue: 0.30, alpha: 1)
+        hubMat.metalness.contents = 0.95
+        hubMat.roughness.contents = 0.22
         hubGeo.materials = [hubMat]
         for o in [(x: Float(-0.85), z: Float(-1.28), front: true),
                   (x: Float(0.85), z: Float(-1.28), front: true),
@@ -1356,7 +1397,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     // MARK: - game flow
 
     private func resetGame() {
-        s = 4; v = 8; x = 0; xd = 0
+        // Start 40 m in, not 4. The chase camera sits ~6 m behind the car, so at
+        // s = 4 it was positioned behind s = 0 — behind where the road and terrain
+        // meshes begin — and looked off the back edge of the world straight at the
+        // ocean plane a couple of hundred metres below.
+        s = 40; v = 8; x = 0; xd = 0
         hp = 100; nitro = 60
         score = 0; styleRun = 0; combo = 0; lastCombo = -1
         topSpeed = 0; holesHit = 0; nearMisses = 0
@@ -1614,12 +1659,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if abs(x) >= Self.barrier {
             let side: Float = x > 0 ? 1 : -1
             x = side * (Self.barrier - 0.04)
-            xd = -xd * 0.25                 // scrub sideways momentum, don't bounce
+            // Bounce off it: reverse the lateral velocity with a floor, so even a
+            // glancing scrape shoves the car back toward the asphalt instead of
+            // letting you ride the rail.
+            xd = -side * max(abs(xd) * 0.6, 4.5)
             if v > 6 {
-                v *= 0.72
-                shake = max(shake, 0.8)
+                v *= 0.78
+                shake = max(shake, 0.9)
                 sound.playThunk()
-                damage(9, "¡GUARDARRAIL!")
+                damage(9, "¡AY BENDITO!")
             }
         } else if offroad && v > 8 {
             shake = max(shake, 0.25)

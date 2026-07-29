@@ -107,31 +107,117 @@ enum Textures {
         }
     }
 
-    /// Speckled asphalt with hairline cracks, tiled along the road.
+    /// Asphalt: patchy resurfacing, two grades of aggregate, tar seams and
+    /// hairline cracks. 512² — the road fills most of the screen, so it carries
+    /// more of the look than anything else in the scene.
     static func asphalt() -> UIImage {
-        let size = CGSize(width: 256, height: 256)
+        let dim: CGFloat = 512
+        let size = CGSize(width: dim, height: dim)
         return UIGraphicsImageRenderer(size: size).image { ctx in
             let g = ctx.cgContext
-            UIColor(red: 0.20, green: 0.22, blue: 0.24, alpha: 1).setFill()
+            UIColor(red: 0.185, green: 0.20, blue: 0.22, alpha: 1).setFill()
             g.fill(CGRect(origin: .zero, size: size))
-            for _ in 0..<5200 {
-                let v = CGFloat.random(in: 0.16...0.34)
-                UIColor(red: v, green: v + 0.015, blue: v + 0.035,
-                        alpha: .random(in: 0.25...0.75)).setFill()
-                g.fill(CGRect(x: .random(in: 0...255), y: .random(in: 0...255),
-                              width: 1.6, height: 1.6))
+
+            // broad tonal patches — old repairs and different asphalt batches.
+            // Kept low-contrast so the 512 tile doesn't announce itself.
+            for _ in 0..<24 {
+                let v = CGFloat.random(in: -0.03...0.038)
+                UIColor(red: 0.185 + v, green: 0.20 + v, blue: 0.22 + v,
+                        alpha: .random(in: 0.3...0.7)).setFill()
+                g.fill(CGRect(x: .random(in: -40...dim), y: .random(in: -40...dim),
+                              width: .random(in: 70...230), height: .random(in: 60...210)))
             }
-            g.setStrokeColor(UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 0.5).cgColor)
-            g.setLineWidth(1)
-            for _ in 0..<7 {
-                var cx = CGFloat.random(in: 0...255), cy = CGFloat.random(in: 0...255)
+
+            // dark aggregate
+            for _ in 0..<13000 {
+                let v = CGFloat.random(in: 0.12...0.34)
+                UIColor(red: v, green: v + 0.012, blue: v + 0.03,
+                        alpha: .random(in: 0.18...0.7)).setFill()
+                let s = CGFloat.random(in: 1...2.3)
+                g.fill(CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim), width: s, height: s))
+            }
+            // pale stone flecks catching the low sun
+            for _ in 0..<1700 {
+                let v = CGFloat.random(in: 0.36...0.52)
+                UIColor(red: v, green: v, blue: v * 0.97, alpha: .random(in: 0.1...0.34)).setFill()
+                let s = CGFloat.random(in: 1...2.6)
+                g.fillEllipse(in: CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim),
+                                         width: s, height: s))
+            }
+
+            // tar seams — thick, glossy, darker
+            g.setLineCap(.round)
+            for _ in 0..<5 {
+                g.setStrokeColor(UIColor(red: 0.10, green: 0.10, blue: 0.115,
+                                         alpha: .random(in: 0.35...0.6)).cgColor)
+                g.setLineWidth(.random(in: 2.5...5))
+                var cx = CGFloat.random(in: 0...dim), cy = CGFloat.random(in: 0...dim)
                 g.move(to: CGPoint(x: cx, y: cy))
-                for _ in 0..<5 {
-                    cx += .random(in: -23...23); cy += .random(in: 0...30)
+                for _ in 0..<6 {
+                    cx += .random(in: -60...60); cy += .random(in: 20...85)
                     g.addLine(to: CGPoint(x: cx, y: cy))
                 }
                 g.strokePath()
             }
+
+            // hairline cracks
+            for _ in 0..<16 {
+                g.setStrokeColor(UIColor(red: 0.055, green: 0.055, blue: 0.07,
+                                         alpha: .random(in: 0.3...0.6)).cgColor)
+                g.setLineWidth(.random(in: 0.8...1.7))
+                var cx = CGFloat.random(in: 0...dim), cy = CGFloat.random(in: 0...dim)
+                g.move(to: CGPoint(x: cx, y: cy))
+                for _ in 0..<5 {
+                    cx += .random(in: -42...42); cy += .random(in: 0...58)
+                    g.addLine(to: CGPoint(x: cx, y: cy))
+                }
+                g.strokePath()
+            }
+        }
+    }
+
+    /// Near-white clumpy noise, multiplied over the terrain's vertex colours so
+    /// the hillsides read as vegetation rather than smooth gradients.
+    static func groundDetail() -> UIImage {
+        let dim: CGFloat = 256
+        return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
+            let g = ctx.cgContext
+            UIColor(white: 0.97, alpha: 1).setFill()
+            g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
+            // darker clumps
+            for _ in 0..<520 {
+                let v = CGFloat.random(in: 0.62...0.9)
+                UIColor(white: v, alpha: .random(in: 0.25...0.7)).setFill()
+                let r = CGFloat.random(in: 4...36)
+                g.fillEllipse(in: CGRect(x: .random(in: -10...dim), y: .random(in: -10...dim),
+                                         width: r, height: r * .random(in: 0.6...1.4)))
+            }
+            // fine speckle for close-up grain
+            for _ in 0..<3000 {
+                let v = CGFloat.random(in: 0.7...1.0)
+                UIColor(white: v, alpha: .random(in: 0.15...0.45)).setFill()
+                let s = CGFloat.random(in: 1...2.4)
+                g.fill(CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim), width: s, height: s))
+            }
+        }
+    }
+
+    /// Concave-looking pothole interior: near-black at the centre, lifting a
+    /// little toward the lip. A real recess can't be used — the road is a flat
+    /// surface with no hole cut in it, so anything below the road plane gets
+    /// occluded by the road itself.
+    static func holeDepth() -> UIImage {
+        let dim: CGFloat = 128
+        return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
+            let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                  colors: [UIColor(red: 0.015, green: 0.015, blue: 0.025, alpha: 1).cgColor,
+                                           UIColor(red: 0.03, green: 0.028, blue: 0.038, alpha: 1).cgColor,
+                                           UIColor(red: 0.11, green: 0.10, blue: 0.10, alpha: 1).cgColor,
+                                           UIColor(red: 0.20, green: 0.18, blue: 0.16, alpha: 1).cgColor] as CFArray,
+                                  locations: [0, 0.45, 0.82, 1])!
+            ctx.cgContext.drawRadialGradient(grad,
+                startCenter: CGPoint(x: dim / 2, y: dim * 0.44), startRadius: 0,
+                endCenter: CGPoint(x: dim / 2, y: dim / 2), endRadius: dim / 2, options: [])
         }
     }
 
