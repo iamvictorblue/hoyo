@@ -186,7 +186,10 @@ struct HUDView: View {
                     }
                     .allowsHitTesting(false)
 
-                    HStack(spacing: 14) {
+                    HStack(spacing: 12) {
+                        TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold) {
+                            state.input.jumpRequested = true
+                        }
                         HoldButton(symbol: "octagon.fill", tint: .red) { state.input.brake = $0 }
                         HoldButton(symbol: "flame.fill", tint: .neonTeal) { state.input.nitro = $0 }
                     }
@@ -317,6 +320,33 @@ struct TiltHint: View {
     }
 }
 
+/// Momentary circular control — fires once on touch-down. Used for the jump,
+/// which is an impulse rather than something you hold.
+struct TapButton: View {
+    let symbol: String
+    var tint: Color = .white
+    let onTap: () -> Void
+    @State private var pressed = false
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 27, weight: .semibold))
+            .foregroundStyle(pressed ? .white : tint)
+            .frame(width: 76, height: 76)
+            .background(pressed ? Color.neonGold.opacity(0.45) : Color.black.opacity(0.35),
+                        in: Circle())
+            .overlay(Circle().stroke(pressed ? Color.neonGold : tint.opacity(0.5), lineWidth: 2))
+            .shadow(color: pressed ? .neonGold : .clear, radius: 12)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !pressed { pressed = true; onTap() }
+                    }
+                    .onEnded { _ in pressed = false }
+            )
+    }
+}
+
 /// A press-and-hold circular control that reports its pressed state.
 struct HoldButton: View {
     let symbol: String
@@ -328,7 +358,7 @@ struct HoldButton: View {
         Image(systemName: symbol)
             .font(.system(size: 27, weight: .semibold))
             .foregroundStyle(pressed ? .white : tint)
-            .frame(width: 80, height: 80)
+            .frame(width: 76, height: 76)
             .background(pressed ? Color.neonPink.opacity(0.5) : Color.black.opacity(0.35),
                         in: Circle())
             .overlay(Circle().stroke(pressed ? Color.neonPink : tint.opacity(0.5), lineWidth: 2))

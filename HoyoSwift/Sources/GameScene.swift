@@ -84,17 +84,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     static let step: Float = 2
     static let count = 1801
     static let total: Float = Float(count - 1) * 2.0
-    /// 11 m of asphalt, up from 9. A 1.8 m car dodging holes spread across the
-    /// full width needed more room to actually thread the gaps.
-    static let roadHalf: Float = 5.5
+    /// Four lanes of ~3.4 m — 13.6 m of asphalt, up from 11 (and 9 originally).
+    static let roadHalf: Float = 6.8
+    static let laneCount = 4
     /// Dirt shoulder between the asphalt edge and the guardrail — slow and
     /// scrapey, but recoverable.
     static let shoulderWidth: Float = 1.7
     /// Hard boundary. The guardrail posts are drawn exactly here so the limit you
     /// hit is the limit you can see.
     static var barrier: Float { roadHalf + shoulderWidth }
-    /// Where the tapón sits, as a fraction of the half-width.
-    static var trafficLane: Float { roadHalf * 0.42 }
+    /// Centre of each of the four lanes.
+    static var laneCentres: [Float] {
+        let w = roadHalf / Float(laneCount)          // half a lane
+        return [-3 * w, -w, w, 3 * w]
+    }
     /// Flat sea bed the terrain bottoms out on, and the water level just above it.
     static let seaFloor: Float = -6.5
     static let seaLevel: Float = -6.0
@@ -162,6 +165,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private struct Traffic {
         var s: Float = 0, x: Float = 0, v: Float = 0; var node: SCNNode
         var cool: Float = 0; var missed = false
+        /// Lateral velocity while being shoved aside, and the yaw it picks up.
+        var vx: Float = 0, spin: Float = 0
+        var clearedByJump = false
     }
     private var traffic: [Traffic] = []
 
@@ -177,6 +183,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var streakSystem = SCNParticleSystem()
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
     private var invuln: Float = 0
+    // jump
+    private var jumpY: Float = 0        // height above the road
+    private var jumpVel: Float = 0
+    private var jumpCool: Float = 0
+    private var airborne: Bool { jumpY > 0.02 }
+    private static let gravity: Float = 26
+    private static let jumpImpulse: Float = 8.4
     private var dustT: Float = 0
     private var sparkT: Float = 0
     private var rumbleHapticT: Float = 0
@@ -577,6 +590,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             parent.addChildNode(node)
         }
         ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dash: 8)
+        // white dashed dividers splitting each side into two lanes
+        let mid = Self.roadHalf / 2
+        ribbon(-mid - 0.11, -mid + 0.11, UIColor(white: 0.8, alpha: 1), dash: 8)
+        ribbon(mid - 0.11, mid + 0.11, UIColor(white: 0.8, alpha: 1), dash: 8)
         let edgeOuter = Self.roadHalf - 0.18, edgeInner = Self.roadHalf - 0.4
         ribbon(-edgeOuter, -edgeInner, UIColor(white: 0.83, alpha: 1), dash: 0)
         ribbon(edgeInner, edgeOuter, UIColor(white: 0.83, alpha: 1), dash: 0)
@@ -1177,7 +1194,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         for i in 0..<traffic.count {
             traffic[i].s = 300 + Float(i) * 420 + runRng.next() * 150
-            traffic[i].x = runRng.next() < 0.5 ? -Self.trafficLane : Self.trafficLane
+            traffic[i].x = Self.laneCentres[Int(runRng.next() * 4) % 4]
             traffic[i].v = 11 + runRng.next() * 7
             traffic[i].cool = 0
             traffic[i].missed = false
@@ -1617,6 +1634,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         score = 0; styleRun = 0; combo = 0; lastCombo = -1
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
+        jumpY = 0; jumpVel = 0; jumpCool = 0
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         playTime = 0
         hudClock = 0
@@ -1833,8 +1851,47 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if wantNitro { f.scale = SCNVector3(1, 0.7 + Float.random(in: 0...0.9), 1) }
         }
 
-        let targetXd = steer * simd_clamp(4 + v * 0.30, 0, 16) * (drifting ? 1.35 : 1)
-        let grip: Float = drifting ? 3.2 : 6.5
+        // ----- jump -----
+        if jumpCool > 0 { jumpCool = max(0, jumpCool - dt) }
+        var jumpFired = false
+        if state.input.jumpRequested {
+            state.input.jumpRequested = false
+            if !airborne && jumpCool <= 0 && v > 6 {
+                jumpVel = Self.jumpImpulse
+                jumpCool = 0.35
+                jumpFired = true
+                sound.playJump()
+                Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
+            }
+        }
+        if Self.autoplay && !airborne && jumpCool <= 0 && v > 20 {
+            // smoke-test driver hops periodically so the mechanic gets exercised
+            let t = Float(playTime)
+            if t > 6 && t.truncatingRemainder(dividingBy: 4) < dt * 1.5 {
+                jumpVel = Self.jumpImpulse; jumpCool = 0.35; jumpFired = true; sound.playJump()
+            }
+        }
+        _ = jumpFired
+        if airborne || jumpVel > 0 {
+            jumpVel -= Self.gravity * dt
+            jumpY += jumpVel * dt
+            if jumpY <= 0 {
+                // landing
+                jumpY = 0; jumpVel = 0
+                shake = max(shake, 0.55)
+                sound.playThunk()
+                Haptics.shared.crash(intensity: 0.55)
+                let (lp, _, lr) = sample(s)
+                dustNode.simdPosition = lp + lr * x + simd_float3(0, 0.25, 0)
+                dustSystem.birthRate = 260
+                dustT = 0.16
+            }
+        }
+
+        // steering authority drops off the ground — you commit to a line mid-air
+        let airFactor: Float = airborne ? 0.34 : 1
+        let targetXd = steer * simd_clamp(4 + v * 0.30, 0, 19) * (drifting ? 1.35 : 1) * airFactor
+        let grip: Float = (drifting ? 3.2 : 6.5) * (airborne ? 0.4 : 1)
         xd += (targetXd - xd) * min(1, grip * dt)
         xd += -curv * v * v * dt * (drifting ? 0.45 : 0.35)
         x += xd * dt
@@ -1905,7 +1962,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let h = holes[hIdx]
             if !h.hit && abs(ds) < 1.8 && abs(h.x - x) < h.r + 0.75 {
                 holes[hIdx].hit = true
-                if invuln <= 0 {
+                // flying over a hoyo is the whole point of being able to jump
+                if airborne {
+                    nearMisses += 1
+                    combo = min(combo + 1, 5)
+                    score += Float(60 * combo)
+                    popupAsync("¡VOLANDO! +\(60 * combo)")
+                } else if invuln <= 0 {
                     holesHit += 1
                     v *= 0.62
                     shake = 1.1; jolt = 1
@@ -1994,26 +2057,68 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         for ti in 0..<traffic.count {
             traffic[ti].cool = max(0, traffic[ti].cool - dt)
             traffic[ti].s += traffic[ti].v * dt
+            // being shoved: slide sideways, yaw with it, then settle
+            if abs(traffic[ti].vx) > 0.01 {
+                traffic[ti].x += traffic[ti].vx * dt
+                traffic[ti].spin += traffic[ti].vx * dt * 0.5
+                traffic[ti].vx *= exp(-dt * 1.6)
+                if abs(traffic[ti].x) > Self.barrier - 0.5 {
+                    // shunted off the road entirely — recycle it
+                    traffic[ti].s = Self.total * 3
+                }
+            } else if abs(traffic[ti].spin) > 0.001 {
+                traffic[ti].spin *= exp(-dt * 2.2)
+            }
             if traffic[ti].s > s + 600 || traffic[ti].s < s - 120 || traffic[ti].s > Self.total - 40 {
                 // el tapón is a town problem: cars bunch up tight through the
                 // pueblo and thin out on the mountain and the coastal run-in
                 let w = Self.regionWeights(s / Self.total)
                 let gap = w.x * 300 + w.y * 130 + w.z * 260
                 traffic[ti].s = s + gap * (0.7 + runRng.next() * 0.9)
-                traffic[ti].x = runRng.next() < 0.5 ? -Self.trafficLane : Self.trafficLane
+                traffic[ti].x = Self.laneCentres[Int(runRng.next() * 4) % 4]
                 // and it crawls slower in town
                 traffic[ti].v = (w.y > 0.5 ? 8 : 11) + runRng.next() * 7
                 traffic[ti].missed = false; traffic[ti].cool = 0
+                traffic[ti].vx = 0; traffic[ti].spin = 0
+                traffic[ti].clearedByJump = false
                 if traffic[ti].s > Self.total - 60 { traffic[ti].s = Self.total * 2 }
             }
             let tc = traffic[ti]
             let tDs = tc.s - s
             if tc.cool <= 0 && abs(tDs) < 3.2 && abs(tc.x - x) < 1.7 {
-                traffic[ti].cool = 2
-                v = min(v, tc.v * 0.8)
-                shake = 1.2; jolt = 1
-                sound.playThunk(); sound.playHorn()
-                damage(16, "¡EL TAPÓN!")
+                let closing = v - tc.v
+                if jumpY > 0.85 {
+                    // sailed clean over the roof
+                    if !tc.clearedByJump {
+                        traffic[ti].clearedByJump = true
+                        combo = min(combo + 1, 5)
+                        score += Float(150 * combo)
+                        sound.playHorn()
+                        popupAsync("¡POR ENCIMA! +\(150 * combo)")
+                    }
+                } else if closing > 16 {
+                    // hit it hard enough to shove it out of the lane rather than
+                    // bounce off it — the tapón is traffic, not a wall
+                    traffic[ti].cool = 1.2
+                    let side: Float = tc.x >= x ? 1 : -1
+                    traffic[ti].vx = side * (5.5 + closing * 0.14)
+                    traffic[ti].v *= 0.86
+                    v *= 0.9
+                    shake = max(shake, 0.85); jolt = 0.7
+                    sound.playThunk(); sound.playHorn()
+                    let (cp, _, cr) = sample(s)
+                    sparkNode.simdPosition = cp + cr * x + simd_float3(0, 0.55, 0)
+                    sparkSystem.birthRate = 700
+                    sparkT = 0.1
+                    score += 120
+                    damage(6, "¡QUÍTATE!")
+                } else {
+                    traffic[ti].cool = 2
+                    v = min(v, tc.v * 0.8)
+                    shake = 1.2; jolt = 1
+                    sound.playThunk(); sound.playHorn()
+                    damage(16, "¡EL TAPÓN!")
+                }
             } else if !tc.missed && tDs < -1 && tDs > -8 && abs(tc.x - x) < 3 &&
                       abs(tc.x - x) > 1.7 && v - tc.v > 12 {
                 traffic[ti].missed = true
@@ -2028,6 +2133,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 tc.node.simdPosition = pp + rr4 * tc.x
                 tc.node.simdLook(at: tc.node.simdPosition + tt,
                                  up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+                if abs(tc.spin) > 0.001 {
+                    tc.node.simdOrientation = simd_mul(tc.node.simdOrientation,
+                        simd_quatf(angle: tc.spin, axis: simd_float3(0, 1, 0)))
+                }
             } else { tc.node.isHidden = true }
         }
 
@@ -2035,14 +2144,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // ----- place the car -----
         let (pos, tan, rgt) = sample(s)
-        let carPos = pos + rgt * x + simd_float3(0, 0.02, 0)
+        let groundPos = pos + rgt * x + simd_float3(0, 0.02, 0)
+        let carPos = groundPos + simd_float3(0, jumpY, 0)
         playerNode.simdPosition = carPos
         playerNode.simdLook(at: carPos + tan, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
 
         let tNow = Float(time)
         leanRoll += ((-steer * 0.09 - xd * 0.012) - leanRoll) * min(1, 8 * dt)
         driftYaw += ((-xd * 0.03 - (drifting ? steer * 0.5 : 0)) - driftYaw) * min(1, 6 * dt)
-        pitchAng += ((braking ? 0.05 : (wantNitro ? -0.035 : 0)) - pitchAng) * min(1, 6 * dt)
+        // nose up as it leaves the ground, nose down on the way back in
+        let airPitch: Float = airborne ? simd_clamp(-jumpVel * 0.030, -0.16, 0.16) : 0
+        pitchAng += ((braking ? 0.05 : (wantNitro ? -0.035 : 0)) + airPitch - pitchAng)
+                  * min(1, 6 * dt)
         if jolt > 0 { jolt = max(0, jolt - dt * 4) }
         chassisNode.eulerAngles = SCNVector3(pitchAng + jolt * 0.08 * sin(tNow * 60), driftYaw, leanRoll)
         chassisNode.position.y = -jolt * 0.12 * abs(sin(tNow * 42))
@@ -2054,8 +2167,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         for w in frontWheelNodes { w.eulerAngles.y = -steer * 0.35 }
         glowMaterial.transparency = CGFloat(0.42 + 0.14 * sin(tNow * 9))
 
-        blobNode.simdPosition = simd_float3(carPos.x, pos.y + 0.03, carPos.z)
+        // shadow stays on the road and shrinks as the car climbs, which is what
+        // actually communicates height
+        blobNode.simdPosition = simd_float3(groundPos.x, pos.y + 0.03, groundPos.z)
         blobNode.eulerAngles = SCNVector3(-.pi / 2, atan2(tan.x, -tan.z), 0)
+        let shadowScale = 1 / (1 + jumpY * 0.42)
+        blobNode.scale = SCNVector3(shadowScale, shadowScale, 1)
+        blobNode.opacity = CGFloat(simd_clamp(1 - jumpY * 0.22, 0.3, 1))
 
         // ----- camera -----
         // closer and tighter than the original 6.4–10 m / 72° rig, so the car is

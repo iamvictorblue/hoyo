@@ -56,6 +56,8 @@ final class GameInput {
     var steer: Float = 0
     var brake = false
     var nitro = false
+    /// Momentary — set by the jump button, cleared by the render loop once used.
+    var jumpRequested = false
 }
 
 /// One frame's worth of HUD numbers. Published as a single value so a frame

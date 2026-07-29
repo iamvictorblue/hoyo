@@ -29,6 +29,7 @@ final class SoundEngine: ObservableObject {
     private var hornBuffer: AVAudioPCMBuffer?
     private var beepBuffer: AVAudioPCMBuffer?
     private var beepHiBuffer: AVAudioPCMBuffer?
+    private var jumpBuffer: AVAudioPCMBuffer?
 
     func start() {
         guard !started else { return }
@@ -97,6 +98,7 @@ final class SoundEngine: ObservableObject {
         hornBuffer = renderHorn()
         beepBuffer = renderBeep(freq: 850, dur: 0.12)
         beepHiBuffer = renderBeep(freq: 1420, dur: 0.3)
+        jumpBuffer = renderJump()
         let bar = renderDembowBar()
 
         do {
@@ -118,6 +120,7 @@ final class SoundEngine: ObservableObject {
     func playCoqui() { if let b = coquiBuffer { fxPlayer.scheduleBuffer(b) } }
     func playThunk() { if let b = thunkBuffer { fxPlayer.scheduleBuffer(b) } }
     func playHorn()  { if let b = hornBuffer { fxPlayer.scheduleBuffer(b) } }
+    func playJump()  { if let b = jumpBuffer { fxPlayer.scheduleBuffer(b) } }
     func playBeep(final: Bool) {
         if let b = final ? beepHiBuffer : beepBuffer { fxPlayer.scheduleBuffer(b) }
     }
@@ -162,6 +165,24 @@ final class SoundEngine: ObservableObject {
             let env = max(0, 1 - t / dur)
             let sq: Double = sin(2 * .pi * freq * t) > 0 ? 1 : -1
             d[i] = Float(sq * env * 0.09)
+        }
+        return buf
+    }
+
+    /// Suspension unloading: a rising filtered-noise whoosh with a soft thump
+    /// under it, so the hop has some weight rather than sounding like a chirp.
+    private func renderJump() -> AVAudioPCMBuffer? {
+        guard let (buf, d, n) = makeBuffer(seconds: 0.3) else { return nil }
+        addSweep(d, n, start: 0, dur: 0.16, f0: 150, f1: 520, amp: 0.20)
+        var bp = 0.0
+        var rng = SystemRandomNumberGenerator()
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            let env = max(0, 1 - t / 0.22)
+            let noise = Double.random(in: -1...1, using: &rng)
+            // sweep the band upward over the hop
+            bp += (0.10 + t * 0.9) * (noise - bp)
+            d[i] += Float(bp * env * env * 0.5)
         }
         return buf
     }
