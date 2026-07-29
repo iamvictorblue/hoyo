@@ -122,7 +122,7 @@ struct HUDView: View {
                         .foregroundStyle(Color.neonTeal)
                         .shadow(color: .neonTeal.opacity(0.8), radius: 10)
                     if state.combo >= 2 {
-                        Text("COMBO x\(state.combo) 🔥")
+                        Text("COMBO x\(state.combo)")
                             .font(.system(size: 14, weight: .heavy))
                             .foregroundStyle(Color.sunsetOrange)
                             .shadow(color: .sunsetOrange.opacity(0.8), radius: 8)
@@ -148,8 +148,8 @@ struct HUDView: View {
             HStack {
                 Spacer()
                 HStack(spacing: 8) {
-                    IconButton("⏸") { state.paused = true }
-                    IconButton(state.musicOn ? "🎵" : "🔇") {
+                    IconButton("pause.fill") { state.paused = true }
+                    IconButton(state.musicOn ? "speaker.wave.2.fill" : "speaker.slash.fill") {
                         state.musicOn.toggle()
                         sound.setMusic(on: state.musicOn)
                     }
@@ -187,8 +187,8 @@ struct HUDView: View {
                     .allowsHitTesting(false)
 
                     HStack(spacing: 14) {
-                        HoldButton(label: "🛑", tint: .red) { state.input.brake = $0 }
-                        HoldButton(label: "🔥", tint: .neonTeal) { state.input.nitro = $0 }
+                        HoldButton(symbol: "octagon.fill", tint: .red) { state.input.brake = $0 }
+                        HoldButton(symbol: "flame.fill", tint: .neonTeal) { state.input.nitro = $0 }
                     }
                 }
             }
@@ -201,18 +201,19 @@ struct HUDView: View {
 // MARK: - components
 
 struct IconButton: View {
-    let glyph: String
+    let symbol: String
     let action: () -> Void
 
-    init(_ glyph: String, action: @escaping () -> Void) {
-        self.glyph = glyph
+    init(_ symbol: String, action: @escaping () -> Void) {
+        self.symbol = symbol
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
-            Text(glyph)
-                .font(.system(size: 18))
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
                 .frame(width: 42, height: 42)
                 .background(.black.opacity(0.35), in: Circle())
                 .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
@@ -270,11 +271,11 @@ struct SteerPad: View {
                 .frame(width: 2, height: 24)
 
             HStack {
-                Text("◀")
+                Image(systemName: "arrowtriangle.left.fill")
                 Spacer()
-                Text("▶")
+                Image(systemName: "arrowtriangle.right.fill")
             }
-            .font(.system(size: 15, weight: .black))
+            .font(.system(size: 13))
             .foregroundStyle(.white.opacity(0.45))
             .padding(.horizontal, 14)
 
@@ -318,15 +319,15 @@ struct TiltHint: View {
 
 /// A press-and-hold circular control that reports its pressed state.
 struct HoldButton: View {
-    let label: String
+    let symbol: String
     var tint: Color = .white
     let onPress: (Bool) -> Void
     @State private var pressed = false
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 30, weight: .black))
-            .foregroundStyle(.white)
+        Image(systemName: symbol)
+            .font(.system(size: 27, weight: .semibold))
+            .foregroundStyle(pressed ? .white : tint)
             .frame(width: 80, height: 80)
             .background(pressed ? Color.neonPink.opacity(0.5) : Color.black.opacity(0.35),
                         in: Circle())
@@ -470,7 +471,14 @@ struct PauseOverlay: View {
                     .foregroundStyle(.white)
                     .shadow(color: .neonPink, radius: 18)
 
-                SteerModePicker(state: state, tilt: tilt)
+                // the only place controls are switched, now that the title screen
+                // is stripped back — so it needs a label
+                VStack(spacing: 8) {
+                    Text("CONTROL")
+                        .font(.system(size: 10, weight: .heavy)).tracking(4)
+                        .foregroundStyle(.white.opacity(0.45))
+                    SteerModePicker(state: state, tilt: tilt)
+                }
 
                 HStack(spacing: 18) {
                     CapsuleButton("SEGUIR", color: .neonTeal) { state.paused = false }
@@ -522,43 +530,36 @@ struct IntroOverlay: View {
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
 
-            VStack(spacing: 8) {
+            VStack(spacing: 0) {
                 Text("¡HOYO!")
-                    .font(.system(size: 68, weight: .black, design: .rounded))
+                    .font(.system(size: 82, weight: .black, design: .rounded))
                     .italic()
                     .foregroundStyle(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold, .neonTeal],
                                                     startPoint: .leading, endPoint: .trailing))
                     .shadow(color: .black.opacity(0.7), radius: 10, y: 3)
-                    .shadow(color: .neonPink.opacity(0.6), radius: 18)
-                Text("CARRERA CUESTA ABAJO · ESQUIVA LOS HOYOS DE PR")
-                    .font(.system(size: 14, weight: .semibold))
-                    .tracking(2)
+                    .shadow(color: .neonPink.opacity(0.6), radius: 22)
+
+                Text("CARRERA CUESTA ABAJO POR PUERTO RICO")
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(5)
                     .foregroundStyle(Color.creamText)
-                    .shadow(color: .black.opacity(0.8), radius: 4)
-
-                HStack(spacing: 22) {
-                    legend("◀▶", "guía")
-                    legend("🔥", "nitro · 🍧 recarga")
-                    legend("🛑", "freno · +guía = drift")
-                    legend("🧰", "repara")
-                }
-                .padding(.top, 10)
-
-                Text("LA CORDILLERA  ·  EL PUEBLO  ·  LA COSTA")
-                    .font(.system(size: 11, weight: .heavy)).tracking(3)
-                    .foregroundStyle(Color.neonTeal.opacity(0.9))
                     .shadow(color: .black.opacity(0.8), radius: 4)
                     .padding(.top, 6)
 
-                SteerModePicker(state: state, tilt: tilt)
-                    .padding(.top, 12)
+                // The one thing a new player can't discover on their own.
+                Text("FRENO + GUÍA = DRIFT")
+                    .font(.system(size: 11, weight: .heavy))
+                    .tracking(3)
+                    .foregroundStyle(.white.opacity(0.42))
+                    .padding(.top, 20)
 
                 if !state.recordLine.isEmpty {
                     Text(state.recordLine)
-                        .font(.system(size: 14, weight: .bold))
+                        .font(.system(size: 13, weight: .bold))
+                        .tracking(1)
                         .foregroundStyle(Color.neonGold)
-                        .shadow(color: .neonGold.opacity(0.6), radius: 8)
-                        .padding(.top, 8)
+                        .shadow(color: .neonGold.opacity(0.5), radius: 8)
+                        .padding(.top, 10)
                 }
 
                 if state.sceneReady {
@@ -570,28 +571,18 @@ struct IntroOverlay: View {
                             .font(.system(size: 19, weight: .black))
                             .tracking(3)
                             .foregroundStyle(.white)
-                            .padding(.vertical, 13).padding(.horizontal, 36)
+                            .padding(.vertical, 14).padding(.horizontal, 38)
                             .background(.black.opacity(0.35), in: Capsule())
                             .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
                             .shadow(color: .neonPink.opacity(0.6), radius: 14)
                     }
-                    .padding(.top, 16)
+                    .padding(.top, 26)
                 } else {
                     LoadingLabel()
-                        .padding(.top, 16)
+                        .padding(.top, 26)
                 }
             }
         }
-    }
-
-    private func legend(_ key: String, _ text: String) -> some View {
-        VStack(spacing: 3) {
-            Text(key).font(.system(size: 15, weight: .black))
-                .foregroundStyle(Color.neonTeal)
-            Text(text).font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color(red: 0.91, green: 0.87, blue: 1.0))
-        }
-        .shadow(color: .black.opacity(0.8), radius: 4)
     }
 }
 
@@ -635,17 +626,22 @@ struct EndOverlay: View {
                     .foregroundStyle(Color.creamText)
 
                 if state.statMedal != .none {
-                    Text(state.statMedal.label)
-                        .font(.system(size: 26, weight: .black)).tracking(2)
-                        .foregroundStyle(Color.neonGold)
-                        .shadow(color: .neonGold.opacity(0.8), radius: 12)
-                        .padding(.top, 4)
+                    VStack(spacing: 1) {
+                        Text("MEDALLA")
+                            .font(.system(size: 9, weight: .heavy)).tracking(4)
+                            .foregroundStyle(.white.opacity(0.45))
+                        Text(state.statMedal.label)
+                            .font(.system(size: 26, weight: .black)).tracking(3)
+                            .foregroundStyle(medalColor)
+                            .shadow(color: medalColor.opacity(0.8), radius: 12)
+                    }
+                    .padding(.top, 6)
                 }
 
                 if state.newRecordScore || state.newRecordTime {
                     VStack(spacing: 2) {
-                        if state.newRecordScore { Text("★ ¡NUEVO RÉCORD DE PUNTOS! ★") }
-                        if state.newRecordTime { Text("★ ¡MEJOR TIEMPO! ★") }
+                        if state.newRecordScore { Text("¡NUEVO RÉCORD DE PUNTOS!") }
+                        if state.newRecordTime { Text("¡MEJOR TIEMPO!") }
                     }
                     .font(.system(size: 15, weight: .black))
                     .foregroundStyle(Color.neonTeal)
@@ -674,6 +670,15 @@ struct EndOverlay: View {
                 }
                 .padding(.top, 12)
             }
+        }
+    }
+
+    private var medalColor: Color {
+        switch state.statMedal {
+        case .gold:   return .neonGold
+        case .silver: return Color(white: 0.84)
+        case .bronze: return Color(red: 0.80, green: 0.52, blue: 0.26)
+        case .none:   return .clear
         }
     }
 

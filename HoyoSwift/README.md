@@ -66,7 +66,7 @@ your Apple ID (personal team works), then on the phone accept
 | Control | Action |
 | --- | --- |
 | steering pad (bottom-left) | **analog** steer — how far you slide your thumb is how hard it turns |
-| tilt | optional device-roll steering; pick **INCLINAR** on the intro or in the pause menu (has a sentido/invert toggle) |
+| tilt | optional device-roll steering; pick **INCLINAR** under CONTROL in the pause menu (has a sentido/invert toggle) |
 | 🔥 | nitro (recharges slowly; piraguas 🍧 give +35) |
 | 🛑 | brake — **brake + steer = drift** for style points, and it lays skid marks |
 | 🎵 | music on/off |

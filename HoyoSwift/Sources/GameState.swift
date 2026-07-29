@@ -79,9 +79,9 @@ enum Medal: Int {
     var label: String {
         switch self {
         case .none: return ""
-        case .bronze: return "🥉 BRONCE"
-        case .silver: return "🥈 PLATA"
-        case .gold: return "🥇 ORO"
+        case .bronze: return "BRONCE"
+        case .silver: return "PLATA"
+        case .gold: return "ORO"
         }
     }
 
@@ -161,6 +161,6 @@ final class GameState: ObservableObject {
             let ss = time.truncatingRemainder(dividingBy: 60)
             parts.append(String(format: "MEJOR TIEMPO %d:%04.1f", mm, ss))
         }
-        return parts.isEmpty ? "" : "🏆 " + parts.joined(separator: " · ")
+        return parts.joined(separator: "  ·  ")
     }
 }
