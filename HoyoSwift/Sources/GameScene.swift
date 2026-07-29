@@ -189,6 +189,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var wheelSpin: Float = 0
     private var hudClock: Float = 0
     private var lastCombo = -1
+    private var lastRegion: Region?
+
+    /// Haze colour per region — cool violet high up, dusty warm through town,
+    /// bright sea-peach on the coast.
+    private static let regionFog: [simd_float3] = [
+        simd_float3(0.86, 0.58, 0.62),
+        simd_float3(1.00, 0.66, 0.44),
+        simd_float3(1.00, 0.78, 0.58)
+    ]
 
     /// Camera framing. The old values sat 6.4–10 m back with a 72° lens, which
     /// shrank the car to a few percent of the screen.
@@ -196,6 +205,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// `-autoplay` launch argument: self-driving smoke-test mode.
     static let autoplay = ProcessInfo.processInfo.arguments.contains("-autoplay")
+
+    /// `-startAt <metres>`: drop in partway down the course. Handy for looking at
+    /// the pueblo or the costa without surviving the whole descent first.
+    static let startOffset: Float = {
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-startAt"), i + 1 < args.count,
+           let v = Float(args[i + 1]) {
+            return simd_clamp(v, 40, total - 200)
+        }
+        return 40
+    }()
 
     init(state: GameState, sound: SoundEngine, quality: Quality) {
         self.state = state
@@ -239,6 +259,38 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if dh < -.pi { dh += 2 * .pi }
             curvs.append(dh / (2 * Self.step))
         }
+    }
+
+    // MARK: - regions
+
+    private static func smoothStep(_ e0: Float, _ e1: Float, _ x: Float) -> Float {
+        let t = simd_clamp((x - e0) / (e1 - e0), 0, 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Blend weights for (cordillera, pueblo, costa) at a course fraction. The
+    /// crossfade is deliberately wide — hard region seams look like a mistake.
+    private static func regionWeights(_ p: Float) -> simd_float3 {
+        let fade: Float = 0.055                       // ~200 m either side
+        let pueblo = Region.pueblo.span.lo, costa = Region.costa.span.lo
+        let a = 1 - smoothStep(pueblo - fade, pueblo + fade, p)
+        let c = smoothStep(costa - fade, costa + fade, p)
+        return simd_float3(a, max(0, 1 - a - c), c)
+    }
+
+    /// A world-build index drawn from inside one region's span.
+    private func indexIn(_ region: Region, _ rng: inout Lcg, inset: Float = 0.01) -> Int {
+        let s = region.span
+        let f = (s.lo + inset) + rng.next() * max(0.01, (s.hi - inset) - (s.lo + inset))
+        return min(Self.count - 4, max(4, Int(f * Float(Self.count))))
+    }
+
+    /// Picks a region from three weights.
+    private func pickRegion(_ rng: inout Lcg, _ w: simd_float3) -> Region {
+        let r = rng.next() * (w.x + w.y + w.z)
+        if r < w.x { return .cordillera }
+        if r < w.x + w.y { return .pueblo }
+        return .costa
     }
 
     private func sample(_ dist: Float) -> (pos: simd_float3, tan: simd_float3, rgt: simd_float3) {
@@ -552,17 +604,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let dLat: Float = 1.5
         let slope = abs(groundY(i, lat + dLat) - groundY(i, lat - dLat)) / (2 * dLat)
 
-        let hue = CGFloat(0.30 - n * 0.055)
-        // brightness lifted a little to offset the ~0.88 average of the detail
-        // texture that now multiplies these
-        let ui = UIColor(hue: hue, saturation: CGFloat(0.44 + n * 0.20),
-                         brightness: CGFloat(0.30 + n * 0.28), alpha: 1)
+        // Ground tone per region: deep wet green up in the cordillera, dry and
+        // yellowed through the pueblo, pale and sun-bleached down on the costa.
+        let w = Self.regionWeights(sd / Self.total)
+        let hue = CGFloat(w.x * 0.325 + w.y * 0.215 + w.z * 0.275) - CGFloat(n * 0.05)
+        let sat = CGFloat(w.x * 0.56 + w.y * 0.44 + w.z * 0.36) + CGFloat(n * 0.16)
+        let bri = CGFloat(w.x * 0.27 + w.y * 0.34 + w.z * 0.40) + CGFloat(n * 0.26)
+        let ui = UIColor(hue: hue, saturation: sat, brightness: bri, alpha: 1)
         var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
         ui.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
         let green = simd_float3(Float(rr), Float(gg), Float(bb))
 
         let rock = simd_float3(0.40, 0.36, 0.32) * (0.80 + n * 0.42)
-        let rockAmt = simd_clamp((slope - 0.55) / 0.9, 0, 0.82)
+        // the cordillera is the rocky one — bare stone shows on gentler slopes there
+        let rockThreshold = w.x * 0.42 + w.y * 0.62 + w.z * 0.78
+        let rockAmt = simd_clamp((slope - rockThreshold) / 0.9, 0, 0.82)
         return simd_mix(green, rock, simd_float3(repeating: rockAmt))
     }
 
@@ -682,9 +738,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let palmContainer = SCNNode()
         let template = palmTemplate()
         var placed = 0
-        while placed < 120 && guard_ < 3000 {
+        while placed < 130 && guard_ < 3000 {
             guard_ += 1
-            let pi = 20 + Int(worldRng.next() * Float(Self.count - 60))
+            // palms belong to the coast, with a scattering inland
+            let pi = indexIn(pickRegion(&worldRng, simd_float3(0.22, 0.16, 0.62)), &worldRng)
             let lat = (worldRng.next() < 0.55 ? 1 : -1) * (Self.barrier + 1.2 + worldRng.next() * 45)
             let gy = groundY(pi, lat)
             if gy < -1 { continue }
@@ -704,37 +761,51 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         parent.addChildNode(flatPalms)
 
         // flamboyanes
-        let flamContainer = SCNNode()
-        let trunkMat = lambert(UIColor(red: 0.43, green: 0.32, blue: 0.22, alpha: 1))
+        let flamGroups = (0..<5).map { _ in SCNNode() }
+        // Geometry and materials are shared across a small set of shades. Creating
+        // a fresh canopy material per tree gave the container ~46 distinct
+        // materials, and flattenedClone() silently returns nothing once a
+        // container has that many — which is why the flamboyanes and the casitas
+        // never appeared on screen at all.
+        let flamTrunkGeo = SCNCylinder(radius: 0.27, height: 2.6)
+        flamTrunkGeo.materials = [lambert(UIColor(red: 0.43, green: 0.32, blue: 0.22, alpha: 1))]
+        let canopyGeos: [SCNGeometry] = (0..<5).map { k in
+            let g = SCNSphere(radius: 2.4)
+            g.materials = [lambert(UIColor(hue: CGFloat(0.02 + Double(k) * 0.011),
+                                           saturation: 0.92, brightness: 0.85, alpha: 1))]
+            return g
+        }
         placed = 0; guard_ = 0
-        while placed < 40 && guard_ < 2000 {
+        while placed < 46 && guard_ < 2000 {
             guard_ += 1
-            let fi = 30 + Int(worldRng.next() * Float(Self.count - 80))
+            // flamboyanes line the pueblo and the lower mountain
+            let fi = indexIn(pickRegion(&worldRng, simd_float3(0.34, 0.50, 0.16)), &worldRng)
             let flat = (worldRng.next() < 0.5 ? 1 : -1) * (Self.barrier + 0.8 + worldRng.next() * 26)
             let fgy = groundY(fi, flat)
             if fgy < 0 { continue }
             let fp = pts[fi], fr = rights[fi]
             let tree = SCNNode()
-            let trunk = SCNNode(geometry: SCNCylinder(radius: 0.27, height: 2.6))
-            trunk.geometry!.materials = [trunkMat]
+            let trunk = SCNNode(geometry: flamTrunkGeo)
             trunk.position.y = 1.3
             tree.addChildNode(trunk)
-            let can = SCNNode(geometry: SCNSphere(radius: 2.4))
-            can.geometry!.materials = [lambert(UIColor(hue: CGFloat(0.02 + worldRng.next() * 0.04),
-                saturation: 0.92, brightness: 0.85, alpha: 1))]
+            let shade = Int(worldRng.next() * 5) % 5
+            let can = SCNNode(geometry: canopyGeos[shade])
             can.scale = SCNVector3(1, 0.55, 1)
             can.position.y = 2.9
             tree.addChildNode(can)
             let fsc = 0.8 + worldRng.next() * 0.9
             tree.scale = SCNVector3(fsc, fsc, fsc)
             tree.position = SCNVector3(fp.x + fr.x * flat, fgy - 0.2, fp.z + fr.z * flat)
-            flamContainer.addChildNode(tree)
+            flamGroups[shade].addChildNode(tree)
             placed += 1
         }
-        parent.addChildNode(flamContainer.flattenedClone())
+        for g in flamGroups where g.childNodes.count > 0 {
+            parent.addChildNode(g)      // see the casitas note below
+        }
 
-        // casitas
-        let houseContainer = SCNNode()
+        // casitas — one container per palette colour, so each ends up with just a
+        // base + roof material. Flattening a single mixed container produced
+        // nothing at all, which is why the casitas were never on screen.
         let palette: [UIColor] = [
             UIColor(red: 1, green: 0.42, blue: 0.62, alpha: 1),
             UIColor(red: 0.31, green: 0.8, blue: 0.77, alpha: 1),
@@ -745,35 +816,58 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             UIColor(red: 1, green: 0.7, blue: 0.28, alpha: 1),
             UIColor(red: 0.76, green: 0.96, blue: 0.52, alpha: 1)
         ]
+        // one shared geometry per palette colour, for the same flattening reason
+        let baseGeos: [SCNGeometry] = palette.map { c in
+            let g = SCNBox(width: 4.2, height: 3, length: 5, chamferRadius: 0)
+            g.materials = [lambert(c)]
+            return g
+        }
+        let roofGeos: [SCNGeometry] = palette.map { c in
+            var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
+            c.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
+            let g = SCNPyramid(width: 5.2, height: 1.7, length: 6)
+            g.materials = [lambert(UIColor(red: rr * 0.55, green: gg * 0.55,
+                                           blue: bb * 0.55, alpha: 1))]
+            return g
+        }
+        let houseGroups = (0..<palette.count).map { _ in SCNNode() }
         placed = 0; guard_ = 0
-        while placed < 30 && guard_ < 2000 {
+        // 54 casitas, heavily clustered in the pueblo and pulled in tight to the
+        // road there so it actually reads as driving through a town
+        while placed < 54 && guard_ < 3000 {
             guard_ += 1
-            let hi = 40 + Int(worldRng.next() * Float(Self.count - 120))
-            let hlat = (worldRng.next() < 0.5 ? 1 : -1) * (Self.barrier + 3.5 + worldRng.next() * 9)
+            let hr_ = pickRegion(&worldRng, simd_float3(0.13, 0.74, 0.13))
+            let hi = indexIn(hr_, &worldRng)
+            let spread: Float = hr_ == .pueblo ? 6 : 12
+            let hlat = (worldRng.next() < 0.5 ? 1 : -1)
+                     * (Self.barrier + (hr_ == .pueblo ? 2.0 : 3.5) + worldRng.next() * spread)
             let hgy = groundY(hi, hlat)
             if hgy < 0.5 { continue }
             let hp = pts[hi], hr = rights[hi]
-            let color = palette[Int(worldRng.next() * Float(palette.count)) % palette.count]
+            let ci = Int(worldRng.next() * Float(palette.count)) % palette.count
             let house = SCNNode()
-            let base = SCNNode(geometry: SCNBox(width: 4.2, height: 3, length: 5, chamferRadius: 0))
-            base.geometry!.materials = [lambert(color)]
+            let base = SCNNode(geometry: baseGeos[ci])
             base.position.y = 1.5
             house.addChildNode(base)
-            let roof = SCNNode(geometry: SCNPyramid(width: 5.2, height: 1.7, length: 6))
-            var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
-            color.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
-            roof.geometry!.materials = [lambert(UIColor(red: rr * 0.55, green: gg * 0.55,
-                                                        blue: bb * 0.55, alpha: 1))]
+            let roof = SCNNode(geometry: roofGeos[ci])
             roof.position.y = 3
             house.addChildNode(roof)
             let hsc = 0.9 + worldRng.next() * 0.5
             house.scale = SCNVector3(hsc, hsc, hsc)
             house.position = SCNVector3(hp.x + hr.x * hlat, hgy - 0.3, hp.z + hr.z * hlat)
             house.eulerAngles.y = atan2(tans[hi].x, -tans[hi].z) + (worldRng.next() - 0.5) * 0.5
-            houseContainer.addChildNode(house)
+            houseGroups[ci].addChildNode(house)
             placed += 1
         }
-        parent.addChildNode(houseContainer.flattenedClone())
+        // Added unflattened on purpose. flattenedClone() silently yields nothing
+        // for these — not a material-count issue (grouping per colour, so two
+        // materials each, fails identically), so rather than keep guessing at
+        // SceneKit's flattening rules these stay as plain nodes. ~108 of them,
+        // sharing 16 cached geometries so the renderer can still batch by
+        // material. The casitas were invisible for the entire life of the port.
+        for g in houseGroups where g.childNodes.count > 0 {
+            parent.addChildNode(g)
+        }
 
         // rocks + guardrail posts
         let rockContainer = SCNNode()
@@ -781,8 +875,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         rockGeo.isGeodesic = true
         rockGeo.segmentCount = 4
         rockGeo.materials = [lambert(UIColor(red: 0.47, green: 0.44, blue: 0.37, alpha: 1))]
-        for _ in 0..<50 {
-            let ri = 10 + Int(worldRng.next() * Float(Self.count - 30))
+        for _ in 0..<64 {
+            // boulders are a cordillera thing — landslide country
+            let ri = indexIn(pickRegion(&worldRng, simd_float3(0.68, 0.22, 0.10)), &worldRng)
             let rlat = -(Self.barrier + 0.8 + worldRng.next() * 40)
             let rp = pts[ri], rr2 = rights[ri]
             let rock = SCNNode(geometry: rockGeo)
@@ -891,6 +986,40 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             parent.addChildNode(grp)
         }
         // sits just ahead of the 40 m starting point
+        // Pueblo street lamps. Warm emissive heads against the sunset, which the
+        // HDR bloom picks up — the cheapest way to make the town feel inhabited.
+        let lampContainer = SCNNode()
+        let lampPoleMat = lambert(UIColor(white: 0.42, alpha: 1))
+        let lampHeadMat = constant(UIColor(red: 1.0, green: 0.86, blue: 0.60, alpha: 1))
+        lampHeadMat.emission.contents = UIColor(red: 1.0, green: 0.80, blue: 0.48, alpha: 1)
+        lampHeadMat.emission.intensity = 1.9
+        let poleGeo = SCNCylinder(radius: 0.09, height: 5.4)
+        poleGeo.materials = [lampPoleMat]
+        let headGeo = SCNBox(width: 0.62, height: 0.2, length: 0.34, chamferRadius: 0.07)
+        headGeo.materials = [lampHeadMat]
+        let pSpan = Region.pueblo.span
+        var li = Int(pSpan.lo * Float(Self.count))
+        let lEnd = Int(pSpan.hi * Float(Self.count))
+        while li < lEnd {
+            for side in [Float(-1), Float(1)] {
+                let lat = side * (Self.barrier + 1.1)
+                let lp = pts[li], lr = rights[li]
+                let gy = groundY(li, lat)
+                let lamp = SCNNode()
+                let pole = SCNNode(geometry: poleGeo)
+                pole.position.y = 2.7
+                lamp.addChildNode(pole)
+                let head = SCNNode(geometry: headGeo)
+                head.position = SCNVector3(-side * 0.34, 5.3, 0)
+                lamp.addChildNode(head)
+                lamp.position = SCNVector3(lp.x + lr.x * lat, gy, lp.z + lr.z * lat)
+                lamp.eulerAngles.y = atan2(lr.x, -lr.z)
+                lampContainer.addChildNode(lamp)
+            }
+            li += 15                       // ~30 m spacing
+        }
+        parent.addChildNode(lampContainer.flattenedClone())
+
         arch(24, "¡SALIDA!", UIColor(red: 0.88, green: 0.13, blue: 0.22, alpha: 1))
         arch(Self.count - 8, "¡META!", UIColor(red: 0, green: 0.31, blue: 0.63, alpha: 1))
 
@@ -970,10 +1099,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // density and cluster size ramp with distance — the back half of the
         // mountain should feel worse than the top
+        // Per-region character: the cordillera throws a few big landslide craters,
+        // the pueblo is a dense minefield of small municipal hoyos, the costa opens
+        // up into long clean stretches so the run finishes fast.
         var cs: Float = 230
         while cs < Self.total - 260 {
             let prog = cs / Self.total
-            let n = 1 + Int(runRng.next() * (2.6 + prog * 3.0))
+            let w = Self.regionWeights(prog)
+            let clusterMax = w.x * 2.4 + w.y * 4.2 + w.z * 1.9
+            let radiusMax  = w.x * 1.30 + w.y * 0.80 + w.z * 0.95
+            let spacing    = w.x * 74 + w.y * 40 + w.z * 104
+            let n = 1 + Int(runRng.next() * clusterMax)
             let gapC = (runRng.next() - 0.5) * (Self.roadHalf * 1.2)
             for _ in 0..<n {
                 var tries = 0
@@ -981,10 +1117,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 repeat { hx = (runRng.next() - 0.5) * (Self.roadHalf * 2 - 1.6); tries += 1 }
                 while abs(hx - gapC) < 2.2 && tries < 12
                 if tries >= 12 { continue }
-                addHole(cs + (runRng.next() - 0.5) * 12, hx,
-                        0.55 + runRng.next() * (0.9 + prog * 0.35))
+                addHole(cs + (runRng.next() - 0.5) * 12, hx, 0.5 + runRng.next() * radiusMax)
             }
-            cs += (52 - prog * 18) + runRng.next() * (76 - prog * 34)
+            cs += spacing * (0.62 + runRng.next() * 0.7)
         }
 
         // Rim is much brighter and warmer than before (was 0.34 grey against
@@ -1025,9 +1160,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             toolboxes[i].node.position = SCNVector3(world.x, world.y + 0.9, world.z)
             toolboxes[i].node.isHidden = false
         }
+        // iguanas are country creatures — mountain and coast, barely any in town
+        let iguanaRegions: [Region] = [.cordillera, .cordillera, .cordillera, .cordillera,
+                                       .cordillera, .pueblo, .pueblo,
+                                       .costa, .costa, .costa, .costa, .costa]
         for i in 0..<iguanas.count {
-            iguanas[i].s = 400 + Float(i) * (Self.total - 700) / Float(iguanas.count)
-                         + runRng.next() * 80
+            let span = iguanaRegions[i % iguanaRegions.count].span
+            let f = span.lo + 0.06 + runRng.next() * max(0.05, (span.hi - 0.06) - (span.lo + 0.06))
+            iguanas[i].s = f * Self.total
             iguanas[i].dir = runRng.next() < 0.5 ? 1 : -1
             iguanas[i].stateRaw = 0
             iguanas[i].hit = false
@@ -1472,7 +1612,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // s = 4 it was positioned behind s = 0 — behind where the road and terrain
         // meshes begin — and looked off the back edge of the world straight at the
         // ocean plane a couple of hundred metres below.
-        s = 40; v = 8; x = 0; xd = 0
+        s = Self.startOffset; v = 8; x = 0; xd = 0
         hp = 100; nitro = 60
         score = 0; styleRun = 0; combo = 0; lastCombo = -1
         topSpeed = 0; holesHit = 0; nearMisses = 0
@@ -1480,6 +1620,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         playTime = 0
         hudClock = 0
+        lastRegion = nil            // so the first region announces itself
         cd = 3.4; cdLabel = ""
         fov = Self.baseFov
         clearSkids()
@@ -1520,10 +1661,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let hh = holesHit, nm = nearMisses
         let medal = Medal.forScore(sc)
         let defaults = UserDefaults.standard
-        let newScoreRec = sc > defaults.integer(forKey: "hoyo_bestScore")
+        // A run that skipped part of the course isn't a record. Without this the
+        // -startAt debug flag writes nonsense best times.
+        let eligible = Self.startOffset <= 40
+        let newScoreRec = eligible && sc > defaults.integer(forKey: "hoyo_bestScore")
         if newScoreRec { defaults.set(sc, forKey: "hoyo_bestScore") }
         var newTimeRec = false
-        if !dead {
+        if !dead && eligible {
             let bestTime = defaults.double(forKey: "hoyo_bestTime")
             if bestTime == 0 || playTime < bestTime {
                 newTimeRec = true
@@ -1851,9 +1995,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             traffic[ti].cool = max(0, traffic[ti].cool - dt)
             traffic[ti].s += traffic[ti].v * dt
             if traffic[ti].s > s + 600 || traffic[ti].s < s - 120 || traffic[ti].s > Self.total - 40 {
-                traffic[ti].s = s + 260 + runRng.next() * 320
+                // el tapón is a town problem: cars bunch up tight through the
+                // pueblo and thin out on the mountain and the coastal run-in
+                let w = Self.regionWeights(s / Self.total)
+                let gap = w.x * 300 + w.y * 130 + w.z * 260
+                traffic[ti].s = s + gap * (0.7 + runRng.next() * 0.9)
                 traffic[ti].x = runRng.next() < 0.5 ? -Self.trafficLane : Self.trafficLane
-                traffic[ti].v = 11 + runRng.next() * 7
+                // and it crawls slower in town
+                traffic[ti].v = (w.y > 0.5 ? 8 : 11) + runRng.next() * 7
                 traffic[ti].missed = false; traffic[ti].cool = 0
                 if traffic[ti].s > Self.total - 60 { traffic[ti].s = Self.total * 2 }
             }
@@ -1985,9 +2134,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             lastCombo = c
             DispatchQueue.main.async { self.state.combo = c }
         }
+        // region crossing
+        let region = Region.at(progress: s / Self.total)
+        if region != lastRegion {
+            lastRegion = region
+            sound.playCoqui()
+            DispatchQueue.main.async { self.state.showRegion(region) }
+        }
+
         hudClock += dt
         if hudClock >= 1.0 / 30.0 {
             hudClock = 0
+            // drift the haze toward the current region's colour
+            let rw = Self.regionWeights(s / Self.total)
+            let fog = Self.regionFog[0] * rw.x + Self.regionFog[1] * rw.y + Self.regionFog[2] * rw.z
+            scene.fogColor = UIColor(red: CGFloat(fog.x), green: CGFloat(fog.y),
+                                     blue: CGFloat(fog.z), alpha: 1)
             let mm = Int(playTime) / 60
             let ss = playTime.truncatingRemainder(dividingBy: 60)
             var snap = HudSnapshot()

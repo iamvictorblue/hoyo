@@ -50,6 +50,12 @@ struct HUDView: View {
                     .allowsHitTesting(false)
             }
 
+            if !state.regionLabel.isEmpty && state.phase == .playing {
+                RegionBanner(label: state.regionLabel, blurb: state.regionBlurb)
+                    .id(state.regionID)
+                    .allowsHitTesting(false)
+            }
+
             if state.paused && state.phase == .playing {
                 PauseOverlay(state: state, tilt: tilt)
             }
@@ -93,6 +99,14 @@ struct HUDView: View {
                                 .fill(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold],
                                                      startPoint: .leading, endPoint: .trailing))
                                 .frame(width: geo.size.width * state.hud.progress)
+                            // region boundaries, so the bar shows how far into the
+                            // cordillera / pueblo / costa you are
+                            ForEach(Region.allCases.dropFirst(), id: \.rawValue) { r in
+                                Rectangle()
+                                    .fill(.white.opacity(0.55))
+                                    .frame(width: 1.5, height: 8)
+                                    .offset(x: geo.size.width * CGFloat(r.span.lo))
+                            }
                         }
                     }
                     .frame(width: 216, height: 6)
@@ -350,6 +364,39 @@ struct CountdownView: View {
     }
 }
 
+/// Slides in when you cross into a new stretch of the descent. Deliberately
+/// styled apart from the gold score popups so it doesn't read as points.
+struct RegionBanner: View {
+    let label: String
+    let blurb: String
+    @State private var shown = false
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 30, weight: .black, design: .rounded))
+                .italic()
+                .tracking(2)
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.85), radius: 6, y: 2)
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, .neonTeal, .clear],
+                                     startPoint: .leading, endPoint: .trailing))
+                .frame(width: 220, height: 2)
+            Text(blurb)
+                .font(.system(size: 12, weight: .heavy)).tracking(4)
+                .foregroundStyle(Color.neonTeal)
+                .shadow(color: .black.opacity(0.8), radius: 4)
+        }
+        .offset(x: shown ? 0 : -60, y: -18)
+        .opacity(shown ? 1 : 0)
+        .onAppear {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { shown = true }
+            withAnimation(.easeOut(duration: 0.5).delay(2.1)) { shown = false }
+        }
+    }
+}
+
 struct PopupView: View {
     let text: String
     @State private var shown = false
@@ -496,6 +543,12 @@ struct IntroOverlay: View {
                     legend("🧰", "repara")
                 }
                 .padding(.top, 10)
+
+                Text("LA CORDILLERA  ·  EL PUEBLO  ·  LA COSTA")
+                    .font(.system(size: 11, weight: .heavy)).tracking(3)
+                    .foregroundStyle(Color.neonTeal.opacity(0.9))
+                    .shadow(color: .black.opacity(0.8), radius: 4)
+                    .padding(.top, 6)
 
                 SteerModePicker(state: state, tilt: tilt)
                     .padding(.top, 12)

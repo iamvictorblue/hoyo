@@ -5,6 +5,44 @@ enum GamePhase {
     case intro, countdown, playing, finished, dead
 }
 
+/// The three stretches of the descent. Each one drives its own terrain palette,
+/// scenery, hazard mix and haze colour, so the course reads as a journey down the
+/// island rather than one long road.
+enum Region: Int, CaseIterable {
+    case cordillera = 0, pueblo, costa
+
+    /// Where the region begins and ends, as a fraction of the course.
+    var span: (lo: Float, hi: Float) {
+        switch self {
+        case .cordillera: return (0.00, 0.34)
+        case .pueblo:     return (0.34, 0.68)
+        case .costa:      return (0.68, 1.00)
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .cordillera: return "LA CORDILLERA"
+        case .pueblo:     return "EL PUEBLO"
+        case .costa:      return "LA COSTA"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .cordillera: return "CURVAS Y DERRUMBES"
+        case .pueblo:     return "TAPÓN Y HOYOS"
+        case .costa:      return "RECTA A LA PLAYA"
+        }
+    }
+
+    static func at(progress p: Float) -> Region {
+        if p >= Region.costa.span.lo { return .costa }
+        if p >= Region.pueblo.span.lo { return .pueblo }
+        return .cordillera
+    }
+}
+
 /// How the player steers. Persisted across launches.
 enum SteerMode: Int {
     case drag = 0      // analog thumb pad, bottom-left
@@ -66,6 +104,17 @@ final class GameState: ObservableObject {
     @Published var paused = false
     @Published var countLabel: String = ""      // "3" "2" "1" "¡DALE!"
     @Published var sceneReady = false           // false while the world builds
+
+    // region announcement
+    @Published var regionLabel = ""
+    @Published var regionBlurb = ""
+    @Published var regionID = 0
+
+    func showRegion(_ r: Region) {
+        regionLabel = r.label
+        regionBlurb = r.blurb
+        regionID += 1
+    }
 
     @Published var steerMode: SteerMode = SteerMode(
         rawValue: UserDefaults.standard.integer(forKey: "hoyo_steerMode")) ?? .drag {
