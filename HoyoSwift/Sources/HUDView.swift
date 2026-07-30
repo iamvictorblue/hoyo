@@ -21,14 +21,22 @@ extension Color {
 // number is monospaced so columns align and live values don't jitter.
 
 extension Font {
+    /// Display: Helvetica Neue Condensed Black, which ships with iOS so nothing has
+    /// to be bundled. The classic poster and road-sign face — SF's compressed black
+    /// read as videogame lettering, which is the opposite of what this wants.
     static func display(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .black).width(.compressed)
+        .custom("HelveticaNeue-CondensedBlack", fixedSize: size)
     }
+    /// Labels: upright Helvetica Bold, tracked wide. Condensed at 9–12pt gets muddy.
     static func label(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .heavy).width(.condensed)
+        .custom("HelveticaNeue-Bold", fixedSize: size)
     }
+    /// Data stays monospaced on purpose. Helvetica has no monospace, and tabular
+    /// figures aren't guaranteed — a speedometer whose digits shift width as it
+    /// counts is far more distracting than a second face. Grotesque display over a
+    /// mono data face is a normal editorial pairing anyway.
     static func data(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .black, design: .monospaced)
+        .system(size: size, weight: .bold, design: .monospaced)
     }
 }
 
@@ -54,7 +62,7 @@ struct PotholeO: View {
                     center: .init(x: 0.5, y: 0.42), startRadius: 0, endRadius: cap * 0.42))
                 .padding(cap * 0.13)
         }
-        .frame(width: cap * 0.80, height: cap)
+        .frame(width: cap * 0.66, height: cap)
         .shadow(color: .black.opacity(0.55), radius: 3, y: 2)
     }
 }
@@ -63,7 +71,7 @@ struct Wordmark: View {
     var size: CGFloat = 74
 
     /// SF's cap height is about 0.72 em.
-    private var cap: CGFloat { size * 0.72 }
+    private var cap: CGFloat { size * 0.715 }
 
     var body: some View {
         HStack(alignment: .lastTextBaseline, spacing: size * 0.012) {
@@ -927,79 +935,116 @@ struct CapsuleButton: View {
 struct IntroOverlay: View {
     @ObservedObject var state: GameState
     let tilt: TiltObserver
+    @State private var entered = false
 
     private var multiStage: Bool {
         Stage.allCases.contains { $0 != .cordillera && $0.unlocked }
     }
+    private var bestMedal: Medal {
+        Medal.forScore(UserDefaults.standard.integer(forKey: state.selectedStage.bestScoreKey))
+    }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            // Weighted to the lower-left so the Area 51 escape stays legible in the
-            // upper-right, where the saucer actually flies.
+            // Two scrims doing different jobs: a broad diagonal that keeps the
+            // escape legible top-right, and a tighter one anchoring the plinth so
+            // the type never sits on moving scenery.
             LinearGradient(colors: [.clear,
-                                    Color(red: 0.06, green: 0.02, blue: 0.12).opacity(0.55),
-                                    Color(red: 0.05, green: 0.02, blue: 0.10).opacity(0.88)],
+                                    Color(red: 0.05, green: 0.02, blue: 0.11).opacity(0.42),
+                                    Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.86)],
                            startPoint: .topTrailing, endPoint: .bottomLeading)
                 .ignoresSafeArea()
+            LinearGradient(colors: [Color.black.opacity(0.55), .clear],
+                           startPoint: .bottom, endPoint: .top)
+                .frame(height: 260)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 0) {
-                Wordmark(size: 78)
+            HStack(alignment: .bottom, spacing: 0) {
+                // a hairline spine the whole plinth hangs off
+                Rectangle()
+                    .fill(LinearGradient(colors: [.clear, Color.neonGold.opacity(0.55)],
+                                         startPoint: .top, endPoint: .bottom))
+                    .frame(width: 2)
+                    .frame(maxHeight: 150, alignment: .bottom)
+                    .padding(.trailing, 16)
+                    .opacity(entered ? 1 : 0)
 
-                SignRule(color: .neonGold, width: 200)
-                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 0) {
+                    Wordmark(size: 80)
+                        .opacity(entered ? 1 : 0)
+                        .offset(y: entered ? 0 : 14)
 
-                Text("CARRERA CUESTA ABAJO · PUERTO RICO")
-                    .font(.label(12))
-                    .tracking(4)
-                    .foregroundStyle(Color.creamText)
-                    .padding(.top, 9)
-
-                if multiStage {
-                    StagePicker(state: state)
-                        .padding(.top, 18)
-                } else {
-                    // one course so far: name the road it runs on
-                    HStack(spacing: 9) {
-                        RouteShield(route: Stage.cordillera.route, compact: true)
-                        Text("FRENO + GUÍA = DRIFT")
-                            .font(.system(size: 10, weight: .heavy)).tracking(2)
-                            .foregroundStyle(.white.opacity(0.42))
+                    HStack(spacing: 10) {
+                        Text("CARRERA CUESTA ABAJO")
+                            .font(.label(11)).tracking(4)
+                            .foregroundStyle(Color.creamText)
+                        Text("PUERTO RICO")
+                            .font(.label(11)).tracking(4)
+                            .foregroundStyle(Color.neonGold)
                     }
-                    .padding(.top, 18)
-                }
+                    .padding(.top, 10)
+                    .opacity(entered ? 1 : 0)
 
-                if !state.recordLine.isEmpty {
-                    Text(state.recordLine)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.neonGold.opacity(0.85))
-                        .padding(.top, 12)
-                }
+                    if multiStage {
+                        StagePicker(state: state).padding(.top, 20)
+                    } else {
+                        HStack(spacing: 10) {
+                            RouteShield(route: Stage.cordillera.route, compact: true)
+                            Text("RUTA PANORÁMICA")
+                                .font(.label(10)).tracking(2)
+                                .foregroundStyle(.white.opacity(0.45))
+                        }
+                        .padding(.top, 20)
+                    }
 
-                if state.sceneReady {
-                    SignButton("TOCA PA' ARRANCAR") {
-                        tilt.reader.recalibrate()
-                        if state.selectedStage != state.loadedStage,
-                           let load = state.loadStageHandler {
-                            let want = state.selectedStage
-                            state.sceneReady = false
-                            load(want) {
-                                state.loadedStage = want
-                                state.sceneReady = true
-                                state.refreshRecordLine()
-                                state.requestStart = true
-                            }
-                        } else {
-                            state.requestStart = true
+                    // records, quiet — a stat line, not a headline
+                    HStack(spacing: 12) {
+                        if bestMedal != .none {
+                            Text(bestMedal.label)
+                                .font(.label(10)).tracking(2)
+                                .foregroundStyle(Color.neonGold.opacity(0.9))
+                                .padding(.vertical, 3).padding(.horizontal, 7)
+                                .overlay(RoundedRectangle(cornerRadius: 3)
+                                    .stroke(Color.neonGold.opacity(0.4), lineWidth: 1))
+                        }
+                        if !state.recordLine.isEmpty {
+                            Text(state.recordLine)
+                                .font(.data(11))
+                                .foregroundStyle(.white.opacity(0.5))
                         }
                     }
-                    .padding(.top, 18)
-                } else {
-                    LoadingLabel()
-                        .padding(.top, 22)
+                    .padding(.top, 14)
+
+                    if state.sceneReady {
+                        SignButton("TOCA PA' ARRANCAR") {
+                            tilt.reader.recalibrate()
+                            if state.selectedStage != state.loadedStage,
+                               let load = state.loadStageHandler {
+                                let want = state.selectedStage
+                                state.sceneReady = false
+                                load(want) {
+                                    state.loadedStage = want
+                                    state.sceneReady = true
+                                    state.refreshRecordLine()
+                                    state.requestStart = true
+                                }
+                            } else {
+                                state.requestStart = true
+                            }
+                        }
+                        .padding(.top, 20)
+                    } else {
+                        LoadingLabel().padding(.top, 24)
+                    }
                 }
             }
-            .padding(.leading, 34)
+            .padding(.leading, 30)
             .padding(.bottom, 26)
+        }
+        .onAppear {
+            // one orchestrated entrance rather than scattered effects
+            withAnimation(.easeOut(duration: 0.55).delay(0.1)) { entered = true }
         }
     }
 }

@@ -275,10 +275,10 @@ enum Textures {
             UIColor(white: 0.97, alpha: 1).setFill()
             g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
             // darker clumps
-            for _ in 0..<520 {
-                let v = CGFloat.random(in: 0.62...0.9)
+            for _ in 0..<900 {
+                let v = CGFloat.random(in: 0.74...0.94)
                 UIColor(white: v, alpha: .random(in: 0.25...0.7)).setFill()
-                let r = CGFloat.random(in: 4...36)
+                let r = CGFloat.random(in: 3...16)
                 g.fillEllipse(in: CGRect(x: .random(in: -10...dim), y: .random(in: -10...dim),
                                          width: r, height: r * .random(in: 0.6...1.4)))
             }

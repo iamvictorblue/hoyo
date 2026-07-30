@@ -558,6 +558,30 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         sunNode.eulerAngles = SCNVector3(-0.55, 0.45, 0)
         world.addChildNode(sunNode)
 
+        // Rim light from low and behind. A single overhead key left everything
+        // reading flat against a bright sky; this puts an edge on the craft, the
+        // canopy and the guardrail so they separate from the background.
+        let rim = SCNNode()
+        rim.light = SCNLight()
+        rim.light!.type = .directional
+        rim.light!.color = Self.currentStage == .yunque
+            ? UIColor(red: 0.62, green: 0.82, blue: 0.70, alpha: 1)
+            : UIColor(red: 1.0, green: 0.55, blue: 0.42, alpha: 1)
+        rim.light!.intensity = Self.currentStage == .yunque ? 420 : 620
+        rim.light!.castsShadow = false
+        rim.eulerAngles = SCNVector3(-0.12, .pi - 0.35, 0)
+        world.addChildNode(rim)
+
+        // gentle bounce from below, so undersides aren't dead black
+        let bounce = SCNNode()
+        bounce.light = SCNLight()
+        bounce.light!.type = .directional
+        bounce.light!.color = UIColor(red: 0.30, green: 0.26, blue: 0.34, alpha: 1)
+        bounce.light!.intensity = 220
+        bounce.light!.castsShadow = false
+        bounce.eulerAngles = SCNVector3(1.15, 0.2, 0)
+        world.addChildNode(bounce)
+
         camera(world)
         clouds(world)
         ocean(world)
@@ -672,14 +696,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cam.wantsExposureAdaptation = false
         // Bloom was set so low (threshold 0.85) that the headlights smeared into
         // a white blob directly over the car. Raised, dimmed, and widened.
-        cam.bloomThreshold = 1.05
-        cam.bloomIntensity = 0.55
+        cam.bloomThreshold = 0.98
+        cam.bloomIntensity = 0.62
         cam.bloomBlurRadius = 18
         cam.motionBlurIntensity = quality.motionBlur
         cam.vignettingPower = 0.55
         cam.vignettingIntensity = 0.45
-        cam.saturation = 1.12
-        cam.contrast = 0.08
+        cam.saturation = 1.14
+        cam.contrast = 0.10
+        // Contact darkening. Without it every object floated — the craft, the trees
+        // and the guardrail posts all met the ground with no shading at all.
+        if quality != .low {
+            cam.screenSpaceAmbientOcclusionIntensity = 0.85
+            cam.screenSpaceAmbientOcclusionRadius = 1.3
+            cam.screenSpaceAmbientOcclusionBias = 0.02
+            cam.screenSpaceAmbientOcclusionDepthThreshold = 0.35
+        }
         cameraNode.camera = cam
         cameraNode.position = SCNVector3(0, 3, 8)
         parent.addChildNode(cameraNode)
@@ -863,13 +895,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // denser near the road, where you can actually see the silhouette
         // first band hugs the asphalt edge, second sits exactly on the guardrail
         // line so the posts stand on a real terrain vertex rather than floating
+        // step of 1 (every 2 m) rather than 2 (every 4 m) near the road: the long
+        // flat triangles were the most obvious low-poly tell, worst on the trail
+        let rowStep = Self.currentStage == .yunque ? 1 : 2
         let e = Self.roadHalf - 0.3, b = Self.barrier
         // Both sides now run far enough out to close the horizon. The old strips
         // stopped at 145 m, and past that edge was nothing — so on the seaward
         // side you could see straight over the lip to the ocean plane hundreds of
         // metres below, which read as the sea leaking into the bottom of frame.
-        let latsL: [Float] = [-e, -b, -9.5, -13, -18, -25, -35, -49, -68, -95, -145, -240]
-        let latsR: [Float] = [e, b, 9.5, 13, 18, 25, 35, 49, 68, 95, 145, 330, 900]
+        let latsL: [Float] = [-e, -b, -8, -10.5, -13.5, -17.5, -22.5, -29, -38, -50,
+                              -68, -95, -145, -240]
+        let latsR: [Float] = [e, b, 8, 10.5, 13.5, 17.5, 22.5, 29, 38, 50,
+                              68, 95, 145, 330, 900]
 
         func side(_ lats: [Float], flip: Bool) {
             var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
@@ -884,11 +921,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     cols.append(terrainColor(i, lat, y))
                     // planar UVs from (distance along road, lateral offset), so the
                     // detail texture tiles every 12 m in both directions
-                    uvs.append(CGPoint(x: CGFloat(lat / 12),
-                                       y: CGFloat(Float(i) * Self.step / 12)))
+                    uvs.append(CGPoint(x: CGFloat(lat / 7),
+                                       y: CGFloat(Float(i) * Self.step / 7)))
                 }
                 rows += 1
-                i += 2
+                i += rowStep
             }
             let w = lats.count
             for row in 0..<(rows - 1) {
