@@ -123,7 +123,7 @@ struct HUDView: View {
             }
 
             if state.phase == .arrival {
-                ArrivalCard()
+                ArrivalCard(stage: state.loadedStage)
                     .allowsHitTesting(false)
             }
 
@@ -440,6 +440,7 @@ struct SteerPad: View {
 /// Location card over the arrival drop — the beat that says the saucer got from
 /// Area 51 to the island.
 struct ArrivalCard: View {
+    let stage: Stage
     @State private var shown = false
 
     var body: some View {
@@ -453,7 +454,7 @@ struct ArrivalCard: View {
                 .fill(LinearGradient(colors: [.clear, .neonGold, .clear],
                                      startPoint: .leading, endPoint: .trailing))
                 .frame(width: 250, height: 2)
-            Text("LA CORDILLERA")
+            Text(stage.name)
                 .font(.label(13)).tracking(5)
                 .foregroundStyle(Color.neonGold)
                 .shadow(color: .black.opacity(0.85), radius: 5)
@@ -993,7 +994,7 @@ struct IntroOverlay: View {
                     } else {
                         HStack(spacing: 10) {
                             RouteShield(route: Stage.cordillera.route, compact: true)
-                            Text("RUTA PANORÁMICA")
+                            Text(Stage.cordillera.blurb)
                                 .font(.label(10)).tracking(2)
                                 .foregroundStyle(.white.opacity(0.45))
                         }

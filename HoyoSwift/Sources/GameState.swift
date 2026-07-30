@@ -16,15 +16,15 @@ enum Stage: Int, CaseIterable {
 
     var name: String {
         switch self {
-        case .cordillera: return "LA CORDILLERA"
+        case .cordillera: return "GUAJATACA"
         case .yunque:     return "EL YUNQUE"
-        case .playa:      return "LA PLAYA"
+        case .playa:      return "ISLA VERDE"
         }
     }
 
     var blurb: String {
         switch self {
-        case .cordillera: return "CARRETERA A LA PLAYA"
+        case .cordillera: return "BAJADA POR EL KARSO"
         case .yunque:     return "VEREDA EN EL BOSQUE"
         case .playa:      return "ORILLA Y ARENA MOJADA"
         }
@@ -34,9 +34,11 @@ enum Stage: Int, CaseIterable {
     /// cordillera; PR-191 is the road into El Yunque. Used as the route shield.
     var route: String {
         switch self {
-        case .cordillera: return "143"
+        // PR-113 runs the Guajataca coast through Quebradillas; PR-191 is the road
+        // into El Yunque; PR-187 starts in Isla Verde and runs east through Piñones.
+        case .cordillera: return "113"
         case .yunque:     return "191"
-        case .playa:      return "187"      // the coastal road out to Piñones
+        case .playa:      return "187"
         }
     }
 
@@ -91,7 +93,7 @@ enum Region: Int, CaseIterable {
 
     var label: String {
         switch self {
-        case .cordillera: return "LA CORDILLERA"
+        case .cordillera: return "EL KARSO"
         case .pueblo:     return "EL PUEBLO"
         case .costa:      return "LA COSTA"
         }
@@ -99,7 +101,7 @@ enum Region: Int, CaseIterable {
 
     var blurb: String {
         switch self {
-        case .cordillera: return "CURVAS Y DERRUMBES"
+        case .cordillera: return "MOGOTES Y CURVAS"
         case .pueblo:     return "TAPÓN Y HOYOS"
         case .costa:      return "RECTA A LA PLAYA"
         }
