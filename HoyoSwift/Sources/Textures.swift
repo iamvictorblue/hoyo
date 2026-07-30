@@ -304,6 +304,31 @@ enum Textures {
         }
     }
 
+    /// Fresh-tar patch laid over a pothole the beam has sealed: opaque in the
+    /// middle, feathering out so it blends into the surrounding asphalt.
+    static func patch() -> UIImage {
+        let dim: CGFloat = 128
+        return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
+            let g = ctx.cgContext
+            let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                  colors: [UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1).cgColor,
+                                           UIColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1).cgColor,
+                                           UIColor(red: 0.15, green: 0.15, blue: 0.16, alpha: 0.7).cgColor,
+                                           UIColor(red: 0.17, green: 0.17, blue: 0.18, alpha: 0).cgColor] as CFArray,
+                                  locations: [0, 0.62, 0.84, 1])!
+            g.drawRadialGradient(grad,
+                startCenter: CGPoint(x: dim / 2, y: dim / 2), startRadius: 0,
+                endCenter: CGPoint(x: dim / 2, y: dim / 2), endRadius: dim / 2, options: [])
+            // a few brighter aggregate specks so it doesn't read as a flat blob
+            for _ in 0..<220 {
+                let v = CGFloat.random(in: 0.2...0.34)
+                UIColor(red: v, green: v, blue: v, alpha: .random(in: 0.2...0.6)).setFill()
+                let a = CGFloat.random(in: 0...(2 * .pi)), r = CGFloat.random(in: 0...(dim * 0.42))
+                g.fill(CGRect(x: dim / 2 + cos(a) * r, y: dim / 2 + sin(a) * r, width: 2, height: 2))
+            }
+        }
+    }
+
     /// Soft round particle for smoke and dust.
     static func softCircle() -> UIImage {
         let size = CGSize(width: 64, height: 64)

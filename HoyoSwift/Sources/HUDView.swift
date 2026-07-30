@@ -38,6 +38,11 @@ struct HUDView: View {
                 touchControls
             }
 
+            if state.phase == .arrival {
+                ArrivalCard()
+                    .allowsHitTesting(false)
+            }
+
             if !state.countLabel.isEmpty {
                 CountdownView(label: state.countLabel)
                     .id(state.countLabel)
@@ -66,7 +71,7 @@ struct HUDView: View {
                                        subtitle: "SOBREVIVISTE LOS HOYOS · A LA PLAYA")
             case .dead: EndOverlay(state: state, title: "¡TE PONCHASTE!",
                                    subtitle: "LOS HOYOS GANARON ESTA VEZ")
-            case .playing, .countdown: EmptyView()
+            case .playing, .countdown, .arrival: EmptyView()
             }
         }
     }
@@ -81,6 +86,7 @@ struct HUDView: View {
                             color: state.hud.hp > 50 ? .green
                                  : (state.hud.hp > 25 ? .neonGold : .neonPink))
                     BarView(label: "NITRO", value: state.hud.nitro / 100, color: .neonTeal)
+                    BarView(label: "RAYO", value: state.hud.charge / 100, color: .neonGold)
                 }
                 .frame(width: 168)
 
@@ -161,10 +167,15 @@ struct HUDView: View {
             Spacer()
 
             HStack(alignment: .bottom) {
-                if state.steerMode == .drag {
-                    SteerPad { state.input.steer = $0 }
-                } else {
-                    TiltHint()
+                VStack(alignment: .leading, spacing: 10) {
+                    TapButton(symbol: "bolt.fill", tint: .neonGold) {
+                        state.input.fireRequested = true
+                    }
+                    if state.steerMode == .drag {
+                        SteerPad { state.input.steer = $0 }
+                    } else {
+                        TiltHint()
+                    }
                 }
 
                 Spacer()
@@ -306,6 +317,37 @@ struct SteerPad: View {
                     onSteer(0)
                 }
         )
+    }
+}
+
+/// Location card over the arrival drop — the beat that says the saucer got from
+/// Area 51 to the island.
+struct ArrivalCard: View {
+    @State private var shown = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text("PUERTO RICO")
+                .font(.system(size: 34, weight: .black, design: .rounded))
+                .italic()
+                .tracking(6)
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.9), radius: 8, y: 2)
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, .neonGold, .clear],
+                                     startPoint: .leading, endPoint: .trailing))
+                .frame(width: 250, height: 2)
+            Text("LA CORDILLERA")
+                .font(.system(size: 12, weight: .heavy)).tracking(5)
+                .foregroundStyle(Color.neonGold)
+                .shadow(color: .black.opacity(0.85), radius: 5)
+        }
+        .opacity(shown ? 1 : 0)
+        .scaleEffect(shown ? 1 : 1.08)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5)) { shown = true }
+            withAnimation(.easeIn(duration: 0.5).delay(2.7)) { shown = false }
+        }
     }
 }
 

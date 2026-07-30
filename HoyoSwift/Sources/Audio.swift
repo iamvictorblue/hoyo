@@ -30,6 +30,7 @@ final class SoundEngine: ObservableObject {
     private var beepBuffer: AVAudioPCMBuffer?
     private var beepHiBuffer: AVAudioPCMBuffer?
     private var jumpBuffer: AVAudioPCMBuffer?
+    private var zapBuffer: AVAudioPCMBuffer?
 
     func start() {
         guard !started else { return }
@@ -99,6 +100,7 @@ final class SoundEngine: ObservableObject {
         beepBuffer = renderBeep(freq: 850, dur: 0.12)
         beepHiBuffer = renderBeep(freq: 1420, dur: 0.3)
         jumpBuffer = renderJump()
+        zapBuffer = renderZap()
         let bar = renderDembowBar()
 
         do {
@@ -121,6 +123,7 @@ final class SoundEngine: ObservableObject {
     func playThunk() { if let b = thunkBuffer { fxPlayer.scheduleBuffer(b) } }
     func playHorn()  { if let b = hornBuffer { fxPlayer.scheduleBuffer(b) } }
     func playJump()  { if let b = jumpBuffer { fxPlayer.scheduleBuffer(b) } }
+    func playZap()   { if let b = zapBuffer { fxPlayer.scheduleBuffer(b) } }
     func playBeep(final: Bool) {
         if let b = final ? beepHiBuffer : beepBuffer { fxPlayer.scheduleBuffer(b) }
     }
@@ -183,6 +186,23 @@ final class SoundEngine: ObservableObject {
             // sweep the band upward over the hop
             bp += (0.10 + t * 0.9) * (noise - bp)
             d[i] += Float(bp * env * env * 0.5)
+        }
+        return buf
+    }
+
+    /// Beam shot: a fast falling sweep with a short bright click on the front, so
+    /// it cuts through the engine layer without needing much level.
+    private func renderZap() -> AVAudioPCMBuffer? {
+        guard let (buf, d, n) = makeBuffer(seconds: 0.2) else { return nil }
+        addSweep(d, n, start: 0, dur: 0.13, f0: 1750, f1: 260, amp: 0.13)
+        var rng = SystemRandomNumberGenerator()
+        var last = 0.0
+        for i in 0..<min(n, Int(0.03 * sampleRate)) {
+            let t = Double(i) / sampleRate
+            let env = max(0, 1 - t / 0.03)
+            let noise = Double.random(in: -1...1, using: &rng)
+            d[i] += Float((noise - last) * env * env * 0.10)
+            last = noise
         }
         return buf
     }

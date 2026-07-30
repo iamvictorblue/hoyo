@@ -165,7 +165,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var skidLife: Float { Float(quality.skidSegments) * Self.skidInterval * 0.95 }
 
     // entities
-    private struct Hole { var s, x, r: Float; var passed = false; var hit = false }
+    private struct Hole { var s, x, r: Float; var passed = false; var hit = false
+                          /// sealed by the beam — no longer does damage
+                          var zapped = false }
     private var holes: [Hole] = []
     private struct Pickup { var s: Float = 0, x: Float = 0, baseY: Float = 0
                             var node: SCNNode; var taken = false }
@@ -203,6 +205,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var jumpY: Float = 0        // height above the road
     private var jumpVel: Float = 0
     private var jumpCool: Float = 0
+    // beam
+    private var charge: Float = 100
+    private var fireCool: Float = 0
+    private struct Bolt { var s: Float = 0, x: Float = 0; var node: SCNNode; var live = false }
+    private var bolts: [Bolt] = []
+    private var boltCursor = 0
+    private var patchNodes: [SCNNode] = []
+    private var patchCursor = 0
+    private static let boltSpeed: Float = 115
+    private static let shotCost: Float = 32
     private var airborne: Bool { jumpY > 0.02 }
     private static let gravity: Float = 26
     private static let jumpImpulse: Float = 8.4
@@ -222,6 +234,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// Haze colour per region — cool violet high up, dusty warm through town,
     /// bright sea-peach on the coast.
+    private var arrivalT: Float = 0
     private var introT: Float = 0
     private var introSet = SCNNode()
     private let introUfo = SCNNode()
@@ -452,6 +465,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         makeTraffic(world)
         buildCar()
         skidPool(world)
+        beamPools(world)
         particles()
         buildIntroSet(world)
 
@@ -1401,6 +1415,158 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         parent.addChildNode(container)
     }
 
+    // MARK: - beam
+
+    /// Bolts and tar patches are both pooled and driven by transform only, like the
+    /// skid trail — nothing is allocated once a race is running.
+    private func beamPools(_ parent: SCNNode) {
+        let boltMat = SCNMaterial()
+        boltMat.lightingModel = .constant
+        boltMat.diffuse.contents = UIColor(red: 0.60, green: 1, blue: 0.72, alpha: 1)
+        boltMat.emission.contents = UIColor(red: 0.60, green: 1, blue: 0.72, alpha: 1)
+        boltMat.emission.intensity = 2.0
+        boltMat.blendMode = .add
+        boltMat.writesToDepthBuffer = false
+        let boltGeo = SCNSphere(radius: 0.17)
+        boltGeo.materials = [boltMat]
+
+        let container = SCNNode()
+        for _ in 0..<10 {
+            let n = SCNNode(geometry: boltGeo)
+            n.scale = SCNVector3(1, 1, 4.5)      // stretched along travel
+            n.castsShadow = false
+            n.isHidden = true
+            container.addChildNode(n)
+            bolts.append(Bolt(node: n))
+        }
+
+        let patchMat = SCNMaterial()
+        patchMat.lightingModel = .constant
+        patchMat.diffuse.contents = Textures.patch()
+        patchMat.writesToDepthBuffer = false
+        let patchGeo = SCNPlane(width: 1, height: 1)
+        patchGeo.materials = [patchMat]
+        for _ in 0..<24 {
+            let n = SCNNode(geometry: patchGeo)
+            n.castsShadow = false
+            n.isHidden = true
+            container.addChildNode(n)
+            patchNodes.append(n)
+        }
+        parent.addChildNode(container)
+    }
+
+    private func clearBeam() {
+        for i in 0..<bolts.count {
+            bolts[i].live = false
+            bolts[i].node.isHidden = true
+        }
+        for n in patchNodes { n.isHidden = true }
+        boltCursor = 0
+        patchCursor = 0
+        charge = 100
+        fireCool = 0
+    }
+
+    private func fireBolt() {
+        guard charge >= Self.shotCost, fireCool <= 0 else { return }
+        charge -= Self.shotCost
+        fireCool = 0.20
+        sound.playZap()
+        Haptics.shared.tap(intensity: 0.34, sharpness: 0.95)
+        bolts[boltCursor].s = s + 3.5
+        bolts[boltCursor].x = x
+        bolts[boltCursor].live = true
+        bolts[boltCursor].node.isHidden = false
+        boltCursor = (boltCursor + 1) % bolts.count
+    }
+
+    /// Lays a tar patch over a sealed hole. The pothole field is two merged
+    /// meshes, so an individual hole can't be hidden — covering it is what makes
+    /// the seal read.
+    private func layPatch(over hole: Hole) {
+        let (pos, tan, rgt) = sample(hole.s)
+        let c = pos + rgt * hole.x
+        let n = patchNodes[patchCursor]
+        n.simdPosition = simd_float3(c.x, c.y + 0.055, c.z)
+        let flat = simd_quatf(angle: -.pi / 2, axis: simd_float3(1, 0, 0))
+        let yaw = simd_quatf(angle: atan2(tan.x, -tan.z), axis: simd_float3(0, 1, 0))
+        n.simdOrientation = simd_mul(yaw, flat)
+        let d = hole.r * 2.9
+        n.scale = SCNVector3(d, d, 1)
+        n.isHidden = false
+        patchCursor = (patchCursor + 1) % patchNodes.count
+    }
+
+    private func updateBolts(_ dt: Float) {
+        for i in 0..<bolts.count where bolts[i].live {
+            // Swept span for this frame. A point-in-window test missed constantly:
+            // at 115 m/s with dt capped at 0.033 a bolt jumps 3.8 m, further than
+            // any sane hit window, so it tunnelled straight through targets.
+            let prevS = bolts[i].s
+            bolts[i].s += Self.boltSpeed * dt
+            let bs = bolts[i].s, bx = bolts[i].x
+            let lo = prevS - 1.4, hi = bs + 1.4
+
+            if bs - s > 95 || bs > Self.total {
+                bolts[i].live = false; bolts[i].node.isHidden = true; continue
+            }
+
+            var struck = false
+
+            // traffic first — a car is the bigger target and the better payoff
+            for ti in 0..<traffic.count {
+                let tc = traffic[ti]
+                guard tc.s < Self.total, tc.s > s - 4 else { continue }
+                if tc.s >= lo && tc.s <= hi && abs(tc.x - bx) < 2.6 {
+                    traffic[ti].vx = (tc.x >= bx ? 1 : -1) * 13
+                    traffic[ti].spin = 1.1
+                    traffic[ti].v *= 0.62
+                    traffic[ti].cool = 1.5
+                    score += tc.isPolice ? 240 : 130
+                    combo = min(combo + 1, 5)
+                    popupAsync(tc.isPolice ? "¡LA JARA!" : "¡FUEGO!")
+                    sound.playThunk()
+                    struck = true
+                    break
+                }
+            }
+
+            // otherwise seal a pothole ahead
+            if !struck {
+                for hIdx in 0..<holes.count {
+                    let h = holes[hIdx]
+                    guard !h.zapped, !h.hit, h.s > s else { continue }
+                    if h.s >= lo && h.s <= hi && abs(h.x - bx) < h.r + 1.8 {
+                        holes[hIdx].zapped = true
+                        layPatch(over: h)
+                        score += 70
+                        popupAsync("¡TAPADO! +70")
+                        struck = true
+                        break
+                    }
+                }
+            }
+
+            if struck {
+                let (hp2, _, hr2) = sample(bs)
+                sparkNode.simdPosition = hp2 + hr2 * bx + simd_float3(0, 0.45, 0)
+                sparkSystem.birthRate = 600
+                sparkT = 0.09
+                bolts[i].live = false
+                bolts[i].node.isHidden = true
+                continue
+            }
+
+            // place it
+            let (bp, bt, br) = sample(bs)
+            let world = bp + br * bx + simd_float3(0, 0.75, 0)
+            bolts[i].node.simdPosition = world
+            bolts[i].node.simdLook(at: world + bt, up: simd_float3(0, 1, 0),
+                                   localFront: simd_float3(0, 0, -1))
+        }
+    }
+
     private func clearSkids() {
         for i in 0..<skidNodes.count {
             skidNodes[i].isHidden = true
@@ -1695,6 +1861,62 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         parent.addChildNode(set)
     }
 
+    // MARK: - arrival (pre-race)
+
+    private static let arrivalDur: Float = 3.7
+
+    /// The saucer drops out of the sky onto the start of the mountain road, and the
+    /// camera settles from a wide reveal into the chase rig the countdown uses — so
+    /// the hand-off into the countdown is seamless.
+    private func updateArrival(_ dt: Float) {
+        arrivalT += dt
+        let p = simd_clamp(arrivalT / Self.arrivalDur, 0, 1)
+        let (pos, tan, _) = sample(s)
+
+        // descend fast, then ease into the road
+        let fall = 1 - p
+        let altitude = 62 * fall * fall * fall
+        let carPos = pos + simd_float3(0, 0.02 + altitude, 0)
+        playerNode.simdPosition = carPos
+        playerNode.simdLook(at: carPos + tan, up: simd_float3(0, 1, 0),
+                            localFront: simd_float3(0, 0, -1))
+        // spin down out of a hard rotation as it settles
+        chassisNode.eulerAngles = SCNVector3(0, fall * fall * 16, 0)
+        chassisNode.position.y = 0
+        ufoLightRing.eulerAngles.y += dt * (2 + fall * 22)
+        for f in flameNodes { f.isHidden = p > 0.92 }
+
+        blobNode.simdPosition = simd_float3(pos.x, pos.y + 0.03, pos.z)
+        blobNode.eulerAngles = SCNVector3(-.pi / 2, atan2(tan.x, -tan.z), 0)
+        let shadowScale = 1 / (1 + altitude * 0.42)
+        blobNode.scale = SCNVector3(shadowScale, shadowScale, 1)
+        blobNode.opacity = CGFloat(simd_clamp(1 - altitude * 0.02, 0.25, 1))
+
+        // camera: wide and high, easing to exactly where the countdown wants it
+        let ease = p * p * (3 - 2 * p)
+        let wide = pos - tan * 30 + simd_float3(0, 30, 0)
+        let tight = pos - tan * 7 + simd_float3(0, 2.6, 0)
+        cameraNode.simdPosition = simd_mix(wide, tight, simd_float3(repeating: ease))
+        let lookAtCraft = carPos
+        let lookAhead = pos + tan * 8
+        cameraNode.simdLook(at: simd_mix(lookAtCraft, lookAhead,
+                                        simd_float3(repeating: simd_smoothstep(0.55, 1.0, p))),
+                            up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        cameraNode.camera?.fieldOfView = CGFloat(66 - 4 * ease)
+
+        // touchdown
+        if arrivalT >= Self.arrivalDur {
+            sound.playThunk()
+            Haptics.shared.crash(intensity: 0.7)
+            shake = 0.9
+            dustNode.simdPosition = pos + simd_float3(0, 0.3, 0)
+            dustSystem.birthRate = 420
+            dustT = 0.28
+            phase = .countdown
+            DispatchQueue.main.async { self.state.phase = .countdown }
+        }
+    }
+
     /// Drives the looping escape. Called from the `.intro` branch of the frame.
     private func updateIntro(_ dt: Float) {
         introT += dt
@@ -1907,6 +2129,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cd = 3.4; cdLabel = ""
         fov = Self.baseFov
         clearSkids()
+        clearBeam()
         dustSystem.birthRate = 0
         // the base is 6 km away and fully fogged, but there's no reason to keep
         // paying for it once the race starts
@@ -1917,7 +2140,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         runRng = Lcg(runSeed)
         layoutHazards()
 
-        phase = .countdown
+        phase = .arrival
+        arrivalT = 0
         let (pos, tan, _) = sample(s)
         camPos = pos - tan * 7 + simd_float3(0, 2.6, 0)
         camLook = pos + tan * 8
@@ -1927,7 +2151,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         playerNode.simdLook(at: pos + tan, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
         let seed = runSeed
         DispatchQueue.main.async {
-            self.state.phase = .countdown
+            self.state.phase = .arrival
             self.state.paused = false
             self.state.combo = 0
             self.state.countLabel = ""
@@ -2033,6 +2257,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         case .intro:
             updateIntro(dt)
             return
+        case .arrival:
+            updateArrival(dt)
+            if dustT > 0 { dustT -= dt; if dustT <= 0 { dustSystem.birthRate = 0 } }
+            return
         case .countdown:
             cd -= dt
             let lbl = cd > 2.4 ? "3" : cd > 1.4 ? "2" : cd > 0.4 ? "1" : "¡DALE!"
@@ -2112,6 +2340,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             f.isHidden = !wantNitro
             if wantNitro { f.scale = SCNVector3(1, 0.7 + Float.random(in: 0...0.9), 1) }
         }
+
+        // ----- beam -----
+        if fireCool > 0 { fireCool = max(0, fireCool - dt) }
+        charge = min(100, charge + 15 * dt)          // ~3 shots then a short wait
+        if state.input.fireRequested {
+            state.input.fireRequested = false
+            fireBolt()
+        }
+        if Self.autoplay {
+            // smoke-test driver shoots on a steady cadence
+            let ft = Float(playTime)
+            if ft > 4 && ft.truncatingRemainder(dividingBy: 1.6) < dt * 1.5 { fireBolt() }
+        }
+        updateBolts(dt)
 
         // ----- jump -----
         if jumpCool > 0 { jumpCool = max(0, jumpCool - dt) }
@@ -2222,7 +2464,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let ds = holes[hIdx].s - s
             if ds < -6 || ds > 6 { continue }
             let h = holes[hIdx]
-            if !h.hit && abs(ds) < 1.8 && abs(h.x - x) < h.r + 0.75 {
+            if !h.hit && !h.zapped && abs(ds) < 1.8 && abs(h.x - x) < h.r + 0.75 {
                 holes[hIdx].hit = true
                 // flying over a hoyo is the whole point of being able to jump
                 if airborne {
@@ -2543,6 +2785,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.score = Int(score)
             snap.hp = Double(hp)
             snap.nitro = Double(nitro)
+            snap.charge = Double(charge)
             snap.progress = Double(s / Self.total)
             snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1))
             snap.flash = Double(max(0, flashT))

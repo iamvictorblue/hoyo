@@ -2,7 +2,9 @@ import Foundation
 import Combine
 
 enum GamePhase {
-    case intro, countdown, playing, finished, dead
+    /// `arrival` is the pre-race beat: the saucer drops out of the sky onto the
+    /// mountain road before the countdown starts.
+    case intro, arrival, countdown, playing, finished, dead
 }
 
 /// The three stretches of the descent. Each one drives its own terrain palette,
@@ -58,6 +60,8 @@ final class GameInput {
     var nitro = false
     /// Momentary — set by the jump button, cleared by the render loop once used.
     var jumpRequested = false
+    /// Momentary — set by the fire button, cleared by the render loop once used.
+    var fireRequested = false
 }
 
 /// One frame's worth of HUD numbers. Published as a single value so a frame
@@ -67,6 +71,7 @@ struct HudSnapshot: Equatable {
     var score = 0
     var hp: Double = 100
     var nitro: Double = 60
+    var charge: Double = 100       // beam energy
     var progress: Double = 0
     var speedNorm: Double = 0      // 0…1, drives the speed vignette
     var flash: Double = 0          // damage flash opacity
