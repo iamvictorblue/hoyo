@@ -52,9 +52,12 @@ the island's most authentic hazard: potholes.
 
 ## Native iOS port
 
-`HoyoSwift/` contains a complete SwiftUI + SceneKit port — same mountain road,
-plus analog/tilt steering, per-run hazard layouts, skid marks, Core Haptics and
-adaptive render quality — ready to build in Xcode on a Mac; see
+`HoyoSwift/` contains a complete SwiftUI + SceneKit port that has grown past the
+web version: you fly a **flying saucer** escaping Area 51 (there's a looping
+cutscene on the title screen), over a **four-lane** road split into three
+regions — cordillera, pueblo, costa — with jumping, parrying cars out of the
+lane, analog/tilt steering, per-run hazard layouts and Core Haptics. Ready to
+build in Xcode on a Mac; see
 [HoyoSwift/README.md](HoyoSwift/README.md). It also includes an optional
 WKWebView wrapper that ships the JS game as an app instead.
 

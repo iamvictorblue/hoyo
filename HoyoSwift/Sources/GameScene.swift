@@ -124,6 +124,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private let blobNode = SCNNode()
     private var frontWheelNodes: [SCNNode] = []
     private var spinWheelNodes: [SCNNode] = []
+    private var ufoLightRing = SCNNode()
+    private let policeRedMat: SCNMaterial = {
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = UIColor(red: 1, green: 0.12, blue: 0.18, alpha: 1)
+        m.emission.contents = UIColor(red: 1, green: 0.12, blue: 0.18, alpha: 1)
+        return m
+    }()
+    private let policeBlueMat: SCNMaterial = {
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = UIColor(red: 0.20, green: 0.42, blue: 1, alpha: 1)
+        m.emission.contents = UIColor(red: 0.20, green: 0.42, blue: 1, alpha: 1)
+        return m
+    }()
     private var flameNodes: [SCNNode] = []
     private var brakeLightMaterial = SCNMaterial()
     private var glowMaterial = SCNMaterial()
@@ -168,6 +183,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         /// Lateral velocity while being shoved aside, and the yaw it picks up.
         var vx: Float = 0, spin: Float = 0
         var clearedByJump = false
+        var isPolice = false
     }
     private var traffic: [Traffic] = []
 
@@ -206,6 +222,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// Haze colour per region — cool violet high up, dusty warm through town,
     /// bright sea-peach on the coast.
+    private var introT: Float = 0
+    private var introSet = SCNNode()
+    private let introUfo = SCNNode()
+    private var introUfoRing = SCNNode()
+    private var searchlights: [SCNNode] = []
+
     private static let regionFog: [simd_float3] = [
         simd_float3(0.86, 0.58, 0.62),
         simd_float3(1.00, 0.66, 0.44),
@@ -431,6 +453,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         buildCar()
         skidPool(world)
         particles()
+        buildIntroSet(world)
 
         world.addChildNode(holeNode)
         world.addChildNode(rimNode)
@@ -1280,8 +1303,26 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         ig.node.simdLook(at: target, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
     }
 
-    private func trafficCar(_ color: UIColor) -> SCNNode {
+    private func trafficCar(_ color: UIColor, police: Bool = false) -> SCNNode {
         let grp = SCNNode()
+        if police {
+            // roof light bar; the two materials are shared across every cruiser so
+            // one pair of emission writes per frame flashes all of them in sync
+            let bar = SCNNode(geometry: SCNBox(width: 1.0, height: 0.1, length: 0.22, chamferRadius: 0.03))
+            bar.geometry!.materials = [lambert(UIColor(white: 0.12, alpha: 1))]
+            bar.position = SCNVector3(0, 1.24, 0.2)
+            grp.addChildNode(bar)
+            let lensGeoL = SCNBox(width: 0.42, height: 0.14, length: 0.24, chamferRadius: 0.04)
+            lensGeoL.materials = [policeRedMat]
+            let left = SCNNode(geometry: lensGeoL)
+            left.position = SCNVector3(-0.26, 1.3, 0.2)
+            grp.addChildNode(left)
+            let lensGeoR = SCNBox(width: 0.42, height: 0.14, length: 0.24, chamferRadius: 0.04)
+            lensGeoR.materials = [policeBlueMat]
+            let right = SCNNode(geometry: lensGeoR)
+            right.position = SCNVector3(0.26, 1.3, 0.2)
+            grp.addChildNode(right)
+        }
         let bodyMat = SCNMaterial()
         bodyMat.lightingModel = .blinn
         bodyMat.diffuse.contents = color
@@ -1319,10 +1360,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             UIColor(red: 0.77, green: 0.27, blue: 0.27, alpha: 1),
             UIColor(white: 0.94, alpha: 1)
         ]
-        for i in 0..<7 {
-            let node = trafficCar(colors[i % colors.count])
+        // two of the nine are cruisers — they hunt the saucer, so they belong here
+        for i in 0..<9 {
+            let police = (i == 2 || i == 6)
+            let node = trafficCar(police ? UIColor(white: 0.93, alpha: 1) : colors[i % colors.count],
+                                  police: police)
             parent.addChildNode(node)
-            traffic.append(Traffic(node: node))
+            var t = Traffic(node: node)
+            t.isPolice = police
+            traffic.append(t)
         }
     }
 
@@ -1406,149 +1452,368 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     // MARK: - the car
 
+    /// Builds a saucer hull. Shared by the player craft and the intro cutscene, so
+    /// the thing escaping Area 51 is visibly the thing you then drive.
+    /// Returns the rotating light ring so the caller can spin it.
+    private func ufoHull(scale: Float = 1) -> (node: SCNNode, lightRing: SCNNode) {
+        let craft = SCNNode()
+
+        let hullMat = SCNMaterial()
+        hullMat.lightingModel = .physicallyBased
+        // brushed rather than mirror — at 0.92 metalness the hull reflected so much
+        // of the sunset cubemap that the saucer read pink instead of metallic
+        hullMat.diffuse.contents = UIColor(white: 0.80, alpha: 1)
+        hullMat.metalness.contents = 0.58
+        hullMat.roughness.contents = 0.34
+
+        let underMat = SCNMaterial()
+        underMat.lightingModel = .physicallyBased
+        underMat.diffuse.contents = UIColor(white: 0.26, alpha: 1)
+        underMat.metalness.contents = 0.85
+        underMat.roughness.contents = 0.38
+
+        // upper and lower shells, squashed spheres
+        let top = SCNNode(geometry: SCNSphere(radius: 1.25))
+        top.geometry!.materials = [hullMat]
+        top.scale = SCNVector3(1, 0.30, 1)
+        top.position.y = 0.66
+        craft.addChildNode(top)
+
+        let under = SCNNode(geometry: SCNSphere(radius: 1.20))
+        under.geometry!.materials = [underMat]
+        under.scale = SCNVector3(1, 0.22, 1)
+        under.position.y = 0.54
+        craft.addChildNode(under)
+
+        // rim
+        let rim = SCNNode(geometry: SCNTorus(ringRadius: 1.34, pipeRadius: 0.14))
+        rim.geometry!.materials = [hullMat]
+        rim.position.y = 0.62
+        craft.addChildNode(rim)
+
+        // cockpit dome
+        let domeMat = SCNMaterial()
+        domeMat.lightingModel = .physicallyBased
+        domeMat.diffuse.contents = UIColor(red: 0.22, green: 0.92, blue: 0.80, alpha: 1)
+        domeMat.metalness.contents = 0.30
+        domeMat.roughness.contents = 0.05
+        domeMat.emission.contents = UIColor(red: 0.06, green: 0.42, blue: 0.38, alpha: 1)
+        let dome = SCNNode(geometry: SCNSphere(radius: 0.56))
+        dome.geometry!.materials = [domeMat]
+        dome.scale = SCNVector3(1, 0.9, 1)
+        dome.position.y = 0.90
+        craft.addChildNode(dome)
+
+        // rotating ring of lights — one shared emissive material so it can flatten
+        let lightRing = SCNNode()
+        let lampMat = constant(UIColor(red: 1, green: 0.86, blue: 0.42, alpha: 1))
+        lampMat.emission.contents = UIColor(red: 1, green: 0.80, blue: 0.30, alpha: 1)
+        lampMat.emission.intensity = 1.5
+        let lampGeo = SCNSphere(radius: 0.11)
+        lampGeo.materials = [lampMat]
+        for k in 0..<8 {
+            let a = Float(k) / 8 * 2 * .pi
+            let lamp = SCNNode(geometry: lampGeo)
+            lamp.position = SCNVector3(cos(a) * 1.18, 0.5, sin(a) * 1.18)
+            lightRing.addChildNode(lamp)
+        }
+        craft.addChildNode(lightRing)
+
+        craft.scale = SCNVector3(scale, scale, scale)
+        return (craft, lightRing)
+    }
+
+    // MARK: - Area 51 intro cutscene
+
+    private struct IntroKey { var t: Float; var p: simd_float3 }
+
+    /// Parked well clear of the course and outside the ocean plane's footprint, so
+    /// the set can never be seen from the road and vice versa.
+    private static let introOrigin = simd_float3(6000, 0, 6000)
+    private static let introLoop: Float = 11.5
+
+    /// The craft climbs out of the hangar at lower-left and exits upper-right, so
+    /// it stays clear of the centred title block instead of hiding behind it.
+    /// Breaks cover quickly, then spends the back half of the loop climbing away
+    /// through the right of frame, where the centred title block isn't.
+    private static let ufoPath: [IntroKey] = [
+        IntroKey(t: 0.0,  p: simd_float3(-40,  4.5, -26)),  // sitting in the hangar mouth
+        IntroKey(t: 3.0,  p: simd_float3(-38,  7.0, -25)),  // spooling up
+        IntroKey(t: 4.4,  p: simd_float3(-31, 15.0, -23)),  // breaks cover
+        IntroKey(t: 6.8,  p: simd_float3(-14, 24.0, -10)),  // hauls right, over the wire
+        IntroKey(t: 11.5, p: simd_float3( 16, 34.0,  22))   // straight over the camera
+    ]
+    /// Locked-off wide shot. A moving camera was impossible to compose blind; a
+    /// fixed frame with a slow drift reads like a poster and always works.
+    private static let introCam = simd_float3(2, 12, 42)
+    private static let introBaseLook = simd_float3(-24, 11, -26)
+
+    private static func samplePath(_ keys: [IntroKey], _ t: Float) -> simd_float3 {
+        if t <= keys[0].t { return keys[0].p }
+        for i in 0..<(keys.count - 1) {
+            let a = keys[i], b = keys[i + 1]
+            if t <= b.t {
+                let u = simd_clamp((t - a.t) / (b.t - a.t), 0, 1)
+                let e = u * u * (3 - 2 * u)           // ease in/out
+                return simd_mix(a.p, b.p, simd_float3(repeating: e))
+            }
+        }
+        return keys[keys.count - 1].p
+    }
+
+    private func buildIntroSet(_ parent: SCNNode) {
+        let set = SCNNode()
+        set.simdPosition = Self.introOrigin
+
+        // desert floor
+        let groundMat = SCNMaterial()
+        groundMat.lightingModel = .lambert
+        groundMat.diffuse.contents = Self.groundTexture
+        groundMat.diffuse.wrapS = .repeat
+        groundMat.diffuse.wrapT = .repeat
+        groundMat.diffuse.contentsTransform = SCNMatrix4MakeScale(90, 90, 1)
+        groundMat.multiply.contents = UIColor(red: 0.86, green: 0.72, blue: 0.50, alpha: 1)
+        let ground = SCNNode(geometry: SCNPlane(width: 1400, height: 1400))
+        ground.geometry!.materials = [groundMat]
+        ground.eulerAngles.x = -.pi / 2
+        ground.castsShadow = false
+        set.addChildNode(ground)
+
+        // hangar: box plus a barrel roof
+        let wallMat = lambert(UIColor(white: 0.52, alpha: 1))
+        let hangar = SCNNode(geometry: SCNBox(width: 34, height: 11, length: 20, chamferRadius: 0))
+        hangar.geometry!.materials = [wallMat]
+        hangar.position = SCNVector3(-38, 5.5, -34)
+        set.addChildNode(hangar)
+        let roof = SCNNode(geometry: SCNCylinder(radius: 10.2, height: 34))
+        roof.geometry!.materials = [lambert(UIColor(white: 0.60, alpha: 1))]
+        roof.eulerAngles.z = .pi / 2
+        roof.position = SCNVector3(-38, 11, -34)
+        set.addChildNode(roof)
+        // open doorway the craft slips out of
+        let doorway = SCNNode(geometry: SCNBox(width: 11, height: 9, length: 0.6, chamferRadius: 0))
+        doorway.geometry!.materials = [constant(UIColor(red: 0.03, green: 0.04, blue: 0.05, alpha: 1))]
+        doorway.position = SCNVector3(-40, 4.6, -23.8)
+        set.addChildNode(doorway)
+
+        // perimeter fence
+        let fencePostGeo = SCNBox(width: 0.3, height: 4.4, length: 0.3, chamferRadius: 0)
+        fencePostGeo.materials = [lambert(UIColor(white: 0.44, alpha: 1))]
+        let meshMat = SCNMaterial()
+        meshMat.lightingModel = .constant
+        meshMat.diffuse.contents = UIColor(white: 0.72, alpha: 1)
+        meshMat.transparency = 0.16
+        meshMat.isDoubleSided = true
+        meshMat.writesToDepthBuffer = false
+        var fx: Float = -90
+        while fx <= 90 {
+            let post = SCNNode(geometry: fencePostGeo)
+            post.position = SCNVector3(fx, 2.2, 20)
+            set.addChildNode(post)
+            fx += 6
+        }
+        let mesh = SCNNode(geometry: SCNPlane(width: 180, height: 4.2))
+        mesh.geometry!.materials = [meshMat]
+        mesh.position = SCNVector3(0, 2.1, 20)
+        mesh.castsShadow = false
+        set.addChildNode(mesh)
+
+        // warning sign on the fence
+        let signMat = constant(.white)
+        signMat.diffuse.contents = Textures.banner(text: "AREA 51",
+            background: UIColor(red: 0.55, green: 0.09, blue: 0.10, alpha: 1))
+        signMat.isDoubleSided = true
+        let sign = SCNNode(geometry: SCNPlane(width: 7.5, height: 1.25))
+        sign.geometry!.materials = [signMat]
+        sign.position = SCNVector3(-15, 2.9, 19.8)
+        set.addChildNode(sign)
+
+        // radio masts with red beacons
+        let mastMat = lambert(UIColor(white: 0.38, alpha: 1))
+        let beaconMat = constant(UIColor(red: 1, green: 0.15, blue: 0.12, alpha: 1))
+        beaconMat.emission.contents = UIColor(red: 1, green: 0.15, blue: 0.12, alpha: 1)
+        beaconMat.emission.intensity = 1.8
+        for mx in [Float(-46), Float(34)] {
+            let mast = SCNNode(geometry: SCNCylinder(radius: 0.34, height: 30))
+            mast.geometry!.materials = [mastMat]
+            mast.position = SCNVector3(mx, 15, -46)
+            set.addChildNode(mast)
+            let beacon = SCNNode(geometry: SCNSphere(radius: 0.7))
+            beacon.geometry!.materials = [beaconMat]
+            beacon.position = SCNVector3(mx, 30.4, -46)
+            set.addChildNode(beacon)
+        }
+
+        // searchlights: a yaw pivot at the head, beam cone pointing down -Z
+        let beamMat = SCNMaterial()
+        beamMat.lightingModel = .constant
+        beamMat.diffuse.contents = UIColor(red: 0.60, green: 0.78, blue: 0.95, alpha: 1)
+        beamMat.transparency = 0.05
+        beamMat.blendMode = .add
+        beamMat.writesToDepthBuffer = false
+        beamMat.isDoubleSided = true
+        let headMat = constant(UIColor(red: 1, green: 0.97, blue: 0.86, alpha: 1))
+        headMat.emission.contents = UIColor(red: 1, green: 0.97, blue: 0.86, alpha: 1)
+        headMat.emission.intensity = 0.5
+        for sx in [Float(-30), Float(6), Float(40)] {
+            let pole = SCNNode(geometry: SCNCylinder(radius: 0.26, height: 7))
+            pole.geometry!.materials = [mastMat]
+            pole.position = SCNVector3(sx, 3.5, 12)
+            set.addChildNode(pole)
+
+            let pivot = SCNNode()
+            pivot.position = SCNVector3(sx, 7.2, 12)
+            let head = SCNNode(geometry: SCNSphere(radius: 0.34))
+            head.geometry!.materials = [headMat]
+            pivot.addChildNode(head)
+            let beamH: Float = 110
+            let beam = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 2.4, height: CGFloat(beamH)))
+            beam.geometry!.materials = [beamMat]
+            beam.eulerAngles.x = .pi / 2         // apex toward +Z…
+            beam.position = SCNVector3(0, 0, -beamH / 2)   // …shifted so it sits at the head
+            beam.castsShadow = false
+            pivot.addChildNode(beam)
+            set.addChildNode(pivot)
+            searchlights.append(pivot)
+        }
+
+        // cruisers parked at the gate
+        for (i, px) in [Float(-16), Float(2), Float(20)].enumerated() {
+            let car = trafficCar(UIColor(white: 0.93, alpha: 1), police: true)
+            car.position = SCNVector3(px, 0, 15)
+            car.eulerAngles.y = Float(i) * 0.35 - 0.35
+            set.addChildNode(car)
+        }
+
+        // the craft itself — same hull the player flies
+        let built = ufoHull(scale: 2.4)
+        introUfoRing = built.lightRing
+        introUfo.addChildNode(built.node)
+        set.addChildNode(introUfo)
+
+        introSet = set
+        parent.addChildNode(set)
+    }
+
+    /// Drives the looping escape. Called from the `.intro` branch of the frame.
+    private func updateIntro(_ dt: Float) {
+        introT += dt
+        if introT > Self.introLoop { introT -= Self.introLoop }
+
+        // dry desert dusk while we're at the base
+        scene.fogColor = UIColor(red: 0.84, green: 0.62, blue: 0.48, alpha: 1)
+        // the gate cruisers' bars flash here too — the race loop isn't running
+        let flash = sin(introT * 9) > 0
+        policeRedMat.emission.intensity = flash ? 2.2 : 0.05
+        policeBlueMat.emission.intensity = flash ? 0.05 : 2.2
+
+        let o = Self.introOrigin
+        let ufoLocal = Self.samplePath(Self.ufoPath, introT)
+        let ufoWorld = o + ufoLocal
+        introUfo.simdPosition = ufoLocal
+
+        // bank into the direction of travel, sampled from the path itself
+        let ahead = Self.samplePath(Self.ufoPath, min(Self.introLoop, introT + 0.12))
+        let vel = ahead - ufoLocal
+        let speed = simd_length(vel)
+        if speed > 0.001 {
+            let dir = vel / speed
+            introUfo.eulerAngles = SCNVector3(-dir.y * 0.5, atan2(dir.x, -dir.z), -dir.x * 0.42)
+        }
+        introUfoRing.eulerAngles.y += dt * 4.5
+
+        // Fixed position with a slow drift, but the aim eases from the base to the
+        // craft as it climbs — a fully locked frame kept losing the saucer.
+        let drift = simd_float3(sin(introT * 0.28) * 1.1, sin(introT * 0.21) * 0.5, 0)
+        cameraNode.simdPosition = o + Self.introCam + drift
+        let attention = Self.smoothStep(3.2, 5.6, introT)
+        var look = simd_mix(Self.introBaseLook, ufoLocal, simd_float3(repeating: attention))
+        look.x -= 7                       // bias left so the craft frames right of centre
+        cameraNode.simdLook(at: o + look, up: simd_float3(0, 1, 0),
+                            localFront: simd_float3(0, 0, -1))
+        cameraNode.camera?.fieldOfView = 60
+
+        // searchlights sweep, then lock on once it's airborne
+        for (i, light) in searchlights.enumerated() {
+            let phase = Float(i) * 2.1
+            if introT > 4.0 {
+                light.simdLook(at: ufoWorld, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+            } else {
+                let sweep = sin(introT * 0.8 + phase) * 0.9
+                light.eulerAngles = SCNVector3(-0.85, sweep, 0)
+            }
+        }
+
+        // A little dust as it breaks cover. The race's rate (320) threw puffs big
+        // enough to completely hide the craft at this camera distance.
+        if introT > 2.8 && introT < 4.6 {
+            dustNode.simdPosition = o + simd_float3(ufoLocal.x, 0.3, ufoLocal.z)
+            dustSystem.birthRate = 55
+        } else if introT < 0.2 || introT > 4.6 {
+            dustSystem.birthRate = 0
+        }
+    }
+
     private func buildCar() {
-        // automotive paint: metallic flake with a tight highlight, lit by the sky
-        let paint = SCNMaterial()
-        paint.lightingModel = .physicallyBased
-        paint.diffuse.contents = UIColor(red: 0.82, green: 0.10, blue: 0.18, alpha: 1)
-        paint.metalness.contents = 0.55
-        paint.roughness.contents = 0.26
+        let built = ufoHull()
+        chassisNode.addChildNode(built.node)
+        ufoLightRing = built.lightRing
 
-        let body = SCNNode(geometry: SCNBox(width: 1.8, height: 0.42, length: 4.0, chamferRadius: 0.08))
-        body.geometry!.materials = [paint]; body.position.y = 0.5
-        chassisNode.addChildNode(body)
-
-        let hood = SCNNode(geometry: SCNBox(width: 1.7, height: 0.2, length: 1.2, chamferRadius: 0.06))
-        hood.geometry!.materials = [paint]
-        hood.position = SCNVector3(0, 0.62, -1.35); hood.eulerAngles.x = -0.1
-        chassisNode.addChildNode(hood)
-
-        let stripe = SCNNode(geometry: SCNBox(width: 0.5, height: 0.03, length: 4.02, chamferRadius: 0))
-        stripe.geometry!.materials = [lambert(UIColor(white: 0.96, alpha: 1))]
-        stripe.position.y = 0.72
-        chassisNode.addChildNode(stripe)
-
-        let glass = SCNMaterial()
-        glass.lightingModel = .physicallyBased
-        glass.diffuse.contents = UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1)
-        glass.metalness.contents = 0.9
-        glass.roughness.contents = 0.06
-        let cabin = SCNNode(geometry: SCNBox(width: 1.55, height: 0.5, length: 1.8, chamferRadius: 0.1))
-        cabin.geometry!.materials = [glass]
-        cabin.position = SCNVector3(0, 0.96, 0.25)
-        chassisNode.addChildNode(cabin)
-
-        let skirt = SCNNode(geometry: SCNBox(width: 1.84, height: 0.12, length: 4.02, chamferRadius: 0))
-        skirt.geometry!.materials = [lambert(UIColor(red: 0, green: 0.31, blue: 0.63, alpha: 1))]
-        skirt.position.y = 0.3
-        chassisNode.addChildNode(skirt)
-
-        let dark = lambert(UIColor(red: 0.09, green: 0.11, blue: 0.15, alpha: 1))
-        let spoiler = SCNNode(geometry: SCNBox(width: 1.6, height: 0.06, length: 0.4, chamferRadius: 0))
-        spoiler.geometry!.materials = [dark]
-        spoiler.position = SCNVector3(0, 0.95, 1.95)
-        chassisNode.addChildNode(spoiler)
-
-        let tireGeo = SCNCylinder(radius: 0.34, height: 0.26)
-        tireGeo.materials = [lambert(UIColor(red: 0.08, green: 0.09, blue: 0.1, alpha: 1))]
-        let hubGeo = SCNCylinder(radius: 0.18, height: 0.27)
-        let hubMat = SCNMaterial()
-        hubMat.lightingModel = .physicallyBased
-        hubMat.diffuse.contents = UIColor(red: 0.86, green: 0.72, blue: 0.30, alpha: 1)
-        hubMat.metalness.contents = 0.95
-        hubMat.roughness.contents = 0.22
-        hubGeo.materials = [hubMat]
-        for o in [(x: Float(-0.85), z: Float(-1.28), front: true),
-                  (x: Float(0.85), z: Float(-1.28), front: true),
-                  (x: Float(-0.85), z: Float(1.28), front: false),
-                  (x: Float(0.85), z: Float(1.28), front: false)] {
-            let steer = SCNNode()
-            steer.position = SCNVector3(o.x, 0.34, o.z)
-            let spin = SCNNode()
-            let tire = SCNNode(geometry: tireGeo)
-            tire.eulerAngles.z = .pi / 2
-            let hub = SCNNode(geometry: hubGeo)
-            hub.eulerAngles.z = .pi / 2
-            spin.addChildNode(tire)
-            spin.addChildNode(hub)
-            steer.addChildNode(spin)
-            chassisNode.addChildNode(steer)
-            spinWheelNodes.append(spin)
-            if o.front { frontWheelNodes.append(steer) }
-        }
-
-        // Headlights: emission was 2.2 with a 0.85 bloom threshold, which is
-        // what produced the white blob swallowing the car. Much dimmer now.
-        let hlMat = constant(UIColor(red: 1, green: 0.95, blue: 0.80, alpha: 1))
-        hlMat.emission.contents = UIColor(red: 1, green: 0.94, blue: 0.76, alpha: 1)
-        hlMat.emission.intensity = 0.55
-        for xo in [Float(-0.6), Float(0.6)] {
-            let hl = SCNNode(geometry: SCNBox(width: 0.32, height: 0.14, length: 0.06, chamferRadius: 0))
-            hl.geometry!.materials = [hlMat]
-            hl.position = SCNVector3(xo, 0.58, -2.01)
-            chassisNode.addChildNode(hl)
-        }
-
-        // Headlights used to throw two additive cones forward. From a chase
-        // camera you look straight into them, which is what put a white blob
-        // over the car. Replaced with a soft pool of light lying on the asphalt
-        // ahead — reads as headlights, never occludes anything.
+        // A soft pool of light on the asphalt ahead, in place of headlights.
+        // On playerNode rather than the chassis so it stays flat on the road while
+        // the hull banks and pitches.
         let poolMat = SCNMaterial()
         poolMat.lightingModel = .constant
         poolMat.diffuse.contents = Textures.softCircle()
-        poolMat.multiply.contents = UIColor(red: 1, green: 0.93, blue: 0.72, alpha: 1)
+        poolMat.multiply.contents = UIColor(red: 0.62, green: 1, blue: 0.86, alpha: 1)
         poolMat.blendMode = .add
         poolMat.writesToDepthBuffer = false
-        poolMat.transparency = 0.24
+        poolMat.transparency = 0.22
         let pool = SCNNode(geometry: SCNPlane(width: 7, height: 16))
         pool.geometry!.materials = [poolMat]
         pool.eulerAngles.x = -.pi / 2
         pool.position = SCNVector3(0, 0.045, -9.5)
         pool.castsShadow = false
-        // on playerNode, not the chassis, so it stays flat on the road while the
-        // body pitches and rolls
         playerNode.addChildNode(pool)
 
+        // rear brake glow — a strip on the trailing rim
         brakeLightMaterial = constant(UIColor(red: 0.33, green: 0.04, blue: 0.04, alpha: 1))
-        for xo in [Float(-0.62), Float(0.62)] {
-            let bl = SCNNode(geometry: SCNBox(width: 0.4, height: 0.13, length: 0.06, chamferRadius: 0))
-            bl.geometry!.materials = [brakeLightMaterial]
-            bl.position = SCNVector3(xo, 0.6, 2.01)
-            chassisNode.addChildNode(bl)
-        }
+        let brakeBar = SCNNode(geometry: SCNBox(width: 1.3, height: 0.1, length: 0.1, chamferRadius: 0.04))
+        brakeBar.geometry!.materials = [brakeLightMaterial]
+        brakeBar.position = SCNVector3(0, 0.58, 1.24)
+        chassisNode.addChildNode(brakeBar)
 
-        for xo in [Float(-0.45), Float(0.45)] {
+        // three downward-angled thrusters for nitro
+        for xo in [Float(-0.62), Float(0), Float(0.62)] {
             let fm = SCNMaterial()
             fm.lightingModel = .constant
-            fm.diffuse.contents = UIColor(red: 0.35, green: 0.84, blue: 1, alpha: 1)
-            fm.emission.contents = UIColor(red: 0.35, green: 0.84, blue: 1, alpha: 1)
-            fm.emission.intensity = 1.6
+            fm.diffuse.contents = UIColor(red: 0.45, green: 1, blue: 0.82, alpha: 1)
+            fm.emission.contents = UIColor(red: 0.45, green: 1, blue: 0.82, alpha: 1)
+            fm.emission.intensity = 1.7
             fm.blendMode = .add
             fm.writesToDepthBuffer = false
-            let flame = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 0.12, height: 1.0))
+            let flame = SCNNode(geometry: SCNCone(topRadius: 0.09, bottomRadius: 0, height: 1.1))
             flame.geometry!.materials = [fm]
-            flame.eulerAngles.x = -.pi / 2
-            flame.position = SCNVector3(xo, 0.36, 2.5)
+            flame.eulerAngles.x = -1.15          // back and down
+            flame.position = SCNVector3(xo, 0.34, 1.05)
             flame.isHidden = true
             flame.castsShadow = false
             chassisNode.addChildNode(flame)
             flameNodes.append(flame)
         }
 
-        // Underglow was a flat cyan quad with no falloff, which read as a mat
-        // taped to the road. A radial gradient tinted through `multiply` gives it
-        // an actual glow edge.
+        // hover field on the road beneath the craft
         glowMaterial = SCNMaterial()
         glowMaterial.lightingModel = .constant
         glowMaterial.diffuse.contents = Textures.softCircle()
-        glowMaterial.multiply.contents = UIColor(red: 0.07, green: 0.84, blue: 0.76, alpha: 1)
+        glowMaterial.multiply.contents = UIColor(red: 0.24, green: 0.96, blue: 0.72, alpha: 1)
         glowMaterial.blendMode = .add
         glowMaterial.writesToDepthBuffer = false
         glowMaterial.transparency = 0.5
-        let glow = SCNNode(geometry: SCNPlane(width: 3.3, height: 5.6))
+        let glow = SCNNode(geometry: SCNPlane(width: 4.2, height: 4.2))
         glow.geometry!.materials = [glowMaterial]
         glow.eulerAngles.x = -.pi / 2
-        glow.position.y = 0.08
+        glow.position.y = 0.06
         glow.castsShadow = false
         chassisNode.addChildNode(glow)
 
@@ -1556,7 +1821,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         blobMat.diffuse.contents = Textures.blobShadow()
         blobMat.transparency = 1
         blobMat.writesToDepthBuffer = false
-        blobNode.geometry = SCNPlane(width: 3.4, height: 5.2)
+        blobNode.geometry = SCNPlane(width: 3.6, height: 3.6)   // round, like the craft
         blobNode.geometry!.materials = [blobMat]
         blobNode.eulerAngles.x = -.pi / 2
         blobNode.castsShadow = false
@@ -1643,6 +1908,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         fov = Self.baseFov
         clearSkids()
         dustSystem.birthRate = 0
+        // the base is 6 km away and fully fogged, but there's no reason to keep
+        // paying for it once the race starts
+        introSet.isHidden = true
 
         // fresh course every race
         runSeed = UInt64.random(in: 1..<2147483646)
@@ -1763,13 +2031,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         switch phase {
         case .intro:
-            let ft = Float(time * 22).truncatingRemainder(dividingBy: Self.total * 0.6)
-            let (p1, _, r1) = sample(ft + 100)
-            let target = p1 - r1 * 14 + simd_float3(0, 11, 0)
-            camPos = simd_mix(camPos, target, simd_float3(repeating: 0.03))
-            cameraNode.simdPosition = camPos
-            let (p2, _, _) = sample(ft + 160)
-            cameraNode.simdLook(at: p2, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+            updateIntro(dt)
             return
         case .countdown:
             cd -= dt
@@ -2110,8 +2372,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     sparkNode.simdPosition = cp + cr * x + simd_float3(0, 0.55, 0)
                     sparkSystem.birthRate = 700
                     sparkT = 0.1
-                    score += 120
-                    damage(6, "¡QUÍTATE!")
+                    score += tc.isPolice ? 250 : 120
+                    damage(6, tc.isPolice ? "¡LA JARA!" : "¡QUÍTATE!")
                 } else {
                     traffic[ti].cool = 2
                     v = min(v, tc.v * 0.8)
@@ -2158,13 +2420,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                   * min(1, 6 * dt)
         if jolt > 0 { jolt = max(0, jolt - dt * 4) }
         chassisNode.eulerAngles = SCNVector3(pitchAng + jolt * 0.08 * sin(tNow * 60), driftYaw, leanRoll)
-        chassisNode.position.y = -jolt * 0.12 * abs(sin(tNow * 42))
+        // idle hover bob, plus the impact jolt
+        chassisNode.position.y = sin(tNow * 2.3) * 0.055 - jolt * 0.12 * abs(sin(tNow * 42))
         // blink through the grace window so the player can read that it's active
         chassisNode.opacity = invuln > 0 ? CGFloat(0.45 + 0.55 * abs(sin(tNow * 22))) : 1
 
-        wheelSpin += v * dt / 0.34
-        for w in spinWheelNodes { w.eulerAngles.x = -wheelSpin }
-        for w in frontWheelNodes { w.eulerAngles.y = -steer * 0.35 }
+        // the ring spins faster the harder the craft is working
+        wheelSpin += (1.4 + v * 0.09) * dt
+        ufoLightRing.eulerAngles.y = wheelSpin
+
+        // every cruiser's bar flashes off one shared pair of materials
+        let flash = sin(tNow * 9) > 0
+        policeRedMat.emission.intensity = flash ? 2.2 : 0.05
+        policeBlueMat.emission.intensity = flash ? 0.05 : 2.2
         glowMaterial.transparency = CGFloat(0.42 + 0.14 * sin(tNow * 9))
 
         // shadow stays on the road and shrinks as the car climbs, which is what

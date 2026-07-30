@@ -553,10 +553,10 @@ struct IntroOverlay: View {
 
     var body: some View {
         ZStack {
-            // lighter than before — the camera flythrough behind this was almost
-            // completely hidden at 0.92/0.88
-            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.68),
-                                    Color(red: 0.18, green: 0.04, blue: 0.24).opacity(0.56)],
+            // Light enough to read the Area 51 escape playing behind it. Legibility
+            // comes from the text's own shadows rather than from dimming the scene.
+            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.44),
+                                    Color(red: 0.16, green: 0.03, blue: 0.22).opacity(0.30)],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
 

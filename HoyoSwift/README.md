@@ -1,10 +1,15 @@
 # ¡HOYO! — native Swift port
 
-Native iOS version of the Puerto Rico downhill pothole racer, built with
-**SwiftUI + SceneKit**. Same mountain road as the web version, same hazards —
-potholes, iguanas, el tapón — with analog touch controls, haptics, and a fully
-synthesized soundtrack (AVAudioEngine renders the dembow beat, engine, wind, and
-coquí chirps from math; there are zero audio or image assets).
+Native iOS version of the Puerto Rico downhill racer, built with **SwiftUI +
+SceneKit**. Same mountain road as the web version, same hazards — potholes,
+iguanas, el tapón — with analog touch controls, haptics, and a fully synthesized
+soundtrack (AVAudioEngine renders the dembow beat, engine, wind, and coquí chirps
+from math; there are zero audio or image assets).
+
+You fly a **flying saucer**, not a car. The title screen runs a looping cutscene
+of it breaking out of a hangar at Area 51 — searchlights locking on, cruisers at
+the gate — which is the excuse for a craft that can hop over potholes, clear
+traffic roofs, and shunt police cars out of the lane.
 
 The road itself is the fixed seeded course, but the **hazard layout is reseeded
 every run** — potholes, piraguas, toolboxes, iguanas and traffic are laid out
@@ -67,9 +72,14 @@ your Apple ID (personal team works), then on the phone accept
 | --- | --- |
 | steering pad (bottom-left) | **analog** steer — how far you slide your thumb is how hard it turns |
 | tilt | optional device-roll steering; pick **INCLINAR** under CONTROL in the pause menu (has a sentido/invert toggle) |
-| 🔥 | nitro (recharges slowly; piraguas 🍧 give +35) |
-| 🛑 | brake — **brake + steer = drift** for style points, and it lays skid marks |
-| 🎵 | music on/off |
+| ▲ jump | hop the craft — clears potholes outright and scores big over a car's roof |
+| ■ brake | **brake + steer = drift** for style points, and it lays skid marks |
+| ▶ nitro | recharges slowly; piraguas give +35 |
+| speaker | music on/off |
+
+Ram a car with more than 16 m/s of closing speed and you parry it out of the lane
+instead of bouncing off it — worth more against a police cruiser. Below that
+you just thump into it.
 
 Launching with the `-autoplay` argument starts a self-driving smoke-test run
 (the native equivalent of the web build's `?autoplay`): a lane-holding
