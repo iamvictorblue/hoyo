@@ -9,6 +9,7 @@ final class SoundEngine: ObservableObject {
     private let engine = AVAudioEngine()
     private let musicPlayer = AVAudioPlayerNode()
     private let fxPlayer = AVAudioPlayerNode()
+    private let ambientPlayer = AVAudioPlayerNode()
     private var sourceNode: AVAudioSourceNode?
     private var format: AVAudioFormat!
     private var sampleRate: Double = 44100
@@ -89,9 +90,11 @@ final class SoundEngine: ObservableObject {
         engine.attach(node)
         engine.attach(musicPlayer)
         engine.attach(fxPlayer)
+        engine.attach(ambientPlayer)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         engine.connect(musicPlayer, to: engine.mainMixerNode, format: format)
         engine.connect(fxPlayer, to: engine.mainMixerNode, format: format)
+        engine.connect(ambientPlayer, to: engine.mainMixerNode, format: format)
         engine.mainMixerNode.outputVolume = 0.9
 
         coquiBuffer = renderCoqui()
@@ -101,7 +104,7 @@ final class SoundEngine: ObservableObject {
         beepHiBuffer = renderBeep(freq: 1420, dur: 0.3)
         jumpBuffer = renderJump()
         zapBuffer = renderZap()
-        let bar = renderDembowBar()
+        let bar = renderDembowPhrase()
 
         do {
             try engine.start()
@@ -111,7 +114,10 @@ final class SoundEngine: ObservableObject {
                 musicPlayer.scheduleBuffer(bar, at: nil, options: .loops)
                 musicPlayer.play()
             }
+            fxPlayer.volume = 1.0
+            ambientPlayer.volume = 0.22
             fxPlayer.play()
+            ambientPlayer.play()
         } catch {}
     }
 
@@ -120,6 +126,8 @@ final class SoundEngine: ObservableObject {
     }
 
     func playCoqui() { if let b = coquiBuffer { fxPlayer.scheduleBuffer(b) } }
+    /// Same chirp, played low in the mix as atmosphere rather than as feedback.
+    func playCoquiAmbient() { if let b = coquiBuffer { ambientPlayer.scheduleBuffer(b) } }
     func playThunk() { if let b = thunkBuffer { fxPlayer.scheduleBuffer(b) } }
     func playHorn()  { if let b = hornBuffer { fxPlayer.scheduleBuffer(b) } }
     func playJump()  { if let b = jumpBuffer { fxPlayer.scheduleBuffer(b) } }
@@ -236,17 +244,29 @@ final class SoundEngine: ObservableObject {
         }
     }
 
-    /// One bar of dembow at 108 BPM: kick + bass on 0/4/8/12,
-    /// snares on 3/6/11/14, hats on the offbeats.
-    private func renderDembowBar() -> AVAudioPCMBuffer? {
+    /// Four bars of dembow at 108 BPM rather than one. A single looping bar is the
+    /// most fatiguing thing you can put under a game — the bass walks across the
+    /// phrase and the last bar carries a snare fill, so it breathes.
+    private func renderDembowPhrase() -> AVAudioPCMBuffer? {
         let stepDur = 60.0 / 108.0 / 4.0
+        let bars = 4
         let barDur = stepDur * 16
-        guard let (buf, d, n) = makeBuffer(seconds: barDur) else { return nil }
-        let bass: [Double] = [55, 55, 65.41, 49]
+        guard let (buf, d, n) = makeBuffer(seconds: barDur * Double(bars)) else { return nil }
+        // a walking bass line across the phrase instead of the same four notes
+        let bassLine: [[Double]] = [
+            [55, 55, 65.41, 49],
+            [55, 55, 73.42, 49],
+            [49, 49, 65.41, 58.27],
+            [55, 65.41, 73.42, 82.41]
+        ]
         var rng = SystemRandomNumberGenerator()
 
+        for bar in 0..<bars {
+        let barOffset = Double(bar) * barDur
+        let bass = bassLine[bar]
+
         for (k, step) in [0, 4, 8, 12].enumerated() {
-            let t0 = Double(step) * stepDur
+            let t0 = barOffset + Double(step) * stepDur
             addSweep(d, n, start: t0, dur: 0.14, f0: 135, f1: 42, amp: 0.8)
             // bass: filtered saw approximated by first 3 harmonics
             let i0 = Int(t0 * sampleRate)
@@ -262,8 +282,10 @@ final class SoundEngine: ObservableObject {
                 d[i] += Float(s * env * 0.22)
             }
         }
-        for step in [3, 6, 11, 14] {
-            let i0 = Int(Double(step) * stepDur * sampleRate)
+        // the fourth bar gets extra snares — a turnaround into the next phrase
+        let snareSteps = bar == bars - 1 ? [3, 6, 11, 13, 14, 15] : [3, 6, 11, 14]
+        for step in snareSteps {
+            let i0 = Int((barOffset + Double(step) * stepDur) * sampleRate)
             var bp = 0.0
             for j in 0..<Int(0.11 * sampleRate) {
                 let i = i0 + j
@@ -276,7 +298,7 @@ final class SoundEngine: ObservableObject {
             }
         }
         for step in [2, 6, 10, 14] {
-            let i0 = Int(Double(step) * stepDur * sampleRate)
+            let i0 = Int((barOffset + Double(step) * stepDur) * sampleRate)
             var last = 0.0
             for j in 0..<Int(0.04 * sampleRate) {
                 let i = i0 + j
@@ -287,6 +309,7 @@ final class SoundEngine: ObservableObject {
                 d[i] += Float((noise - last) * env * 0.12)
                 last = noise
             }
+        }
         }
         return buf
     }

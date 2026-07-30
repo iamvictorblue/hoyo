@@ -295,6 +295,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var dustT: Float = 0
     private var sparkT: Float = 0
     private var rumbleHapticT: Float = 0
+    private var coquiT: Float = 2
     private var driftYaw: Float = 0, leanRoll: Float = 0, pitchAng: Float = 0
     private var playTime: Double = 0
     private var lastTime: TimeInterval = -1
@@ -1834,7 +1835,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 critters[i].hitPlayer = true
                 shake = max(shake, 0.55)
                 sound.playThunk()
-                damage(kind.contactDamage, kind == .boa ? "¡LA BOA!" : "¡CUIDAO!")
+                damage(kind.contactDamage, kind == .boa ? "¡LA BOA!" : "¡CUIDAO!", tone: .hit)
             }
         }
     }
@@ -1846,7 +1847,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         critters[i].node.isHidden = true
         score += Float(kind.points)
         combo = min(combo + 1, 5)
-        popupAsync("\(kind.label) +\(kind.points)")
+        popupAsync("\(kind.label) +\(kind.points)", .big)
         sound.playCoqui()
         let (cp, _, cr) = sample(bs)
         sparkNode.simdPosition = cp + cr * bx + simd_float3(0, 0.5, 0)
@@ -1964,7 +1965,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     traffic[ti].cool = 1.5
                     score += tc.isPolice ? 240 : 130
                     combo = min(combo + 1, 5)
-                    popupAsync(tc.isPolice ? "¡LA JARA!" : "¡FUEGO!")
+                    popupAsync(tc.isPolice ? "¡LA JARA!" : "¡FUEGO!", .big)
                     sound.playThunk()
                     struck = true
                     break
@@ -1995,7 +1996,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                         holes[hIdx].zapped = true
                         layPatch(over: h)
                         score += 70
-                        popupAsync("¡TAPADO! +70")
+                        popupAsync("\(Shout.one(Shout.sealed)) +70", .pickup)
                         struck = true
                         break
                     }
@@ -2579,6 +2580,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         playTime = 0
         hudClock = 0
+        coquiT = 2
         lastRegion = nil            // so the first region announces itself
         cd = 3.4; cdLabel = ""
         fov = Self.baseFov
@@ -2700,7 +2702,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Collision damage. `grace` hits are ignored while the post-hit invulnerable
     /// window is open — without it a pothole cluster chain-killed you in a
     /// single second, which is what made the old balance feel unfair.
-    private func damage(_ amount: Float, _ msg: String?, grace: Bool = true) {
+    private func damage(_ amount: Float, _ msg: String?, tone: PopupTone = .hit,
+                        grace: Bool = true) {
         if grace && invuln > 0 { return }
         if grace { invuln = 0.85 }
         hp -= amount
@@ -2709,7 +2712,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if let msg = msg {
             Haptics.shared.crash(intensity: min(1, 0.45 + amount / 40))
             DispatchQueue.main.async {
-                self.state.popup(msg)
+                self.state.popup(msg, tone)
                 self.state.combo = 0
             }
             lastCombo = 0
@@ -2717,8 +2720,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if hp <= 0 { hp = 0; endGame(dead: true) }
     }
 
-    private func popupAsync(_ msg: String) {
-        DispatchQueue.main.async { self.state.popup(msg) }
+    private func popupAsync(_ msg: String, _ tone: PopupTone = .praise) {
+        DispatchQueue.main.async { self.state.popup(msg, tone) }
+    }
+
+    /// Shouts, in Puerto Rican Spanish. Pools rather than single strings, so the
+    /// game doesn't say the exact same thing every time something happens.
+    private enum Shout {
+        static let pothole   = ["¡HOYO!", "¡AY!", "¡ESE HOYO!", "¡RAYOS!"]
+        static let nearMiss  = ["¡CASI!", "¡POR POCO!", "¡QUÉ CHULO!", "¡CHÉVERE!"]
+        static let drift     = ["¡WEPA!", "¡ESO ES!", "¡BRUTAL!"]
+        static let piragua   = ["¡PIRAGUA!", "¡FRÍO FRÍO!", "¡QUÉ RICO!"]
+        static let mechanic  = ["¡MECÁNICO!", "¡ARREGLAO!", "¡COMO NUEVA!"]
+        static let shove     = ["¡QUÍTATE!", "¡DALE PASO!", "¡MUÉVETE!"]
+        static let overCar   = ["¡POR ENCIMA!", "¡VOLANDO BAJITO!"]
+        static let sealed    = ["¡TAPADO!", "¡ARREGLAO!"]
+        static let overHole  = ["¡VOLANDO!", "¡NI LO TOCÓ!"]
+        static let rail      = ["¡AY BENDITO!", "¡CUIDAO!"]
+        static func one(_ pool: [String]) -> String { pool.randomElement() ?? pool[0] }
     }
 
     // MARK: - per-frame update
@@ -2900,7 +2919,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if drifting {
             styleRun += v * dt * 4
         } else if styleRun > 0 {
-            if styleRun > 50 { popupAsync("¡WEPA! +\(Int(styleRun))") }
+            if styleRun > 50 { popupAsync("\(Shout.one(Shout.drift)) +\(Int(styleRun))", .big) }
             score += styleRun
             styleRun = 0
         }
@@ -2946,7 +2965,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 sparkNode.simdPosition = rp + rr5 * x + simd_float3(0, 0.5, 0)
                 sparkSystem.birthRate = 900
                 sparkT = 0.12
-                damage(9, "¡AY BENDITO!")
+                damage(9, Shout.one(Shout.rail), tone: .hit)
             }
         } else if offroad && v > 8 {
             shake = max(shake, 0.25)
@@ -2967,14 +2986,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     nearMisses += 1
                     combo = min(combo + 1, 5)
                     score += Float(60 * combo)
-                    popupAsync("¡VOLANDO! +\(60 * combo)")
+                    popupAsync("\(Shout.one(Shout.overHole)) +\(60 * combo)", .big)
                 } else if invuln <= 0 {
                     holesHit += 1
                     v *= 0.62
                     shake = 1.1; jolt = 1
                     sound.playThunk()
                     // was 9 + r*9 + v*0.18 ≈ 25–30 per hit on a 100 HP car
-                    damage(5 + h.r * 5 + v * 0.10, "¡HOYO!")
+                    damage(5 + h.r * 5 + v * 0.10, Shout.one(Shout.pothole), tone: .hit)
                     let (pp, _, rr3) = sample(s)
                     dustNode.simdPosition = pp + rr3 * x + simd_float3(0, 0.3, 0)
                     dustSystem.birthRate = 350
@@ -2986,8 +3005,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     nearMisses += 1
                     combo = min(combo + 1, 5)
                     score += Float(40 * combo)
-                    if combo >= 2 { popupAsync("¡CASI! x\(combo) +\(40 * combo)") }
-                    else if nearMisses % 3 == 0 { popupAsync("¡CASI! +40") }
+                    if combo >= 2 { popupAsync("\(Shout.one(Shout.nearMiss)) x\(combo) +\(40 * combo)", .praise) }
+                    else if nearMisses % 3 == 0 { popupAsync("\(Shout.one(Shout.nearMiss)) +40", .praise) }
                 }
             }
         }
@@ -3013,7 +3032,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 score += 50
                 sound.playCoqui()
                 Haptics.shared.tap(intensity: 0.5, sharpness: 0.35)
-                popupAsync("¡MECÁNICO! +VIDA")
+                popupAsync("\(Shout.one(Shout.mechanic)) +VIDA", .pickup)
             }
         }
 
@@ -3027,7 +3046,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 score += 100
                 sound.playCoqui()
                 Haptics.shared.tap(intensity: 0.4, sharpness: 0.7)
-                popupAsync("¡PIRAGUA! +NITRO")
+                popupAsync("\(Shout.one(Shout.piragua)) +NITRO", .pickup)
             }
         }
 
@@ -3048,7 +3067,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 iguanas[gi].node.eulerAngles.z = 2.6
                 shake = max(shake, 0.6)
                 sound.playThunk()
-                damage(5, "¡LA IGUANA!")
+                damage(5, "¡LA IGUANA!", tone: .hit)
             }
             if iguanas[gi].stateRaw != 0 { positionIguana(&iguanas[gi]) }
         }
@@ -3094,7 +3113,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                         combo = min(combo + 1, 5)
                         score += Float(150 * combo)
                         sound.playHorn()
-                        popupAsync("¡POR ENCIMA! +\(150 * combo)")
+                        popupAsync("\(Shout.one(Shout.overCar)) +\(150 * combo)", .big)
                     }
                 } else if closing > 16 {
                     // hit it hard enough to shove it out of the lane rather than
@@ -3111,13 +3130,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     sparkSystem.birthRate = 700
                     sparkT = 0.1
                     score += tc.isPolice ? 250 : 120
-                    damage(6, tc.isPolice ? "¡LA JARA!" : "¡QUÍTATE!")
+                    damage(6, tc.isPolice ? "¡LA JARA!" : Shout.one(Shout.shove), tone: .big)
                 } else {
                     traffic[ti].cool = 2
                     v = min(v, tc.v * 0.8)
                     shake = 1.2; jolt = 1
                     sound.playThunk(); sound.playHorn()
-                    damage(16, "¡EL TAPÓN!")
+                    damage(16, "¡EL TAPÓN!", tone: .hit)
                 }
             } else if !tc.missed && tDs < -1 && tDs > -8 && abs(tc.x - x) < 3 &&
                       abs(tc.x - x) > 1.7 && v - tc.v > 12 {
@@ -3125,7 +3144,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 combo = min(combo + 1, 5)
                 score += Float(80 * combo)
                 sound.playHorn()
-                popupAsync("¡FUA! +\(80 * combo)")
+                popupAsync("¡FUA! +\(80 * combo)", .praise)
             }
             if tDs > -150 && tDs < 700 {
                 tc.node.isHidden = false
@@ -3214,6 +3233,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cameraNode.camera?.fieldOfView = fov
 
         streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0
+
+        // Coquís calling in the background. On the island at dusk this is the
+        // ambience, not a sound effect — sparse in town, constant in the forest.
+        coquiT -= dt
+        if coquiT <= 0 {
+            sound.playCoquiAmbient()
+            let inTown = Self.currentStage != .yunque
+                && Region.at(progress: s / Self.total) == .pueblo
+            let base: Float = Self.currentStage == .yunque ? 1.4 : (inTown ? 5.0 : 2.4)
+            coquiT = base + Float.random(in: 0...2.4)
+        }
 
         // ----- audio -----
         // Six gears instead of one long rising whine: pitch climbs through each

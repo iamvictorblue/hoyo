@@ -53,7 +53,7 @@ struct HUDView: View {
             }
 
             if !state.popupText.isEmpty {
-                PopupView(text: state.popupText)
+                PopupView(text: state.popupText, tone: state.popupTone)
                     .id(state.popupID)
                     .allowsHitTesting(false)
             }
@@ -96,11 +96,16 @@ struct HUDView: View {
                 Spacer()
 
                 VStack(spacing: 5) {
-                    Text(state.hud.timeText)
+                    HStack(spacing: 8) {
+                        RouteShield(route: state.loadedStage.route, compact: true)
+                            .scaleEffect(0.62)
+                            .frame(width: 30, height: 22)
+                        Text(state.hud.timeText)
                         .font(.system(size: 21, weight: .heavy, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(.white)
-                        .shadow(color: .sunsetOrange, radius: 8)
+                            .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
+                    }
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule().fill(.white.opacity(0.15))
@@ -124,12 +129,10 @@ struct HUDView: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(state.hud.score)")
-                        .font(.system(size: 32, weight: .black, design: .rounded))
-                        .italic()
-                        .monospacedDigit()
+                    Text(state.hud.score.formatted())
+                        .font(.system(size: 30, weight: .black, design: .monospaced))
                         .foregroundStyle(Color.neonTeal)
-                        .shadow(color: .neonTeal.opacity(0.8), radius: 10)
+                        .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
                     if state.combo >= 2 {
                         Text("COMBO x\(state.combo)")
                             .font(.system(size: 14, weight: .heavy))
@@ -253,20 +256,21 @@ struct BarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 10, weight: .heavy))
+                .font(.system(size: 9, weight: .heavy))
                 .tracking(3)
-                .foregroundStyle(Color.creamText)
+                .foregroundStyle(Color.creamText.opacity(0.85))
             ZStack(alignment: .leading) {
-                Capsule().fill(.black.opacity(0.42))
-                    .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
+                RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.45))
+                    .overlay(RoundedRectangle(cornerRadius: 2)
+                        .stroke(.white.opacity(0.18), lineWidth: 1))
                 GeometryReader { geo in
-                    Capsule()
+                    RoundedRectangle(cornerRadius: 1)
                         .fill(color)
-                        .shadow(color: color, radius: 6)
                         .frame(width: max(0, geo.size.width * value))
+                        .padding(1.5)
                 }
             }
-            .frame(height: 12)
+            .frame(height: 9)
         }
     }
 }
@@ -638,21 +642,54 @@ struct RegionBanner: View {
 
 struct PopupView: View {
     let text: String
+    var tone: PopupTone = .praise
     @State private var shown = false
+
+    private var size: CGFloat {
+        switch tone {
+        case .hit: return 34
+        case .pickup: return 30
+        case .praise: return 37
+        case .big: return 48
+        }
+    }
+    private var paint: AnyShapeStyle {
+        switch tone {
+        case .hit:    return AnyShapeStyle(Color.neonPink)
+        case .pickup: return AnyShapeStyle(Color.neonTeal)
+        case .praise: return AnyShapeStyle(Color.neonGold)
+        case .big:    return AnyShapeStyle(LinearGradient(
+            colors: [.neonGold, .sunsetOrange, .neonPink],
+            startPoint: .leading, endPoint: .trailing))
+        }
+    }
+    private var glow: Color {
+        switch tone {
+        case .hit: return .neonPink
+        case .pickup: return .neonTeal
+        default: return .sunsetOrange
+        }
+    }
 
     var body: some View {
         Text(text)
-            .font(.system(size: 40, weight: .black, design: .rounded))
+            .font(.system(size: size, weight: .black, design: .rounded))
             .italic()
-            .foregroundStyle(Color.neonGold)
-            .shadow(color: .sunsetOrange, radius: 12)
-            .shadow(color: Color(red: 0.7, green: 0, blue: 0.37), radius: 2, y: 3)
-            .scaleEffect(shown ? 1.0 : 0.4)
+            .foregroundStyle(paint)
+            .shadow(color: .black.opacity(0.75), radius: 5, y: 2)
+            .shadow(color: glow.opacity(0.7), radius: 14)
+            .scaleEffect(shown ? 1.0 : (tone == .big ? 0.3 : 0.55))
+            .rotationEffect(.degrees(shown ? 0 : (tone == .hit ? -6 : 3)))
             .opacity(shown ? 1 : 0)
             .offset(y: -96)
             .onAppear {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { shown = true }
-                withAnimation(.easeOut(duration: 0.4).delay(0.8)) { shown = false }
+                withAnimation(.spring(response: tone == .big ? 0.3 : 0.24,
+                                      dampingFraction: tone == .big ? 0.5 : 0.62)) {
+                    shown = true
+                }
+                withAnimation(.easeOut(duration: 0.4).delay(tone == .big ? 1.0 : 0.8)) {
+                    shown = false
+                }
             }
     }
 }
@@ -911,7 +948,7 @@ struct EndOverlay: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         StatLine(label: "TIEMPO", value: state.statTime)
-                        StatLine(label: "PUNTOS", value: "\(state.statScore)")
+                        StatLine(label: "PUNTOS", value: state.statScore.formatted())
                         StatLine(label: "MÁXIMA", value: "\(state.statTopSpeed) km/h")
                         StatLine(label: "HOYOS / ESQUIVES",
                                  value: "\(state.statHolesHit) / \(state.statNearMisses)",

@@ -106,6 +106,14 @@ enum Region: Int, CaseIterable {
     }
 }
 
+/// What kind of moment a popup is, so a hit and a celebration don't look identical.
+enum PopupTone {
+    case hit        // you took damage
+    case pickup     // you grabbed something
+    case praise     // a near miss, a combo
+    case big        // a real flourish worth shouting about
+}
+
 /// How the player steers. Persisted across launches.
 enum SteerMode: Int {
     case drag = 0      // analog thumb pad, bottom-left
@@ -167,6 +175,7 @@ final class GameState: ObservableObject {
     @Published var hud = HudSnapshot()
     @Published var combo: Int = 0
     @Published var popupText: String = ""
+    @Published var popupTone: PopupTone = .praise
     @Published var popupID: Int = 0
     @Published var musicOn = true
     @Published var paused = false
@@ -223,8 +232,9 @@ final class GameState: ObservableObject {
     var requestReset = false
     var requestTitle = false
 
-    func popup(_ text: String) {
+    func popup(_ text: String, _ tone: PopupTone = .praise) {
         popupText = text
+        popupTone = tone
         popupID += 1
     }
 
