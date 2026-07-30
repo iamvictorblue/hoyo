@@ -3203,9 +3203,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // ----- camera -----
         // closer and tighter than the original 6.4–10 m / 72° rig, so the car is
         // a real presence on screen instead of a distant speck
-        let camDist = 4.5 + v * 0.028
+        // Pull IN under boost rather than drifting out. Distance barely grows with
+        // speed and nitro actively closes it, so the craft gets bigger when you're
+        // going fastest — which is when you most want to see it.
+        let camDist = 4.3 + v * 0.018 - (wantNitro ? 0.85 : 0)
         var target = carPos - tan * camDist
-        target.y += 1.70 + v * 0.009
+        target.y += 1.62 + v * 0.007
         target += rgt * (x * 0.1)
         let k = 1 - exp(-dt * 5.5)
         camPos = simd_mix(camPos, target, simd_float3(repeating: k))
@@ -3225,11 +3228,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cameraNode.simdLook(at: camLook, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
         cameraNode.simdOrientation = simd_mul(cameraNode.simdOrientation,
             simd_quatf(angle: leanRoll * 0.45, axis: simd_float3(0, 0, 1)))
-        // A gentler ramp than the original 72 + v*0.6 → 116. Widening to ~100 at
-        // top speed shrank the car right back down at exactly the moment you most
-        // need to read it against the road.
-        let targetFov = Self.baseFov + CGFloat(v * 0.32) + (wantNitro ? 4 : 0)
-        fov += (min(max(targetFov, Self.baseFov), 86) - fov) * CGFloat(min(1, 4.5 * dt))
+        // Gentler again. The ramp reached 86° under boost, and a wide lens is what
+        // was making the craft feel distant at speed — the sense of speed comes
+        // from motion blur, wind streaks and camera rumble, not from lens width.
+        let targetFov = Self.baseFov + CGFloat(v * 0.19) + (wantNitro ? 2 : 0)
+        fov += (min(max(targetFov, Self.baseFov), 77) - fov) * CGFloat(min(1, 4.5 * dt))
         cameraNode.camera?.fieldOfView = fov
 
         streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0

@@ -13,6 +13,79 @@ extension Color {
     static let signInk = Color(red: 0.09, green: 0.07, blue: 0.10)
 }
 
+// MARK: - type system
+//
+// SF Pro's width axis (iOS 16+) gives tall, narrow signage type without shipping a
+// font file, which keeps the project's no-assets rule. Display is compressed black
+// — roadside lettering, not a friendly app; labels are condensed heavy caps; every
+// number is monospaced so columns align and live values don't jitter.
+
+extension Font {
+    static func display(_ size: CGFloat) -> Font {
+        .system(size: size, weight: .black).width(.compressed)
+    }
+    static func label(_ size: CGFloat) -> Font {
+        .system(size: size, weight: .heavy).width(.condensed)
+    }
+    static func data(_ size: CGFloat) -> Font {
+        .system(size: size, weight: .black, design: .monospaced)
+    }
+}
+
+// MARK: - wordmark
+
+/// The brand: the two O's in HOYO are literally potholes — dark core, warm gritty
+/// rim, the same read as the ones in the road. A game named after a hole should
+/// have holes in its name.
+struct PotholeO: View {
+    let cap: CGFloat
+
+    var body: some View {
+        ZStack {
+            Ellipse()
+                .fill(LinearGradient(
+                    colors: [Color(red: 0.74, green: 0.69, blue: 0.60),
+                             Color(red: 0.48, green: 0.43, blue: 0.37)],
+                    startPoint: .top, endPoint: .bottom))
+            Ellipse()
+                .fill(RadialGradient(
+                    colors: [Color(red: 0.02, green: 0.02, blue: 0.03),
+                             Color(red: 0.10, green: 0.09, blue: 0.11)],
+                    center: .init(x: 0.5, y: 0.42), startRadius: 0, endRadius: cap * 0.42))
+                .padding(cap * 0.13)
+        }
+        .frame(width: cap * 0.80, height: cap)
+        .shadow(color: .black.opacity(0.55), radius: 3, y: 2)
+    }
+}
+
+struct Wordmark: View {
+    var size: CGFloat = 74
+
+    /// SF's cap height is about 0.72 em.
+    private var cap: CGFloat { size * 0.72 }
+
+    var body: some View {
+        HStack(alignment: .lastTextBaseline, spacing: size * 0.012) {
+            Text("¡H").font(.display(size))
+            hole
+            Text("Y").font(.display(size))
+            hole
+            Text("!").font(.display(size))
+        }
+        .foregroundStyle(LinearGradient(
+            colors: [.neonPink, .sunsetOrange, .neonGold],
+            startPoint: .leading, endPoint: .trailing))
+        .shadow(color: .black.opacity(0.8), radius: 9, y: 3)
+        .shadow(color: .neonPink.opacity(0.4), radius: 24)
+    }
+
+    private var hole: some View {
+        PotholeO(cap: cap)
+            .alignmentGuide(.lastTextBaseline) { $0[.bottom] }
+    }
+}
+
 // MARK: - HUD
 
 struct HUDView: View {
@@ -130,18 +203,18 @@ struct HUDView: View {
 
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(state.hud.score.formatted())
-                        .font(.system(size: 30, weight: .black, design: .monospaced))
+                        .font(.data(30))
                         .foregroundStyle(Color.neonTeal)
                         .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
                     if state.combo >= 2 {
                         Text("COMBO x\(state.combo)")
-                            .font(.system(size: 14, weight: .heavy))
+                            .font(.label(15))
                             .foregroundStyle(Color.sunsetOrange)
                             .shadow(color: .sunsetOrange.opacity(0.8), radius: 8)
                     }
                     if state.hud.invuln {
                         Text("INMUNE")
-                            .font(.system(size: 12, weight: .black)).tracking(2)
+                            .font(.label(13)).tracking(2)
                             .foregroundStyle(.white.opacity(0.9))
                     }
                 }
@@ -178,14 +251,12 @@ struct HUDView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .lastTextBaseline, spacing: 6) {
                         Text("\(state.hud.speedKmh)")
-                            .font(.system(size: 46, weight: .black, design: .rounded))
-                            .italic()
-                            .monospacedDigit()
+                            .font(.data(44))
                             .foregroundStyle(state.hud.nitroActive ? Color.neonTeal :
                                              (state.hud.speedKmh > 150 ? Color.neonGold : .white))
                             .shadow(color: .black.opacity(0.8), radius: 4, y: 2)
                         Text("KM/H")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .font(.label(13))
                             .tracking(3)
                             .foregroundStyle(Color.neonGold)
                     }
@@ -256,7 +327,7 @@ struct BarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 9, weight: .heavy))
+                .font(.label(10))
                 .tracking(3)
                 .foregroundStyle(Color.creamText.opacity(0.85))
             ZStack(alignment: .leading) {
@@ -342,9 +413,8 @@ struct ArrivalCard: View {
     var body: some View {
         VStack(spacing: 4) {
             Text("PUERTO RICO")
-                .font(.system(size: 34, weight: .black, design: .rounded))
-                .italic()
-                .tracking(6)
+                .font(.display(44))
+                .tracking(4)
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.9), radius: 8, y: 2)
             Rectangle()
@@ -352,7 +422,7 @@ struct ArrivalCard: View {
                                      startPoint: .leading, endPoint: .trailing))
                 .frame(width: 250, height: 2)
             Text("LA CORDILLERA")
-                .font(.system(size: 12, weight: .heavy)).tracking(5)
+                .font(.label(13)).tracking(5)
                 .foregroundStyle(Color.neonGold)
                 .shadow(color: .black.opacity(0.85), radius: 5)
         }
@@ -392,7 +462,7 @@ struct RouteShield: View {
                 .padding(.vertical, compact ? 1 : 2)
                 .background(Color.signInk.opacity(0.12))
             Text(route)
-                .font(.system(size: compact ? 20 : 26, weight: .black, design: .monospaced))
+                .font(.data(compact ? 20 : 26))
                 .foregroundStyle(Color.signInk)
                 .padding(.bottom, compact ? 2 : 3)
         }
@@ -422,7 +492,7 @@ struct StagePicker: View {
                         RouteShield(route: st.route, selected: state.selectedStage == st,
                                     compact: true)
                         Text(st.name)
-                            .font(.system(size: 11, weight: .heavy)).tracking(2)
+                            .font(.label(12)).tracking(2)
                             .foregroundStyle(state.selectedStage == st
                                              ? Color.white : Color.white.opacity(0.45))
                     }
@@ -449,11 +519,11 @@ struct StatLine: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(label)
-                .font(.system(size: 10, weight: .heavy)).tracking(2)
+                .font(.label(11)).tracking(2)
                 .foregroundStyle(Color.creamText.opacity(0.8))
             Spacer(minLength: 8)
             Text(value)
-                .font(.system(size: 17, weight: .black, design: .monospaced))
+                .font(.data(17))
                 .foregroundStyle(accent)
         }
         .frame(width: wide)
@@ -476,7 +546,7 @@ struct SignButton: View {
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: "play.fill").font(.system(size: 11, weight: .black))
-                Text(title).font(.system(size: 15, weight: .black)).tracking(3)
+                Text(title).font(.display(19)).tracking(2)
             }
             .foregroundStyle(filled ? Color.signInk : color)
             .padding(.vertical, 12).padding(.horizontal, 24)
@@ -500,7 +570,7 @@ struct GhostButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: .heavy)).tracking(3)
+                .font(.label(14)).tracking(3)
                 .foregroundStyle(color.opacity(0.85))
                 .padding(.vertical, 10).padding(.horizontal, 20)
                 .overlay(Capsule().stroke(color.opacity(0.35), lineWidth: 1.5))
@@ -593,8 +663,7 @@ struct CountdownView: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 110, weight: .black, design: .rounded))
-            .italic()
+            .font(.display(132))
             .foregroundStyle(Color.neonGold)
             .shadow(color: .sunsetOrange, radius: 22)
             .shadow(color: Color(red: 0.7, green: 0, blue: 0.37), radius: 3, y: 5)
@@ -617,9 +686,8 @@ struct RegionBanner: View {
     var body: some View {
         VStack(spacing: 3) {
             Text(label)
-                .font(.system(size: 30, weight: .black, design: .rounded))
-                .italic()
-                .tracking(2)
+                .font(.display(38))
+                .tracking(1)
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.85), radius: 6, y: 2)
             Rectangle()
@@ -627,7 +695,7 @@ struct RegionBanner: View {
                                      startPoint: .leading, endPoint: .trailing))
                 .frame(width: 220, height: 2)
             Text(blurb)
-                .font(.system(size: 12, weight: .heavy)).tracking(4)
+                .font(.label(13)).tracking(4)
                 .foregroundStyle(Color.neonTeal)
                 .shadow(color: .black.opacity(0.8), radius: 4)
         }
@@ -673,8 +741,7 @@ struct PopupView: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: size, weight: .black, design: .rounded))
-            .italic()
+            .font(.display(size * 1.18))
             .foregroundStyle(paint)
             .shadow(color: .black.opacity(0.75), radius: 5, y: 2)
             .shadow(color: glow.opacity(0.7), radius: 14)
@@ -743,14 +810,14 @@ struct PauseOverlay: View {
 
             VStack(spacing: 0) {
                 Text("EN PAUSA")
-                    .font(.system(size: 30, weight: .black)).tracking(6)
+                    .font(.display(38)).tracking(5)
                     .foregroundStyle(.white)
                 SignRule(color: .neonTeal, width: 130)
                     .padding(.top, 6)
 
                 VStack(spacing: 7) {
                     Text("CONTROL")
-                        .font(.system(size: 9, weight: .heavy)).tracking(4)
+                        .font(.label(10)).tracking(4)
                         .foregroundStyle(.white.opacity(0.4))
                     SteerModePicker(state: state, tilt: tilt)
                 }
@@ -824,20 +891,13 @@ struct IntroOverlay: View {
                 .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("¡HOYO!")
-                    .font(.system(size: 72, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(LinearGradient(
-                        colors: [.neonPink, .sunsetOrange, .neonGold],
-                        startPoint: .leading, endPoint: .trailing))
-                    .shadow(color: .black.opacity(0.8), radius: 10, y: 3)
-                    .shadow(color: .neonPink.opacity(0.45), radius: 24)
+                Wordmark(size: 78)
 
                 SignRule(color: .neonGold, width: 200)
                     .padding(.top, 2)
 
                 Text("CARRERA CUESTA ABAJO · PUERTO RICO")
-                    .font(.system(size: 11, weight: .heavy))
+                    .font(.label(12))
                     .tracking(4)
                     .foregroundStyle(Color.creamText)
                     .padding(.top, 9)
@@ -935,14 +995,13 @@ struct EndOverlay: View {
                 // left: outcome + the numbers, as a results slip
                 VStack(alignment: .leading, spacing: 0) {
                     Text(title)
-                        .font(.system(size: 42, weight: .black, design: .rounded))
-                        .italic()
+                        .font(.display(52))
                         .foregroundStyle(.white)
                         .shadow(color: accent.opacity(0.5), radius: 18)
                     SignRule(color: accent, width: 170)
                         .padding(.top, 3)
                     Text(subtitle)
-                        .font(.system(size: 10, weight: .heavy)).tracking(3)
+                        .font(.label(11)).tracking(3)
                         .foregroundStyle(Color.creamText.opacity(0.85))
                         .padding(.top, 8)
 
@@ -974,10 +1033,10 @@ struct EndOverlay: View {
                     if state.statMedal != .none {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("MEDALLA")
-                                .font(.system(size: 8, weight: .heavy)).tracking(3)
+                                .font(.label(9)).tracking(3)
                                 .foregroundStyle(.white.opacity(0.4))
                             Text(state.statMedal.label)
-                                .font(.system(size: 20, weight: .black)).tracking(2)
+                                .font(.display(26)).tracking(1)
                                 .foregroundStyle(medalColor)
                         }
                     }
@@ -999,12 +1058,12 @@ struct EndOverlay: View {
                     if let opened = state.unlockedStage {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("NUEVA RUTA")
-                                .font(.system(size: 8, weight: .heavy)).tracking(3)
+                                .font(.label(9)).tracking(3)
                                 .foregroundStyle(.white.opacity(0.4))
                             HStack(spacing: 7) {
                                 RouteShield(route: opened.route, compact: true)
                                 Text(opened.name)
-                                    .font(.system(size: 11, weight: .black)).tracking(1)
+                                    .font(.display(15))
                                     .foregroundStyle(Color.neonTeal)
                             }
                         }
