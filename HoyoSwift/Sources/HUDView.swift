@@ -944,7 +944,8 @@ struct IntroOverlay: View {
         Stage.allCases.contains { $0 != .cordillera && $0.unlocked }
     }
     private var bestMedal: Medal {
-        Medal.forScore(UserDefaults.standard.integer(forKey: state.selectedStage.bestScoreKey))
+        Medal.forScore(UserDefaults.standard.integer(forKey: state.selectedStage.bestScoreKey),
+                       on: state.selectedStage)
     }
 
     var body: some View {
@@ -1184,6 +1185,17 @@ struct EndOverlay: View {
                 // right: route shield, medal stamp, and anything newly earned
                 VStack(alignment: .leading, spacing: 12) {
                     RouteShield(route: state.loadedStage.route)
+
+                    if let up = Medal.next(after: state.statScore, on: state.loadedStage) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("PA' \(up.medal.label)")
+                                .font(.label(9)).tracking(3)
+                                .foregroundStyle(.white.opacity(0.4))
+                            Text("+\(up.needed.formatted())")
+                                .font(.data(15))
+                                .foregroundStyle(Color.creamText.opacity(0.9))
+                        }
+                    }
 
                     if state.statMedal != .none {
                         VStack(alignment: .leading, spacing: 1) {

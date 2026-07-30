@@ -2887,7 +2887,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let timeStr = String(format: "%d:%04.1f", mm, ss)
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
-        let medal = Medal.forScore(sc)
+        let medal = Medal.forScore(sc, on: Self.currentStage)
         let defaults = UserDefaults.standard
         // A run that skipped part of the course isn't a record. Without this the
         // -startAt debug flag writes nonsense best times.

@@ -74,6 +74,31 @@ enum Stage: Int, CaseIterable {
     /// Records are kept per stage.
     var bestScoreKey: String { "hoyo_bestScore_\(rawValue)" }
     var bestTimeKey: String { "hoyo_bestTime_\(rawValue)" }
+
+    /// Score needed for each medal, tuned per course rather than shared — the same
+    /// number meant very different things on three courses with different income.
+    ///
+    /// Every course pays the same ~7,600 of skill-independent score (distance,
+    /// piraguas, toolboxes). What differs:
+    ///
+    /// - Hole *count* is identical everywhere (the density ramp is keyed on progress,
+    ///   not stage), but the lateral spread scales with road width while the
+    ///   near-miss window is fixed at r + 2.2. So the narrow Yunque trail packs
+    ///   holes into your line (~79% are near-missable) where Isla Verde's wide sand
+    ///   spreads them thin (~44%). Near-miss income is the single biggest term.
+    /// - Traffic — overtakes and parries — exists only on Guajataca.
+    /// - Drift income follows twistiness: the trail most, the flat shoreline least.
+    ///
+    /// That puts skilled ceilings around 23k / 27k / 19k, so the thresholds are
+    /// Guajataca's original numbers scaled by 1.0 / 1.18 / 0.83. Gold is meant to
+    /// sit slightly above a strong run on each course, not be routine.
+    var medalThresholds: (bronze: Int, silver: Int, gold: Int) {
+        switch self {
+        case .cordillera: return (8_000, 16_000, 26_000)
+        case .yunque:     return (9_500, 19_000, 30_000)
+        case .playa:      return (6_500, 13_000, 21_500)
+        }
+    }
 }
 
 /// The three stretches of the descent. Each one drives its own terrain palette,
@@ -171,11 +196,21 @@ enum Medal: Int {
         }
     }
 
-    static func forScore(_ score: Int) -> Medal {
-        if score >= 26000 { return .gold }
-        if score >= 16000 { return .silver }
-        if score >= 8000 { return .bronze }
+    static func forScore(_ score: Int, on stage: Stage) -> Medal {
+        let t = stage.medalThresholds
+        if score >= t.gold { return .gold }
+        if score >= t.silver { return .silver }
+        if score >= t.bronze { return .bronze }
         return .none
+    }
+
+    /// The next medal up and what it costs, for showing a target on the end screen.
+    static func next(after score: Int, on stage: Stage) -> (medal: Medal, needed: Int)? {
+        let t = stage.medalThresholds
+        if score < t.bronze { return (.bronze, t.bronze - score) }
+        if score < t.silver { return (.silver, t.silver - score) }
+        if score < t.gold { return (.gold, t.gold - score) }
+        return nil
     }
 }
 
