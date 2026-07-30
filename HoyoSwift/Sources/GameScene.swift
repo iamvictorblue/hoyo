@@ -654,7 +654,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         bounce.eulerAngles = SCNVector3(1.15, 0.2, 0)
         world.addChildNode(bounce)
 
-        camera(world)
+        buildCameraObject()
         clouds(world)
         ocean(world)
         road(world)
@@ -689,6 +689,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var worldAttached = false
     /// Kept so a stage change can tear the previous world back out.
     private var worldRoot: SCNNode?
+    /// Built on the background queue, installed on main. See `camera(_:)`.
+    private var pendingCamera: SCNCamera?
     /// Set when the loaded stage wants a different sky from the intro's.
     private var raceSky: [UIImage]?
     private var introSky: [UIImage]?
@@ -759,13 +761,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // the physicallyBased materials sample it.
         scene.lightingEnvironment.contents = sky
         scene.lightingEnvironment.intensity = 0.85
+        // `cameraNode` is a long-lived node that SCNView holds as its pointOfView, so
+        // it must only ever be touched on the main thread. The camera *object* is
+        // built during the background pass; wiring and parenting happen here.
+        if let cam = pendingCamera {
+            cameraNode.camera = cam
+            pendingCamera = nil
+        }
+        cameraNode.position = SCNVector3(0, 3, 8)
+        world.addChildNode(cameraNode)
         scene.rootNode.addChildNode(world)
         worldAttached = true
     }
 
     var pointOfView: SCNNode { cameraNode }
 
-    private func camera(_ parent: SCNNode) {
+    private func buildCameraObject() {
         let cam = SCNCamera()
         cam.zNear = 0.1
         cam.zFar = 9000
@@ -790,9 +801,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             cam.screenSpaceAmbientOcclusionBias = 0.02
             cam.screenSpaceAmbientOcclusionDepthThreshold = 0.35
         }
-        cameraNode.camera = cam
-        cameraNode.position = SCNVector3(0, 3, 8)
-        parent.addChildNode(cameraNode)
+        // Handed to `attach` rather than assigned here: this runs on the background
+        // build queue, and `cameraNode` is live as the view's pointOfView from the
+        // second stage load onward. Mutating it here raced SceneKit's render pass.
+        pendingCamera = cam
     }
 
     private func clouds(_ parent: SCNNode) {
@@ -1217,9 +1229,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         let houseGroups = (0..<palette.count).map { _ in SCNNode() }
         placed = 0; guard_ = 0
-        // 54 casitas, heavily clustered in the pueblo and pulled in tight to the
-        // road there so it actually reads as driving through a town
-        while placed < 54 && guard_ < 3000 {
+        // 54 casitas, heavily clustered in the pueblo and pulled in tight to the road
+        // there so it actually reads as driving through a town. Guajataca only —
+        // `Region.pueblo` is just a fraction of the path, so without this gate the
+        // houses were also appearing along the Yunque trail and on the beach.
+        let houseTarget = Self.currentStage == .cordillera ? 54 : 0
+        while placed < houseTarget && guard_ < 3000 {
             guard_ += 1
             let hr_ = pickRegion(&worldRng, simd_float3(0.13, 0.74, 0.13))
             let hi = indexIn(hr_, &worldRng)
@@ -1262,8 +1277,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         rockGeo.isGeodesic = true
         rockGeo.segmentCount = 6
         rockGeo.materials = [lambert(UIColor(red: 0.47, green: 0.44, blue: 0.37, alpha: 1))]
-        for _ in 0..<64 {
-            // boulders are a cordillera thing — landslide country
+        // Landslide country: the mountain road and the forest trail, never the sand.
+        // This loop was ungated, so boulders were turning up on the beach too.
+        let rockTarget = Self.currentStage == .playa ? 0 : 64
+        for _ in 0..<rockTarget {
             let ri = indexIn(pickRegion(&worldRng, simd_float3(0.68, 0.22, 0.10)), &worldRng)
             let rlat = -(Self.barrier + 0.8 + worldRng.next() * 40)
             let rp = pts[ri], rr2 = rights[ri]
@@ -2790,6 +2807,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
         jumpY = 0; jumpVel = 0; jumpCool = 0
+        chassisNode.opacity = 1
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         playTime = 0
         hudClock = 0
@@ -2826,6 +2844,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.paused = false
             self.state.combo = 0
             self.state.countLabel = ""
+            self.state.regionLabel = ""
+            self.state.regionBlurb = ""
             self.state.newRecordScore = false
             self.state.newRecordTime = false
             self.state.unlockedStage = nil
@@ -2903,6 +2923,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.refreshRecordLine()
             self.state.phase = dead ? .dead : .finished
         }
+        // the invuln blink only runs in `.playing`, so restore it here or the craft
+        // sits half-transparent on the end screen
+        chassisNode.opacity = 1
         if !dead { sound.playCoqui() } else { sound.playThunk() }
         sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
         sound.nitroLevel = 0; sound.rumbleLevel = 0

@@ -85,16 +85,30 @@ struct GameSceneView: UIViewRepresentable {
         view.rendersContinuously = true
         view.antialiasingMode = quality.antialiasing
         view.backgroundColor = .black
-        view.isPlaying = true
+        // Starts parked. Nothing may render until a world is installed — see below.
+        view.isPlaying = false
         UIApplication.shared.isIdleTimerDisabled = true   // no screen sleep mid-run
 
         // The world build — 400k sky-cubemap pixels, the terrain meshes, hundreds of
         // trees — used to run synchronously in init and froze the launch for ~5 s.
         // It builds detached on a background queue, then attaches in one main step.
-        // `loadStage` runs the same path again whenever the course changes.
-        state.loadStageHandler = { stage, done in
-            controller.loadStage(stage, onReady: done)
+        //
+        // The renderer is parked for the whole rebuild. Gating our own delegate with
+        // `worldAttached` is not enough: SceneKit keeps drawing on its own, reading
+        // `pointOfView` and walking the graph, while `loadStage` tears the previous
+        // world out on this thread and rebuilds meshes on another. Dropping
+        // pointOfView leaves it with no camera to read, and isPlaying stops the loop.
+        let load: (Stage, @escaping () -> Void) -> Void = { stage, done in
+            view.isPlaying = false
+            view.pointOfView = nil
+            controller.loadStage(stage) {
+                view.pointOfView = controller.pointOfView
+                view.isPlaying = true
+                done()
+            }
         }
+        state.loadStageHandler = load
+
         // `-stage <n>` jumps straight to a course, unlocking it — for testing a
         // stage without finishing the one before it.
         let args = ProcessInfo.processInfo.arguments
@@ -103,12 +117,12 @@ struct GameSceneView: UIViewRepresentable {
             want.unlock()
             state.selectedStage = want
         }
-        controller.loadStage(state.selectedStage) {
-            view.pointOfView = controller.pointOfView
+        // first load takes the same guarded path as every later stage change
+        load(state.selectedStage) {
             state.loadedStage = state.selectedStage
             state.sceneReady = true
             state.refreshRecordLine()
-            if ProcessInfo.processInfo.arguments.contains("-autoplay") {
+            if args.contains("-autoplay") {
                 state.requestStart = true
             }
         }
