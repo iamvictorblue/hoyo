@@ -221,6 +221,7 @@ final class GameState: ObservableObject {
     /// Set by HUD buttons; the game controller polls these.
     var requestStart = false
     var requestReset = false
+    var requestTitle = false
 
     func popup(_ text: String) {
         popupText = text

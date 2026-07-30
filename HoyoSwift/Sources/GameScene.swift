@@ -288,7 +288,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var patchNodes: [SCNNode] = []
     private var patchCursor = 0
     private static let boltSpeed: Float = 115
-    private static let shotCost: Float = 32
+    private static let shotCost: Float = 46
     private var airborne: Bool { jumpY > 0.02 }
     private static let gravity: Float = 26
     private static let jumpImpulse: Float = 8.4
@@ -521,6 +521,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // The intro set is a Nevada desert, so it always sits under the dusk sky;
         // a stage with its own sky swaps in when the race starts.
         let sky = Textures.skyCubemap(.sunset)
+        introSky = sky
         raceSky = Self.currentStage == .yunque ? Textures.skyCubemap(.rainforest) : nil
 
         let ambient = SCNNode()
@@ -586,6 +587,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var worldRoot: SCNNode?
     /// Set when the loaded stage wants a different sky from the intro's.
     private var raceSky: [UIImage]?
+    private var introSky: [UIImage]?
 
     /// Everything a stage build appends to. Cleared before rebuilding, otherwise a
     /// second stage would stack its geometry and entities on top of the first.
@@ -1908,7 +1910,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private func fireBolt() {
         guard charge >= Self.shotCost, fireCool <= 0 else { return }
         charge -= Self.shotCost
-        fireCool = 0.20
+        fireCool = 0.28
         sound.playZap()
         Haptics.shared.tap(intensity: 0.34, sharpness: 0.95)
         bolts[boltCursor].s = s + 3.5
@@ -2617,6 +2619,32 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
     }
 
+    /// Abandons the run and goes back to the title, putting the Area 51 loop and
+    /// its dusk sky back the way `attach` left them.
+    private func returnToTitle() {
+        phase = .intro
+        introT = 0
+        lastRegion = nil
+        introSet.isHidden = false
+        if let sky = introSky { scene.background.contents = sky }
+        sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
+        sound.nitroLevel = 0; sound.rumbleLevel = 0
+        streakSystem.birthRate = 0; smokeSystem.birthRate = 0
+        sparkSystem.birthRate = 0; dustSystem.birthRate = 0
+        clearSkids()
+        clearBeam()
+        DispatchQueue.main.async {
+            self.state.phase = .intro
+            self.state.paused = false
+            self.state.countLabel = ""
+            self.state.regionLabel = ""
+            self.state.popupText = ""
+            self.state.combo = 0
+            self.state.unlockedStage = nil
+            self.state.refreshRecordLine()
+        }
+    }
+
     private func endGame(dead: Bool) {
         phase = dead ? .dead : .finished
         let mm = Int(playTime) / 60
@@ -2703,6 +2731,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         if state.requestStart { state.requestStart = false; sound.start(); resetGame() }
         if state.requestReset { state.requestReset = false; resetGame() }
+        if state.requestTitle { state.requestTitle = false; returnToTitle() }
 
         if let n = oceanNormal {
             let fx = Float(time * 0.015).truncatingRemainder(dividingBy: 1)
@@ -2809,7 +2838,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // ----- beam -----
         if fireCool > 0 { fireCool = max(0, fireCool - dt) }
-        charge = min(100, charge + 15 * dt)          // ~3 shots then a short wait
+        charge = min(100, charge + 10 * dt)          // 2 shots, then ~4.6 s a shot
         if state.input.fireRequested {
             state.input.fireRequested = false
             fireBolt()

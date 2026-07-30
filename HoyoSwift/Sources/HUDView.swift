@@ -170,10 +170,25 @@ struct HUDView: View {
             Spacer()
 
             HStack(alignment: .bottom) {
+                // left: the dashboard reading sits above the steering pad, in the
+                // space the fire button used to occupy
                 VStack(alignment: .leading, spacing: 10) {
-                    TapButton(symbol: "bolt.fill", tint: .neonGold) {
-                        state.input.fireRequested = true
+                    HStack(alignment: .lastTextBaseline, spacing: 6) {
+                        Text("\(state.hud.speedKmh)")
+                            .font(.system(size: 46, weight: .black, design: .rounded))
+                            .italic()
+                            .monospacedDigit()
+                            .foregroundStyle(state.hud.nitroActive ? Color.neonTeal :
+                                             (state.hud.speedKmh > 150 ? Color.neonGold : .white))
+                            .shadow(color: .black.opacity(0.8), radius: 4, y: 2)
+                        Text("KM/H")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .tracking(3)
+                            .foregroundStyle(Color.neonGold)
                     }
+                    .allowsHitTesting(false)
+                    .padding(.leading, 6)
+
                     if state.steerMode == .drag {
                         SteerPad { state.input.steer = $0 }
                     } else {
@@ -183,27 +198,19 @@ struct HUDView: View {
 
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 10) {
-                    // dashboard: speed reads next to the controls, not over the road
-                    HStack(alignment: .lastTextBaseline, spacing: 6) {
-                        Text("\(state.hud.speedKmh)")
-                            .font(.system(size: 50, weight: .black, design: .rounded))
-                            .italic()
-                            .monospacedDigit()
-                            .foregroundStyle(state.hud.nitroActive ? Color.neonTeal :
-                                             (state.hud.speedKmh > 150 ? Color.neonGold : .white))
-                            .shadow(color: .black.opacity(0.8), radius: 4, y: 2)
-                        Text("KM/H")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                            .tracking(3)
-                            .foregroundStyle(Color.neonGold)
-                    }
-                    .allowsHitTesting(false)
-
-                    HStack(spacing: 12) {
+                // right: a 2x2 pad. The two held controls sit on the bottom row where
+                // the thumb rests; the two taps sit above, with fire on the outside
+                // corner where it's easiest to reach.
+                VStack(spacing: 11) {
+                    HStack(spacing: 11) {
                         TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold) {
                             state.input.jumpRequested = true
                         }
+                        TapButton(symbol: "bolt.fill", tint: .neonTeal) {
+                            state.input.fireRequested = true
+                        }
+                    }
+                    HStack(spacing: 11) {
                         HoldButton(symbol: "octagon.fill", tint: .red) { state.input.brake = $0 }
                         HoldButton(symbol: "flame.fill", tint: .neonTeal) { state.input.nitro = $0 }
                     }
@@ -715,9 +722,15 @@ struct PauseOverlay: View {
                 SignButton("SEGUIR") { state.paused = false }
                     .padding(.top, 24)
 
-                GhostButton("EMPEZAR DE NUEVO", color: .neonPink) {
-                    state.paused = false
-                    state.requestReset = true
+                HStack(spacing: 10) {
+                    GhostButton("DE NUEVO", color: .neonPink) {
+                        state.paused = false
+                        state.requestReset = true
+                    }
+                    GhostButton("AL INICIO") {
+                        state.paused = false
+                        state.requestTitle = true
+                    }
                 }
                 .padding(.top, 10)
             }
@@ -906,8 +919,13 @@ struct EndOverlay: View {
                     }
                     .padding(.top, 14)
 
-                    SignButton("OTRA VEZ", color: accent) {
-                        state.requestReset = true
+                    HStack(spacing: 10) {
+                        SignButton("OTRA VEZ", color: accent) {
+                            state.requestReset = true
+                        }
+                        GhostButton("AL INICIO") {
+                            state.requestTitle = true
+                        }
                     }
                     .padding(.top, 18)
                 }
