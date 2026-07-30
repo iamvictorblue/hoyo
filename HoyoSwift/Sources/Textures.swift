@@ -7,7 +7,9 @@ enum Textures {
     /// Six cubemap faces: sunset gradient by elevation with the sun disc,
     /// its glow, and early stars baked in. Used as the scene background, so it
     /// pans correctly with the camera and is never touched by fog.
-    static func skyCubemap() -> [UIImage] {
+    enum SkyMood { case sunset, rainforest }
+
+    static func skyCubemap(_ mood: SkyMood = .sunset) -> [UIImage] {
         let n = 256
         let sunDir = simd_normalize(simd_float3(0.16, 0.13, -0.98))
         var faces: [UIImage] = []
@@ -30,6 +32,19 @@ enum Textures {
                     default: d = simd_float3(-u, -v, -1)    // -Z
                     }
                     d = simd_normalize(d)
+                    if mood == .rainforest {
+                        // Overcast canopy light: no sun, no stars, brightest near the
+                        // horizon where the mist glows. A sunset sky over a rainforest
+                        // fought the biome badly.
+                        var c2 = forestSkyColor(elevation: d.y)
+                        c2 += simd_float3(repeating: 0.02 * sinf(d.x * 40) * sinf(d.z * 40))
+                        let i2 = (y * n + x) * 4
+                        pixels[i2] = UInt8(min(max(c2.x, 0), 1) * 255)
+                        pixels[i2 + 1] = UInt8(min(max(c2.y, 0), 1) * 255)
+                        pixels[i2 + 2] = UInt8(min(max(c2.z, 0), 1) * 255)
+                        pixels[i2 + 3] = 255
+                        continue
+                    }
                     var c = skyColor(elevation: d.y)
                     let sd = simd_dot(d, sunDir)
                     if sd > 0 {
@@ -60,6 +75,25 @@ enum Textures {
             if let img = img { faces.append(img) }
         }
         return faces
+    }
+
+    /// Flat green-grey overcast for El Yunque.
+    private static func forestSkyColor(elevation e: Float) -> simd_float3 {
+        let stops: [(Float, simd_float3)] = [
+            (-1.00, simd_float3(0.46, 0.52, 0.42)),
+            (0.00, simd_float3(0.62, 0.68, 0.55)),
+            (0.10, simd_float3(0.56, 0.62, 0.50)),
+            (0.35, simd_float3(0.40, 0.47, 0.39)),
+            (0.70, simd_float3(0.27, 0.33, 0.28)),
+            (1.00, simd_float3(0.20, 0.25, 0.22))
+        ]
+        for k in 0..<(stops.count - 1) {
+            if e <= stops[k + 1].0 {
+                let t = (e - stops[k].0) / (stops[k + 1].0 - stops[k].0)
+                return simd_mix(stops[k].1, stops[k + 1].1, simd_float3(repeating: t))
+            }
+        }
+        return stops[stops.count - 1].1
     }
 
     private static func skyColor(elevation e: Float) -> simd_float3 {
@@ -172,6 +206,62 @@ enum Textures {
                     g.addLine(to: CGPoint(x: cx, y: cy))
                 }
                 g.strokePath()
+            }
+        }
+    }
+
+    /// Packed dirt trail: wet earth, exposed roots, embedded stones and puddles.
+    static func dirtTrail() -> UIImage {
+        let dim: CGFloat = 512
+        return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
+            let g = ctx.cgContext
+            UIColor(red: 0.31, green: 0.23, blue: 0.16, alpha: 1).setFill()
+            g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
+
+            // damp tonal patches
+            for _ in 0..<30 {
+                let v = CGFloat.random(in: -0.06...0.05)
+                UIColor(red: 0.31 + v, green: 0.23 + v * 0.8, blue: 0.16 + v * 0.6,
+                        alpha: .random(in: 0.3...0.75)).setFill()
+                g.fill(CGRect(x: .random(in: -40...dim), y: .random(in: -40...dim),
+                              width: .random(in: 70...240), height: .random(in: 60...200)))
+            }
+            // grit
+            for _ in 0..<11000 {
+                let v = CGFloat.random(in: 0.18...0.44)
+                UIColor(red: v, green: v * 0.76, blue: v * 0.55,
+                        alpha: .random(in: 0.15...0.6)).setFill()
+                let sz = CGFloat.random(in: 1...2.6)
+                g.fill(CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim), width: sz, height: sz))
+            }
+            // embedded stones
+            for _ in 0..<130 {
+                let v = CGFloat.random(in: 0.40...0.58)
+                UIColor(red: v, green: v * 0.95, blue: v * 0.88, alpha: .random(in: 0.35...0.8)).setFill()
+                let r = CGFloat.random(in: 3...9)
+                g.fillEllipse(in: CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim),
+                                         width: r, height: r * .random(in: 0.6...1.0)))
+            }
+            // roots crossing the path
+            g.setLineCap(.round)
+            for _ in 0..<9 {
+                g.setStrokeColor(UIColor(red: 0.20, green: 0.14, blue: 0.09,
+                                         alpha: .random(in: 0.5...0.85)).cgColor)
+                g.setLineWidth(.random(in: 4...9))
+                var cx = CGFloat.random(in: -20...dim), cy = CGFloat.random(in: 0...dim)
+                g.move(to: CGPoint(x: cx, y: cy))
+                for _ in 0..<5 {
+                    cx += .random(in: 40...110); cy += .random(in: -34...34)
+                    g.addLine(to: CGPoint(x: cx, y: cy))
+                }
+                g.strokePath()
+            }
+            // puddles
+            for _ in 0..<16 {
+                UIColor(red: 0.17, green: 0.17, blue: 0.15, alpha: .random(in: 0.3...0.6)).setFill()
+                let w = CGFloat.random(in: 16...54)
+                g.fillEllipse(in: CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim),
+                                         width: w, height: w * .random(in: 0.4...0.7)))
             }
         }
     }

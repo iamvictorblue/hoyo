@@ -69,7 +69,7 @@ struct HUDView: View {
             case .intro: IntroOverlay(state: state, tilt: tilt)
             case .finished: EndOverlay(state: state, title: "¡LLEGASTE!",
                                        subtitle: "SOBREVIVISTE LOS HOYOS · A LA PLAYA")
-            case .dead: EndOverlay(state: state, title: "¡TE PONCHASTE!",
+            case .dead: EndOverlay(state: state, title: "GAME OVER",
                                    subtitle: "LOS HOYOS GANARON ESTA VEZ")
             case .playing, .countdown, .arrival: EmptyView()
             }
@@ -351,6 +351,31 @@ struct ArrivalCard: View {
     }
 }
 
+/// Course selector on the title screen. Only appears once more than one course is
+/// unlocked, so a first-time player still sees the stripped-back title.
+struct StagePill: View {
+    let stage: Stage
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 1) {
+                Text(stage.name)
+                    .font(.system(size: 12, weight: .black)).tracking(2)
+                Text(stage.blurb)
+                    .font(.system(size: 8, weight: .semibold)).tracking(1)
+                    .opacity(0.75)
+            }
+            .foregroundStyle(selected ? .black : .white)
+            .padding(.vertical, 7).padding(.horizontal, 16)
+            .background(selected ? Color.neonTeal : Color.black.opacity(0.35), in: Capsule())
+            .overlay(Capsule().stroke(selected ? Color.neonTeal : .white.opacity(0.3),
+                                     lineWidth: 1.5))
+        }
+    }
+}
+
 struct TiltHint: View {
     var body: some View {
         Text("INCLINA PA' GUIAR")
@@ -625,6 +650,18 @@ struct IntroOverlay: View {
                     .foregroundStyle(.white.opacity(0.42))
                     .padding(.top, 20)
 
+                if Stage.allCases.contains(where: { $0 != .cordillera && $0.unlocked }) {
+                    HStack(spacing: 10) {
+                        ForEach(Stage.allCases.filter { $0.unlocked }, id: \.rawValue) { st in
+                            StagePill(stage: st, selected: state.selectedStage == st) {
+                                state.selectedStage = st
+                                state.refreshRecordLine()
+                            }
+                        }
+                    }
+                    .padding(.top, 16)
+                }
+
                 if !state.recordLine.isEmpty {
                     Text(state.recordLine)
                         .font(.system(size: 13, weight: .bold))
@@ -637,7 +674,19 @@ struct IntroOverlay: View {
                 if state.sceneReady {
                     Button {
                         tilt.reader.recalibrate()
-                        state.requestStart = true
+                        if state.selectedStage != state.loadedStage,
+                           let load = state.loadStageHandler {
+                            let want = state.selectedStage
+                            state.sceneReady = false
+                            load(want) {
+                                state.loadedStage = want
+                                state.sceneReady = true
+                                state.refreshRecordLine()
+                                state.requestStart = true
+                            }
+                        } else {
+                            state.requestStart = true
+                        }
                     } label: {
                         Text("TOCA PA' ARRANCAR")
                             .font(.system(size: 19, weight: .black))
@@ -708,6 +757,14 @@ struct EndOverlay: View {
                             .shadow(color: medalColor.opacity(0.8), radius: 12)
                     }
                     .padding(.top, 6)
+                }
+
+                if let opened = state.unlockedStage {
+                    Text("¡\(opened.name) DESBLOQUEADO!")
+                        .font(.system(size: 16, weight: .black)).tracking(2)
+                        .foregroundStyle(Color.neonTeal)
+                        .shadow(color: .neonTeal.opacity(0.9), radius: 12)
+                        .padding(.top, 4)
                 }
 
                 if state.newRecordScore || state.newRecordTime {

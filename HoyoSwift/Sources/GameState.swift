@@ -7,6 +7,44 @@ enum GamePhase {
     case intro, arrival, countdown, playing, finished, dead
 }
 
+/// A playable course. Each one rebuilds the world: its own path shape, surface,
+/// terrain palette, scenery, hazards and quarry.
+enum Stage: Int, CaseIterable {
+    case cordillera = 0     // the mountain road down to the coast
+    case yunque = 1         // a hiking trail through the rainforest
+
+    var name: String {
+        switch self {
+        case .cordillera: return "LA CORDILLERA"
+        case .yunque:     return "EL YUNQUE"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .cordillera: return "CARRETERA A LA PLAYA"
+        case .yunque:     return "VEREDA EN EL BOSQUE"
+        }
+    }
+
+    /// Stage 1 is always available; the rest are earned by finishing the previous.
+    var unlocked: Bool {
+        if self == .cordillera { return true }
+        return UserDefaults.standard.bool(forKey: "hoyo_unlocked_\(rawValue)")
+    }
+
+    func unlock() {
+        UserDefaults.standard.set(true, forKey: "hoyo_unlocked_\(rawValue)")
+    }
+
+    /// The stage finishing this one opens up, if any.
+    var next: Stage? { Stage(rawValue: rawValue + 1) }
+
+    /// Records are kept per stage.
+    var bestScoreKey: String { "hoyo_bestScore_\(rawValue)" }
+    var bestTimeKey: String { "hoyo_bestTime_\(rawValue)" }
+}
+
 /// The three stretches of the descent. Each one drives its own terrain palette,
 /// scenery, hazard mix and haze colour, so the course reads as a journey down the
 /// island rather than one long road.
@@ -112,6 +150,12 @@ final class GameState: ObservableObject {
     @Published var countLabel: String = ""      // "3" "2" "1" "¡DALE!"
     @Published var sceneReady = false           // false while the world builds
 
+    /// Which course the player has picked, and which one is actually loaded.
+    @Published var selectedStage: Stage = .cordillera
+    @Published var loadedStage: Stage = .cordillera
+    /// Set on the end screen when finishing a stage opened the next one.
+    @Published var unlockedStage: Stage?
+
     // region announcement
     @Published var regionLabel = ""
     @Published var regionBlurb = ""
@@ -129,7 +173,7 @@ final class GameState: ObservableObject {
     }
 
     // records
-    @Published var recordLine: String = GameState.makeRecordLine()
+    @Published var recordLine: String = GameState.makeRecordLine(for: .cordillera)
     @Published var newRecordScore = false
     @Published var newRecordTime = false
 
@@ -145,6 +189,12 @@ final class GameState: ObservableObject {
 
     let input = GameInput()
 
+    /// Installed by GameSceneView so the start button can rebuild the world for a
+    /// different course. It can't go through updateUIView — that representable's
+    /// stored properties are all reference types whose identity never changes, so
+    /// SwiftUI skips the update entirely.
+    var loadStageHandler: ((Stage, @escaping () -> Void) -> Void)?
+
     /// Set by HUD buttons; the game controller polls these.
     var requestStart = false
     var requestReset = false
@@ -155,12 +205,12 @@ final class GameState: ObservableObject {
     }
 
     func refreshRecordLine() {
-        recordLine = Self.makeRecordLine()
+        recordLine = Self.makeRecordLine(for: selectedStage)
     }
 
-    static func makeRecordLine() -> String {
-        let best = UserDefaults.standard.integer(forKey: "hoyo_bestScore")
-        let time = UserDefaults.standard.double(forKey: "hoyo_bestTime")
+    static func makeRecordLine(for stage: Stage) -> String {
+        let best = UserDefaults.standard.integer(forKey: stage.bestScoreKey)
+        let time = UserDefaults.standard.double(forKey: stage.bestTimeKey)
         var parts: [String] = []
         if best > 0 { parts.append("RÉCORD \(best) pts") }
         if time > 0 {

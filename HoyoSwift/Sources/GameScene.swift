@@ -84,17 +84,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     static let step: Float = 2
     static let count = 1801
     static let total: Float = Float(count - 1) * 2.0
-    /// Four lanes of ~3.4 m — 13.6 m of asphalt, up from 11 (and 9 originally).
-    static let roadHalf: Float = 6.8
-    static let laneCount = 4
-    /// Dirt shoulder between the asphalt edge and the guardrail — slow and
-    /// scrapey, but recoverable.
-    static let shoulderWidth: Float = 1.7
+    /// The stage currently loaded. Static because the course constants below are
+    /// read as statics from dozens of call sites; threading an instance through all
+    /// of them would be churn for no benefit, and exactly one GameScene is alive.
+    static var currentStage: Stage = .cordillera
+
+    /// Stage 1 is four lanes of ~3.4 m; the Yunque trail is a single narrow path.
+    static var roadHalf: Float { currentStage == .yunque ? 4.6 : 6.8 }
+    static var laneCount: Int { currentStage == .yunque ? 1 : 4 }
+    /// Verge between the surface edge and the boundary — slow and scrapey, but
+    /// recoverable.
+    static var shoulderWidth: Float { currentStage == .yunque ? 1.3 : 1.7 }
     /// Hard boundary. The guardrail posts are drawn exactly here so the limit you
     /// hit is the limit you can see.
     static var barrier: Float { roadHalf + shoulderWidth }
-    /// Centre of each of the four lanes.
+    /// Centre of each lane. The trail has no lanes, so traffic (which is disabled
+    /// there anyway) would just sit on the centreline.
     static var laneCentres: [Float] {
+        guard laneCount > 1 else { return [0] }
         let w = roadHalf / Float(laneCount)          // half a lane
         return [-3 * w, -w, w, 3 * w]
     }
@@ -189,6 +196,61 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
     private var traffic: [Traffic] = []
 
+    // MARK: - Yunque quarry
+
+    private enum CritterKind: Int, CaseIterable {
+        case coqui, lagartijo, hiker, sanpedrito, boa
+
+        var points: Int {
+            switch self {
+            case .coqui: return 40
+            case .lagartijo: return 60
+            case .hiker: return 90
+            case .sanpedrito: return 130
+            case .boa: return 160
+            }
+        }
+        var label: String {
+            switch self {
+            case .coqui: return "¡COQUÍ!"
+            case .lagartijo: return "¡LAGARTIJO!"
+            case .hiker: return "¡PERDÓN!"
+            case .sanpedrito: return "¡SAN PEDRITO!"
+            case .boa: return "¡LA BOA!"
+            }
+        }
+        /// What running into one costs. The small ones just scatter.
+        var contactDamage: Float {
+            switch self {
+            case .hiker: return 8
+            case .boa: return 12
+            default: return 0
+            }
+        }
+        /// How many of each are scattered along the trail.
+        var count: Int {
+            switch self {
+            case .coqui: return 22
+            case .lagartijo: return 14
+            case .hiker: return 14
+            case .sanpedrito: return 12
+            case .boa: return 8
+            }
+        }
+    }
+
+    private struct Critter {
+        var kind: CritterKind
+        var s: Float = 0, x: Float = 0
+        var node: SCNNode
+        var alive = true
+        var hitPlayer = false
+        var dir: Float = 1
+        var phase: Float = 0
+        var baseY: Float = 0
+    }
+    private var critters: [Critter] = []
+
     // sim state
     private var phase: GamePhase = .intro
     private var s: Float = 4, v: Float = 8, x: Float = 0, xd: Float = 0
@@ -276,13 +338,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     // MARK: - path
 
     private func buildPath() {
+        pts.removeAll(keepingCapacity: true); tans.removeAll(keepingCapacity: true)
+        rights.removeAll(keepingCapacity: true); grades.removeAll(keepingCapacity: true)
+        curvs.removeAll(keepingCapacity: true)
+        let trail = Self.currentStage == .yunque
         var px: Float = 0, pz: Float = 0, py: Float = 0
         for i in 0..<Self.count {
             let sd = Float(i) * Self.step
-            let h = 0.55 * sin(sd / 173) + 0.45 * sin(sd / 59 + 1.7)
-                  + 0.5 * sin(sd / 311 + 4.0) + 0.3 * sin(sd / 47 + 2.5)
+            // The trail twists far harder and drops far less than the road — short
+            // periods, big amplitude, shallow grade.
+            let h = trail
+                ? 0.95 * sin(sd / 89) + 0.72 * sin(sd / 37 + 2.1)
+                    + 0.5 * sin(sd / 151 + 0.6) + 0.34 * sin(sd / 23 + 3.4)
+                : 0.55 * sin(sd / 173) + 0.45 * sin(sd / 59 + 1.7)
+                    + 0.5 * sin(sd / 311 + 4.0) + 0.3 * sin(sd / 47 + 2.5)
             let endFade = simd_clamp((Self.total - 100 - sd) / 260, 0, 1)
-            let grade = (0.055 + 0.04 * sin(sd / 210 + 0.5) + 0.024 * sin(sd / 83)) * endFade
+            let grade = trail
+                ? (0.028 + 0.020 * sin(sd / 150) + 0.014 * sin(sd / 61)) * endFade
+                : (0.055 + 0.04 * sin(sd / 210 + 0.5) + 0.024 * sin(sd / 83)) * endFade
             pts.append(simd_float3(px, py, pz))
             grades.append(-grade)
             px += sin(h) * Self.step
@@ -429,19 +502,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// renderer; building detached does not.
     func buildWorld() -> (world: SCNNode, sky: [UIImage]) {
         let world = SCNNode()
-        let sky = Textures.skyCubemap()
+        let sky = Textures.skyCubemap(Self.currentStage == .yunque ? .rainforest : .sunset)
 
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light!.type = .ambient
-        ambient.light!.color = UIColor(red: 0.50, green: 0.42, blue: 0.50, alpha: 1)
+        ambient.light!.color = Self.currentStage == .yunque
+            ? UIColor(red: 0.34, green: 0.42, blue: 0.34, alpha: 1)   // green bounce
+            : UIColor(red: 0.50, green: 0.42, blue: 0.50, alpha: 1)
         world.addChildNode(ambient)
 
         let sunNode = SCNNode()
         sunNode.light = SCNLight()
         sunNode.light!.type = .directional
-        sunNode.light!.color = UIColor(red: 1.0, green: 0.82, blue: 0.63, alpha: 1)
-        sunNode.light!.intensity = 1280
+        // dappled, weaker light under the canopy
+        sunNode.light!.color = Self.currentStage == .yunque
+            ? UIColor(red: 0.82, green: 0.92, blue: 0.76, alpha: 1)
+            : UIColor(red: 1.0, green: 0.82, blue: 0.63, alpha: 1)
+        sunNode.light!.intensity = Self.currentStage == .yunque ? 760 : 1280
         sunNode.light!.castsShadow = true
         sunNode.light!.shadowMapSize = CGSize(width: quality.shadowMapSize,
                                               height: quality.shadowMapSize)
@@ -463,6 +541,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         makeToolboxes(world)
         makeIguanas(world)
         makeTraffic(world)
+        makeCritters(world)
         buildCar()
         skidPool(world)
         beamPools(world)
@@ -484,13 +563,63 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// intro camera code would be posing `cameraNode` on the render thread while
     /// the background build was still parenting and configuring that same node.
     private var worldAttached = false
+    /// Kept so a stage change can tear the previous world back out.
+    private var worldRoot: SCNNode?
+
+    /// Everything a stage build appends to. Cleared before rebuilding, otherwise a
+    /// second stage would stack its geometry and entities on top of the first.
+    private func clearForRebuild() {
+        holes.removeAll()
+        piraguas.removeAll(); toolboxes.removeAll()
+        iguanas.removeAll(); traffic.removeAll(); critters.removeAll()
+        bolts.removeAll(); patchNodes.removeAll()
+        skidNodes.removeAll(); skidAge.removeAll()
+        searchlights.removeAll()
+        flameNodes.removeAll(); frontWheelNodes.removeAll(); spinWheelNodes.removeAll()
+        // these nodes persist across stages, so their children must be shed
+        for n in [chassisNode, playerNode, dustNode, sparkNode, introUfo] {
+            n.childNodes.forEach { $0.removeFromParentNode() }
+        }
+        blobNode.geometry = nil
+    }
+
+    /// Tears down whatever is loaded and builds the requested stage off the main
+    /// thread, exactly as the first load does.
+    func loadStage(_ stage: Stage, onReady: @escaping () -> Void) {
+        worldAttached = false
+        phase = .intro
+        introT = 0
+        Self.currentStage = stage
+        worldRoot?.removeFromParentNode()
+        worldRoot = nil
+        clearForRebuild()
+        worldRng = Lcg(20260727)
+        buildPath()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let built = self.buildWorld()
+            DispatchQueue.main.async {
+                self.attach(world: built.world, sky: built.sky)
+                self.worldRoot = built.world
+                onReady()
+            }
+        }
+    }
 
     /// Main thread: install the finished world.
     func attach(world: SCNNode, sky: [UIImage]) {
-        scene.fogStartDistance = 280
-        scene.fogEndDistance = 2400
-        scene.fogDensityExponent = 1.6
-        scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
+        if Self.currentStage == .yunque {
+            // thick canopy mist: you can't see far in there
+            scene.fogStartDistance = 40
+            scene.fogEndDistance = 520
+            scene.fogDensityExponent = 1.9
+            scene.fogColor = UIColor(red: 0.42, green: 0.55, blue: 0.42, alpha: 1)
+        } else {
+            scene.fogStartDistance = 280
+            scene.fogEndDistance = 2400
+            scene.fogDensityExponent = 1.6
+            scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
+        }
         scene.background.contents = sky
         // Same cubemap as the image-based lighting source, so the car's paint and
         // glass actually reflect the sunset instead of a flat specular dot. Only
@@ -526,6 +655,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
 
     private func clouds(_ parent: SCNNode) {
+        guard Self.currentStage != .yunque else { return }
         let container = SCNNode()
         // lambert rather than constant, so the sun actually shapes them instead
         // of leaving flat beige blobs pasted on the sky
@@ -552,6 +682,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
 
     private func ocean(_ parent: SCNNode) {
+        guard Self.currentStage != .yunque else { return }
         let plane = SCNPlane(width: 9000, height: 9000)
         plane.widthSegmentCount = 110
         plane.heightSegmentCount = 110
@@ -599,7 +730,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // blinn + a low warm specular gives the asphalt a grazing sheen under the
         // low sun; pure lambert read as dead grey
         mat.lightingModel = .blinn
-        mat.diffuse.contents = Textures.asphalt()
+        mat.diffuse.contents = Self.currentStage == .yunque
+            ? Textures.dirtTrail() : Textures.asphalt()
         mat.diffuse.wrapS = .repeat
         mat.diffuse.wrapT = .repeat
         mat.specular.contents = UIColor(red: 0.42, green: 0.30, blue: 0.22, alpha: 1)
@@ -626,19 +758,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             node.castsShadow = false
             parent.addChildNode(node)
         }
-        ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dash: 8)
-        // white dashed dividers splitting each side into two lanes
-        let mid = Self.roadHalf / 2
-        ribbon(-mid - 0.11, -mid + 0.11, UIColor(white: 0.8, alpha: 1), dash: 8)
-        ribbon(mid - 0.11, mid + 0.11, UIColor(white: 0.8, alpha: 1), dash: 8)
-        let edgeOuter = Self.roadHalf - 0.18, edgeInner = Self.roadHalf - 0.4
-        ribbon(-edgeOuter, -edgeInner, UIColor(white: 0.83, alpha: 1), dash: 0)
-        ribbon(edgeInner, edgeOuter, UIColor(white: 0.83, alpha: 1), dash: 0)
-        // rumble strips just past the asphalt edge: the boundary should be
-        // something you feel and hear approaching, not a surprise
-        let rumbleIn = Self.roadHalf, rumbleOut = Self.roadHalf + 0.62
-        ribbon(-rumbleOut, -rumbleIn, UIColor(white: 0.70, alpha: 1), dash: 2)
-        ribbon(rumbleIn, rumbleOut, UIColor(white: 0.70, alpha: 1), dash: 2)
+        // A dirt trail has no paint and no rumble strips; its edge is just where the
+        // undergrowth starts.
+        if Self.currentStage != .yunque {
+            ribbon(-0.14, 0.14, UIColor(red: 0.79, green: 0.68, blue: 0.21, alpha: 1), dash: 8)
+            let mid = Self.roadHalf / 2
+            ribbon(-mid - 0.11, -mid + 0.11, UIColor(white: 0.8, alpha: 1), dash: 8)
+            ribbon(mid - 0.11, mid + 0.11, UIColor(white: 0.8, alpha: 1), dash: 8)
+            let edgeOuter = Self.roadHalf - 0.18, edgeInner = Self.roadHalf - 0.4
+            ribbon(-edgeOuter, -edgeInner, UIColor(white: 0.83, alpha: 1), dash: 0)
+            ribbon(edgeInner, edgeOuter, UIColor(white: 0.83, alpha: 1), dash: 0)
+            let rumbleIn = Self.roadHalf, rumbleOut = Self.roadHalf + 0.62
+            ribbon(-rumbleOut, -rumbleIn, UIColor(white: 0.70, alpha: 1), dash: 2)
+            ribbon(rumbleIn, rumbleOut, UIColor(white: 0.70, alpha: 1), dash: 2)
+        }
     }
 
     /// Grass / rock / sand blend driven by local slope plus three octaves of
@@ -646,7 +779,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// flat olive wall.
     private func terrainColor(_ i: Int, _ lat: Float, _ y: Float) -> simd_float3 {
         let sd = Float(i) * Self.step
-        if y < 1.6 {
+        if y < 1.6 && Self.currentStage != .yunque {
             let l = 0.66 + 0.05 * sin(Float(i) * 0.7 + lat)
             return simd_float3(0.93 * l + 0.1, 0.82 * l + 0.08, 0.55 * l)
         }
@@ -657,6 +790,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         let dLat: Float = 1.5
         let slope = abs(groundY(i, lat + dLat) - groundY(i, lat - dLat)) / (2 * dLat)
+
+        // El Yunque is one biome the whole way: deep, wet, saturated green with
+        // very little bare rock. No region drift.
+        if Self.currentStage == .yunque {
+            let ui = UIColor(hue: CGFloat(0.335 - n * 0.035),
+                             saturation: CGFloat(0.62 + n * 0.16),
+                             brightness: CGFloat(0.13 + n * 0.19), alpha: 1)
+            var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+            ui.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+            let jungle = simd_float3(Float(r2), Float(g2), Float(b2))
+            let wetRock = simd_float3(0.26, 0.27, 0.23) * (0.85 + n * 0.3)
+            let amt = simd_clamp((slope - 0.95) / 1.1, 0, 0.6)
+            return simd_mix(jungle, wetRock, simd_float3(repeating: amt))
+        }
 
         // Ground tone per region: deep wet green up in the cordillera, dry and
         // yellowed through the pueblo, pale and sun-bleached down on the costa.
@@ -792,17 +939,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let palmContainer = SCNNode()
         let template = palmTemplate()
         var placed = 0
-        while placed < 130 && guard_ < 3000 {
+        let treeTarget = Self.currentStage == .yunque ? 300 : 130
+        while placed < treeTarget && guard_ < 6000 {
             guard_ += 1
             // palms belong to the coast, with a scattering inland
             let pi = indexIn(pickRegion(&worldRng, simd_float3(0.22, 0.16, 0.62)), &worldRng)
-            let lat = (worldRng.next() < 0.55 ? 1 : -1) * (Self.barrier + 1.2 + worldRng.next() * 45)
+            // rainforest crowds the path; the coast road lets it breathe
+            let lat = (worldRng.next() < 0.55 ? 1 : -1)
+                    * (Self.barrier + (Self.currentStage == .yunque ? 0.5 : 1.2)
+                       + worldRng.next() * (Self.currentStage == .yunque ? 26 : 45))
             let gy = groundY(pi, lat)
             if gy < -1 { continue }
             let p = pts[pi], r = rights[pi]
             let clone = template.clone()
             clone.position = SCNVector3(p.x + r.x * lat, gy - 0.3, p.z + r.z * lat)
-            let sc = 0.8 + worldRng.next() * 0.7
+            let sc = Self.currentStage == .yunque
+                ? 1.3 + worldRng.next() * 1.1        // rainforest canopy is tall
+                : 0.8 + worldRng.next() * 0.7
             clone.scale = SCNVector3(sc, sc, sc)
             clone.eulerAngles = SCNVector3((worldRng.next() - 0.5) * 0.2,
                                            worldRng.next() * 6.28,
@@ -945,7 +1098,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         let postContainer = SCNNode()
         let postGeo = SCNBox(width: 0.16, height: 0.85, length: 0.16, chamferRadius: 0)
-        postGeo.materials = [lambert(UIColor(white: 0.91, alpha: 1))]
+        postGeo.materials = [lambert(Self.currentStage == .yunque
+            ? UIColor(red: 0.36, green: 0.25, blue: 0.16, alpha: 1)
+            : UIColor(white: 0.91, alpha: 1))]
         // Both sides now, and sitting on `barrier` — previously there was a single
         // line of posts at 5.1 and the actual death boundary was an invisible
         // cliff out at 8.6, so the rail you could see meant nothing.
@@ -968,10 +1123,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // a rail reads as a wall you must not cross, which is the whole point of
         // having a boundary you can see.
         let railMat = SCNMaterial()
-        railMat.lightingModel = .physicallyBased
-        railMat.diffuse.contents = UIColor(white: 0.74, alpha: 1)
-        railMat.metalness.contents = 0.85
-        railMat.roughness.contents = 0.34
+        if Self.currentStage == .yunque {
+            // a rough timber handrail, not galvanised steel
+            railMat.lightingModel = .lambert
+            railMat.diffuse.contents = UIColor(red: 0.40, green: 0.28, blue: 0.18, alpha: 1)
+        } else {
+            railMat.lightingModel = .physicallyBased
+            railMat.diffuse.contents = UIColor(white: 0.74, alpha: 1)
+            railMat.metalness.contents = 0.85
+            railMat.roughness.contents = 0.34
+        }
         railMat.isDoubleSided = true
         for side in [Float(-1), Float(1)] {
             var rvv: [simd_float3] = [], rii: [Int32] = []
@@ -1043,6 +1204,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // Pueblo street lamps. Warm emissive heads against the sunset, which the
         // HDR bloom picks up — the cheapest way to make the town feel inhabited.
         let lampContainer = SCNNode()
+        let wantLamps = Self.currentStage != .yunque
         let lampPoleMat = lambert(UIColor(white: 0.42, alpha: 1))
         let lampHeadMat = constant(UIColor(red: 1.0, green: 0.86, blue: 0.60, alpha: 1))
         lampHeadMat.emission.contents = UIColor(red: 1.0, green: 0.80, blue: 0.48, alpha: 1)
@@ -1054,7 +1216,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let pSpan = Region.pueblo.span
         var li = Int(pSpan.lo * Float(Self.count))
         let lEnd = Int(pSpan.hi * Float(Self.count))
-        while li < lEnd {
+        while li < lEnd && wantLamps {
             for side in [Float(-1), Float(1)] {
                 let lat = side * (Self.barrier + 1.1)
                 let lp = pts[li], lr = rights[li]
@@ -1078,7 +1240,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         arch(Self.count - 8, "¡META!", UIColor(red: 0, green: 0.31, blue: 0.63, alpha: 1))
 
         let umbCols: [UIColor] = [.neonPinkUI, .neonGoldUI, .neonTealUI, .sunsetOrangeUI]
-        for u in 0..<6 {
+        let wantUmbrellas = Self.currentStage != .yunque
+        for u in 0..<6 where wantUmbrellas {
             let ui = Self.count - 30 - Int(worldRng.next() * 40)
             let ulat = (worldRng.next() < 0.5 ? 1 : -1) * (Self.barrier + 0.5 + worldRng.next() * 12)
             let ugy = groundY(ui, ulat)
@@ -1229,6 +1392,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             iguanas[i].node.eulerAngles.z = 0
             positionIguana(&iguanas[i])
         }
+        layoutCritters()
         for i in 0..<traffic.count {
             traffic[i].s = 300 + Float(i) * 420 + runRng.next() * 150
             traffic[i].x = Self.laneCentres[Int(runRng.next() * 4) % 4]
@@ -1365,6 +1529,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
 
     private func makeTraffic(_ parent: SCNNode) {
+        guard Self.currentStage != .yunque else { return }
         let colors: [UIColor] = [
             UIColor(white: 0.85, alpha: 1),
             UIColor(red: 0.25, green: 0.42, blue: 0.85, alpha: 1),
@@ -1413,6 +1578,254 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         skidAge = [Float](repeating: -1, count: n)
         parent.addChildNode(container)
+    }
+
+    // MARK: - critter models
+
+    private func critterNode(_ kind: CritterKind) -> SCNNode {
+        let grp = SCNNode()
+        switch kind {
+        case .coqui:
+            let m = lambert(UIColor(red: 0.44, green: 0.72, blue: 0.30, alpha: 1))
+            let body = SCNNode(geometry: SCNSphere(radius: 0.14))
+            body.geometry!.materials = [m]
+            body.scale = SCNVector3(1, 0.82, 1.15)
+            body.position.y = 0.13
+            grp.addChildNode(body)
+            let eyeMat = constant(UIColor(white: 0.05, alpha: 1))
+            for ex in [Float(-0.06), Float(0.06)] {
+                let eye = SCNNode(geometry: SCNSphere(radius: 0.035))
+                eye.geometry!.materials = [eyeMat]
+                eye.position = SCNVector3(ex, 0.2, -0.1)
+                grp.addChildNode(eye)
+            }
+
+        case .lagartijo:
+            let m = lambert(UIColor(red: 0.42, green: 0.36, blue: 0.22, alpha: 1))
+            let body = SCNNode(geometry: SCNBox(width: 0.14, height: 0.09, length: 0.4,
+                                                chamferRadius: 0.03))
+            body.geometry!.materials = [m]; body.position.y = 0.07
+            grp.addChildNode(body)
+            let head = SCNNode(geometry: SCNBox(width: 0.1, height: 0.08, length: 0.14,
+                                                chamferRadius: 0.02))
+            head.geometry!.materials = [m]; head.position = SCNVector3(0, 0.09, -0.26)
+            grp.addChildNode(head)
+            let tail = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 0.05, height: 0.44))
+            tail.geometry!.materials = [m]
+            tail.eulerAngles.x = -.pi / 2
+            tail.position = SCNVector3(0, 0.06, 0.42)
+            grp.addChildNode(tail)
+
+        case .hiker:
+            // torso, head, pack, and two legs that swing
+            let shirt = lambert(UIColor(red: 0.90, green: 0.42, blue: 0.28, alpha: 1))
+            let torso = SCNNode(geometry: SCNBox(width: 0.34, height: 0.52, length: 0.22,
+                                                 chamferRadius: 0.07))
+            torso.geometry!.materials = [shirt]; torso.position.y = 1.06
+            grp.addChildNode(torso)
+            let head = SCNNode(geometry: SCNSphere(radius: 0.15))
+            head.geometry!.materials = [lambert(UIColor(red: 0.72, green: 0.53, blue: 0.38, alpha: 1))]
+            head.position.y = 1.46
+            grp.addChildNode(head)
+            let pack = SCNNode(geometry: SCNBox(width: 0.28, height: 0.32, length: 0.16,
+                                                chamferRadius: 0.05))
+            pack.geometry!.materials = [lambert(UIColor(red: 0.24, green: 0.40, blue: 0.28, alpha: 1))]
+            pack.position = SCNVector3(0, 1.10, 0.18)
+            grp.addChildNode(pack)
+            let legMat = lambert(UIColor(red: 0.20, green: 0.24, blue: 0.34, alpha: 1))
+            for lx in [Float(-0.10), Float(0.10)] {
+                let hip = SCNNode()
+                hip.position = SCNVector3(lx, 0.78, 0)
+                let leg = SCNNode(geometry: SCNBox(width: 0.13, height: 0.76, length: 0.14,
+                                                   chamferRadius: 0.05))
+                leg.geometry!.materials = [legMat]
+                leg.position.y = -0.38
+                hip.addChildNode(leg)
+                grp.addChildNode(hip)
+            }
+
+        case .sanpedrito:
+            // Puerto Rican tody: green back, red throat, stubby wings
+            let green = lambert(UIColor(red: 0.30, green: 0.72, blue: 0.32, alpha: 1))
+            let body = SCNNode(geometry: SCNSphere(radius: 0.12))
+            body.geometry!.materials = [green]
+            body.scale = SCNVector3(1, 0.9, 1.3)
+            grp.addChildNode(body)
+            let throat = SCNNode(geometry: SCNSphere(radius: 0.07))
+            throat.geometry!.materials = [lambert(UIColor(red: 0.90, green: 0.16, blue: 0.18, alpha: 1))]
+            throat.position = SCNVector3(0, -0.03, -0.10)
+            grp.addChildNode(throat)
+            let beak = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 0.03, height: 0.16))
+            beak.geometry!.materials = [constant(UIColor(white: 0.14, alpha: 1))]
+            beak.eulerAngles.x = .pi / 2
+            beak.position = SCNVector3(0, 0, -0.2)
+            grp.addChildNode(beak)
+            for wx in [Float(-1), Float(1)] {
+                let pivot = SCNNode()
+                pivot.position = SCNVector3(wx * 0.08, 0.03, 0)
+                let wing = SCNNode(geometry: SCNBox(width: 0.22, height: 0.02, length: 0.12,
+                                                    chamferRadius: 0.01))
+                wing.geometry!.materials = [green]
+                wing.position = SCNVector3(wx * 0.12, 0, 0)
+                pivot.addChildNode(wing)
+                grp.addChildNode(pivot)
+            }
+
+        case .boa:
+            // a chain of segments; the update pass undulates them
+            let m = lambert(UIColor(red: 0.34, green: 0.30, blue: 0.22, alpha: 1))
+            let segGeo = SCNSphere(radius: 0.15)
+            segGeo.materials = [m]
+            for k in 0..<7 {
+                let seg = SCNNode(geometry: segGeo)
+                let t = Float(k) / 6
+                let sc = 1 - t * 0.55
+                seg.scale = SCNVector3(sc, sc * 0.75, sc)
+                seg.position = SCNVector3(0, 0.12, Float(k) * 0.26)
+                grp.addChildNode(seg)
+            }
+        }
+        return grp
+    }
+
+    private func makeCritters(_ parent: SCNNode) {
+        guard Self.currentStage == .yunque else { return }
+        for kind in CritterKind.allCases {
+            for _ in 0..<kind.count {
+                let n = critterNode(kind)
+                parent.addChildNode(n)
+                critters.append(Critter(kind: kind, node: n))
+            }
+        }
+    }
+
+    /// Scatters the quarry along the trail. Called per run from `layoutHazards`.
+    private func layoutCritters() {
+        guard !critters.isEmpty else { return }
+        for i in 0..<critters.count {
+            let kind = critters[i].kind
+            let f = 0.05 + runRng.next() * 0.90
+            critters[i].s = f * Self.total
+            critters[i].dir = runRng.next() < 0.5 ? -1 : 1
+            critters[i].alive = true
+            critters[i].hitPlayer = false
+            critters[i].phase = runRng.next() * 6.28
+            critters[i].node.isHidden = false
+            switch kind {
+            case .coqui, .lagartijo:
+                // small things sit at the trail's edge and dart across it
+                critters[i].x = critters[i].dir * (Self.roadHalf - 0.4)
+                critters[i].baseY = 0
+            case .hiker:
+                critters[i].x = (runRng.next() - 0.5) * (Self.roadHalf * 1.3)
+                critters[i].baseY = 0
+            case .boa:
+                critters[i].x = critters[i].dir * (Self.roadHalf + 0.6)
+                critters[i].baseY = 0
+            case .sanpedrito:
+                critters[i].x = (runRng.next() - 0.5) * (Self.roadHalf * 1.5)
+                critters[i].baseY = 1.5 + runRng.next() * 0.7
+            }
+        }
+    }
+
+    private func updateCritters(_ dt: Float, _ tNow: Float) {
+        guard !critters.isEmpty else { return }
+        for i in 0..<critters.count {
+            let ds = critters[i].s - s
+            // cull far away: cheap, and there are ~70 of them
+            if ds < -40 || ds > 420 {
+                critters[i].node.isHidden = true
+                continue
+            }
+            guard critters[i].alive else { continue }
+            critters[i].node.isHidden = false
+            critters[i].phase += dt
+
+            let kind = critters[i].kind
+            switch kind {
+            case .coqui:
+                // hops in place
+                critters[i].baseY = abs(sin(critters[i].phase * 3.1)) * 0.22
+            case .lagartijo:
+                // darts across when you get close, like the iguanas
+                if ds < 34 && ds > -2 {
+                    critters[i].x += critters[i].dir * -9 * dt
+                }
+            case .hiker:
+                // walking away from you up the trail
+                critters[i].s += 1.9 * dt
+            case .boa:
+                if ds < 46 && ds > -4 {
+                    critters[i].x += critters[i].dir * -1.9 * dt
+                }
+            case .sanpedrito:
+                critters[i].x += critters[i].dir * 3.4 * dt
+                critters[i].baseY += sin(critters[i].phase * 4.2) * 0.6 * dt
+                if abs(critters[i].x) > Self.roadHalf * 1.6 { critters[i].dir *= -1 }
+            }
+
+            // place it on the trail
+            let (cp, ct, cr) = sample(critters[i].s)
+            let world = cp + cr * critters[i].x + simd_float3(0, critters[i].baseY, 0)
+            let node = critters[i].node
+            node.simdPosition = world
+            switch kind {
+            case .coqui:
+                node.simdLook(at: world - ct, up: simd_float3(0, 1, 0),
+                              localFront: simd_float3(0, 0, -1))
+            case .hiker:
+                node.simdLook(at: world + ct, up: simd_float3(0, 1, 0),
+                              localFront: simd_float3(0, 0, -1))
+                // swing the legs
+                let swing = sin(critters[i].phase * 7) * 0.5
+                if node.childNodes.count >= 5 {
+                    node.childNodes[3].eulerAngles.x = swing
+                    node.childNodes[4].eulerAngles.x = -swing
+                }
+            case .lagartijo, .boa:
+                // facing the way it's crossing
+                let target = world + cr * critters[i].dir * -1
+                node.simdLook(at: target, up: simd_float3(0, 1, 0),
+                              localFront: simd_float3(0, 0, -1))
+                if kind == .boa {
+                    for (k, seg) in node.childNodes.enumerated() {
+                        seg.position.x = sin(critters[i].phase * 4 - Float(k) * 0.8) * 0.14
+                    }
+                }
+            case .sanpedrito:
+                node.simdLook(at: world + cr * critters[i].dir, up: simd_float3(0, 1, 0),
+                              localFront: simd_float3(0, 0, -1))
+                let flap = sin(critters[i].phase * 22) * 0.7
+                for (k, w) in node.childNodes.enumerated() where k >= 3 {
+                    w.eulerAngles.z = (k == 3 ? flap : -flap)
+                }
+            }
+
+            // running into the bigger ones hurts
+            if !critters[i].hitPlayer, kind.contactDamage > 0,
+               abs(ds) < 1.8, abs(critters[i].x - x) < 1.3, !airborne {
+                critters[i].hitPlayer = true
+                shake = max(shake, 0.55)
+                sound.playThunk()
+                damage(kind.contactDamage, kind == .boa ? "¡LA BOA!" : "¡CUIDAO!")
+            }
+        }
+    }
+
+    /// Zapped by the beam.
+    private func killCritter(_ i: Int, at bs: Float, _ bx: Float) {
+        let kind = critters[i].kind
+        critters[i].alive = false
+        critters[i].node.isHidden = true
+        score += Float(kind.points)
+        combo = min(combo + 1, 5)
+        popupAsync("\(kind.label) +\(kind.points)")
+        sound.playCoqui()
+        let (cp, _, cr) = sample(bs)
+        sparkNode.simdPosition = cp + cr * bx + simd_float3(0, 0.5, 0)
+        sparkSystem.birthRate = 520
+        sparkT = 0.1
     }
 
     // MARK: - beam
@@ -1529,6 +1942,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     sound.playThunk()
                     struck = true
                     break
+                }
+            }
+
+            // Yunque quarry
+            if !struck {
+                for ci in 0..<critters.count {
+                    guard critters[ci].alive else { continue }
+                    let cs = critters[ci].s
+                    guard cs > s - 2 else { continue }
+                    if cs >= lo && cs <= hi && abs(critters[ci].x - bx) < 1.9 {
+                        killCritter(ci, at: cs, bx)
+                        struck = true
+                        break
+                    }
                 }
             }
 
@@ -2131,6 +2558,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         clearSkids()
         clearBeam()
         dustSystem.birthRate = 0
+        sparkSystem.birthRate = 0
         // the base is 6 km away and fully fogged, but there's no reason to keep
         // paying for it once the race starts
         introSet.isHidden = true
@@ -2157,6 +2585,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.countLabel = ""
             self.state.newRecordScore = false
             self.state.newRecordTime = false
+            self.state.unlockedStage = nil
             self.state.statSeed = seed
             self.state.hud = HudSnapshot()
         }
@@ -2174,15 +2603,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // A run that skipped part of the course isn't a record. Without this the
         // -startAt debug flag writes nonsense best times.
         let eligible = Self.startOffset <= 40
-        let newScoreRec = eligible && sc > defaults.integer(forKey: "hoyo_bestScore")
-        if newScoreRec { defaults.set(sc, forKey: "hoyo_bestScore") }
+        let stage = Self.currentStage
+        let newScoreRec = eligible && sc > defaults.integer(forKey: stage.bestScoreKey)
+        if newScoreRec { defaults.set(sc, forKey: stage.bestScoreKey) }
         var newTimeRec = false
         if !dead && eligible {
-            let bestTime = defaults.double(forKey: "hoyo_bestTime")
+            let bestTime = defaults.double(forKey: stage.bestTimeKey)
             if bestTime == 0 || playTime < bestTime {
                 newTimeRec = true
-                defaults.set((playTime * 10).rounded() / 10, forKey: "hoyo_bestTime")
+                defaults.set((playTime * 10).rounded() / 10, forKey: stage.bestTimeKey)
             }
+        }
+        // finishing a stage opens the next one
+        var opened: Stage?
+        if !dead, eligible, let nxt = stage.next, !nxt.unlocked {
+            nxt.unlock()
+            opened = nxt
         }
         DispatchQueue.main.async {
             self.state.statTime = timeStr
@@ -2194,6 +2630,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.statFinished = !dead
             self.state.newRecordScore = newScoreRec
             self.state.newRecordTime = newTimeRec
+            self.state.unlockedStage = opened
             self.state.refreshRecordLine()
             self.state.phase = dead ? .dead : .finished
         }
@@ -2429,6 +2866,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             lastSkidL = nil; lastSkidR = nil; skidTimer = 0
         }
         updateSkids(dt)
+        updateCritters(dt, Float(time))
 
         // cliff / offroad
         // Guardrail. The old rule fired at |x| > 8.6 — 3.8 m past the visible
@@ -2558,7 +2996,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
 
         // traffic
-        for ti in 0..<traffic.count {
+        for ti in 0..<traffic.count where Self.currentStage != .yunque {
             traffic[ti].cool = max(0, traffic[ti].cool - dt)
             traffic[ti].s += traffic[ti].v * dt
             // being shoved: slide sideways, yaw with it, then settle
@@ -2762,22 +3200,38 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             lastCombo = c
             DispatchQueue.main.async { self.state.combo = c }
         }
-        // region crossing
-        let region = Region.at(progress: s / Self.total)
-        if region != lastRegion {
-            lastRegion = region
-            sound.playCoqui()
-            DispatchQueue.main.async { self.state.showRegion(region) }
+        // region crossing — the descent's three stretches. El Yunque is one biome,
+        // so it just names itself on the first frame.
+        if Self.currentStage == .yunque {
+            if lastRegion == nil {
+                lastRegion = .cordillera
+                sound.playCoqui()
+                DispatchQueue.main.async {
+                    self.state.regionLabel = "EL YUNQUE"
+                    self.state.regionBlurb = "VEREDA EN EL BOSQUE"
+                    self.state.regionID += 1
+                }
+            }
+        } else {
+            let region = Region.at(progress: s / Self.total)
+            if region != lastRegion {
+                lastRegion = region
+                sound.playCoqui()
+                DispatchQueue.main.async { self.state.showRegion(region) }
+            }
         }
 
         hudClock += dt
         if hudClock >= 1.0 / 30.0 {
             hudClock = 0
-            // drift the haze toward the current region's colour
+            // drift the haze toward the current region's colour (stage 1 only —
+            // the rainforest keeps its own mist)
+            if Self.currentStage != .yunque {
             let rw = Self.regionWeights(s / Self.total)
             let fog = Self.regionFog[0] * rw.x + Self.regionFog[1] * rw.y + Self.regionFog[2] * rw.z
             scene.fogColor = UIColor(red: CGFloat(fog.x), green: CGFloat(fog.y),
                                      blue: CGFloat(fog.z), alpha: 1)
+            }
             let mm = Int(playTime) / 60
             let ss = playTime.truncatingRemainder(dividingBy: 60)
             var snap = HudSnapshot()

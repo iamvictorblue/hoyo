@@ -88,19 +88,28 @@ struct GameSceneView: UIViewRepresentable {
         view.isPlaying = true
         UIApplication.shared.isIdleTimerDisabled = true   // no screen sleep mid-run
 
-        // The world build — 400k sky-cubemap pixels, the road and terrain meshes,
-        // 120 palms — used to run synchronously in init and froze the launch for
-        // ~5 s. It builds detached on a background queue now, then gets attached
-        // in one main-thread step.
-        DispatchQueue.global(qos: .userInitiated).async {
-            let built = controller.buildWorld()
-            DispatchQueue.main.async {
-                controller.attach(world: built.world, sky: built.sky)
-                view.pointOfView = controller.pointOfView
-                state.sceneReady = true
-                if ProcessInfo.processInfo.arguments.contains("-autoplay") {
-                    state.requestStart = true
-                }
+        // The world build — 400k sky-cubemap pixels, the terrain meshes, hundreds of
+        // trees — used to run synchronously in init and froze the launch for ~5 s.
+        // It builds detached on a background queue, then attaches in one main step.
+        // `loadStage` runs the same path again whenever the course changes.
+        state.loadStageHandler = { stage, done in
+            controller.loadStage(stage, onReady: done)
+        }
+        // `-stage <n>` jumps straight to a course, unlocking it — for testing a
+        // stage without finishing the one before it.
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-stage"), i + 1 < args.count,
+           let n = Int(args[i + 1]), let want = Stage(rawValue: n) {
+            want.unlock()
+            state.selectedStage = want
+        }
+        controller.loadStage(state.selectedStage) {
+            view.pointOfView = controller.pointOfView
+            state.loadedStage = state.selectedStage
+            state.sceneReady = true
+            state.refreshRecordLine()
+            if ProcessInfo.processInfo.arguments.contains("-autoplay") {
+                state.requestStart = true
             }
         }
         return view
