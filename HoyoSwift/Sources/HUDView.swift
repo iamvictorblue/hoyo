@@ -198,7 +198,9 @@ struct HUDView: View {
                                 .frame(width: geo.size.width * state.hud.progress)
                             // region boundaries, so the bar shows how far into the
                             // cordillera / pueblo / costa you are
-                            ForEach(Region.allCases.dropFirst(), id: \.rawValue) { r in
+                            ForEach(state.loadedStage == .cordillera
+                                    ? Array(Region.allCases.dropFirst()) : [],
+                                    id: \.rawValue) { r in
                                 Rectangle()
                                     .fill(.white.opacity(0.55))
                                     .frame(width: 1.5, height: 8)

@@ -12,11 +12,13 @@ enum GamePhase {
 enum Stage: Int, CaseIterable {
     case cordillera = 0     // the mountain road down to the coast
     case yunque = 1         // a hiking trail through the rainforest
+    case playa = 2          // wet sand along the shoreline
 
     var name: String {
         switch self {
         case .cordillera: return "LA CORDILLERA"
         case .yunque:     return "EL YUNQUE"
+        case .playa:      return "LA PLAYA"
         }
     }
 
@@ -24,6 +26,7 @@ enum Stage: Int, CaseIterable {
         switch self {
         case .cordillera: return "CARRETERA A LA PLAYA"
         case .yunque:     return "VEREDA EN EL BOSQUE"
+        case .playa:      return "ORILLA Y ARENA MOJADA"
         }
     }
 
@@ -33,6 +36,7 @@ enum Stage: Int, CaseIterable {
         switch self {
         case .cordillera: return "143"
         case .yunque:     return "191"
+        case .playa:      return "187"      // the coastal road out to Piñones
         }
     }
 
@@ -41,12 +45,14 @@ enum Stage: Int, CaseIterable {
         switch self {
         case .cordillera: return "BAJASTE HASTA LA COSTA"
         case .yunque:     return "CRUZASTE EL BOSQUE COMPLETO"
+        case .playa:      return "CORRISTE LA ORILLA COMPLETA"
         }
     }
     var failLine: String {
         switch self {
         case .cordillera: return "LOS HOYOS GANARON ESTA VEZ"
         case .yunque:     return "LA VEREDA GANÓ ESTA VEZ"
+        case .playa:      return "LA ARENA GANÓ ESTA VEZ"
         }
     }
 

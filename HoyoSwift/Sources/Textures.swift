@@ -7,7 +7,7 @@ enum Textures {
     /// Six cubemap faces: sunset gradient by elevation with the sun disc,
     /// its glow, and early stars baked in. Used as the scene background, so it
     /// pans correctly with the camera and is never touched by fog.
-    enum SkyMood { case sunset, rainforest }
+    enum SkyMood { case sunset, rainforest, tropical }
 
     static func skyCubemap(_ mood: SkyMood = .sunset) -> [UIImage] {
         let n = 256
@@ -32,12 +32,30 @@ enum Textures {
                     default: d = simd_float3(-u, -v, -1)    // -Z
                     }
                     d = simd_normalize(d)
-                    if mood == .rainforest {
+                    if mood != .sunset {
                         // Overcast canopy light: no sun, no stars, brightest near the
                         // horizon where the mist glows. A sunset sky over a rainforest
                         // fought the biome badly.
-                        var c2 = forestSkyColor(elevation: d.y)
+                        var c2 = mood == .rainforest
+                            ? forestSkyColor(elevation: d.y)
+                            : tropicalSkyColor(elevation: d.y)
                         c2 += simd_float3(repeating: 0.02 * sinf(d.x * 40) * sinf(d.z * 40))
+                        if mood == .tropical {
+                            // a high sun and a few soft clouds
+                            let sd2 = simd_dot(d, simd_normalize(simd_float3(0.2, 0.72, -0.66)))
+                            if sd2 > 0 {
+                                c2 += simd_float3(1.0, 0.98, 0.90) * powf(sd2, 2200) * 1.4
+                                c2 += simd_float3(1.0, 0.96, 0.86) * powf(sd2, 90) * 0.16
+                            }
+                            if d.y > 0.08 {
+                                let cl = cloudNoise(d)
+                                if cl > 0.63 {
+                                    let a = min((cl - 0.63) / 0.34, 1) * min((d.y - 0.08) * 4, 1)
+                                    c2 = simd_mix(c2, simd_float3(1.0, 0.99, 0.97),
+                                                  simd_float3(repeating: a * 0.6))
+                                }
+                            }
+                        }
                         let i2 = (y * n + x) * 4
                         pixels[i2] = UInt8(min(max(c2.x, 0), 1) * 255)
                         pixels[i2 + 1] = UInt8(min(max(c2.y, 0), 1) * 255)
@@ -75,6 +93,37 @@ enum Textures {
             if let img = img { faces.append(img) }
         }
         return faces
+    }
+
+    /// Bright Caribbean afternoon: deep blue overhead easing to a pale, hazy
+    /// horizon where the sea glare is.
+    private static func tropicalSkyColor(elevation e: Float) -> simd_float3 {
+        let stops: [(Float, simd_float3)] = [
+            (-1.00, simd_float3(0.62, 0.80, 0.88)),
+            (0.00, simd_float3(0.78, 0.90, 0.95)),
+            (0.10, simd_float3(0.60, 0.80, 0.93)),
+            (0.35, simd_float3(0.34, 0.62, 0.88)),
+            (0.70, simd_float3(0.17, 0.44, 0.80)),
+            (1.00, simd_float3(0.10, 0.32, 0.70))
+        ]
+        for k in 0..<(stops.count - 1) {
+            if e <= stops[k + 1].0 {
+                let t = (e - stops[k].0) / (stops[k + 1].0 - stops[k].0)
+                return simd_mix(stops[k].1, stops[k + 1].1, simd_float3(repeating: t))
+            }
+        }
+        return stops[stops.count - 1].1
+    }
+
+    /// Cheap 3-octave value noise on the sky direction, for cloud masses.
+    private static func cloudNoise(_ d: simd_float3) -> Float {
+        var v: Float = 0, amp: Float = 0.5, f: Float = 2.2
+        for _ in 0..<3 {
+            v += amp * (0.5 + 0.5 * sinf((d.x + d.y * 0.7) * f * 5.3)
+                                 * sinf((d.z - d.x * 0.5) * f * 4.7 + d.y * 2.6))
+            amp *= 0.5; f *= 2.1
+        }
+        return v
     }
 
     /// Flat green-grey overcast for El Yunque.
@@ -262,6 +311,53 @@ enum Textures {
                 let w = CGFloat.random(in: 16...54)
                 g.fillEllipse(in: CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim),
                                          width: w, height: w * .random(in: 0.4...0.7)))
+            }
+        }
+    }
+
+    /// Wet packed sand at the tide line — ripples, shell grit, damp streaks.
+    static func wetSand() -> UIImage {
+        let dim: CGFloat = 512
+        return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
+            let g = ctx.cgContext
+            UIColor(red: 0.85, green: 0.77, blue: 0.63, alpha: 1).setFill()
+            g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
+
+            // damp patches, darker where the water has just been
+            for _ in 0..<26 {
+                let v = CGFloat.random(in: -0.10...0.04)
+                UIColor(red: 0.85 + v, green: 0.77 + v, blue: 0.63 + v * 0.8,
+                        alpha: .random(in: 0.3...0.7)).setFill()
+                g.fill(CGRect(x: .random(in: -40...dim), y: .random(in: -40...dim),
+                              width: .random(in: 90...260), height: .random(in: 50...170)))
+            }
+            // ripple lines left by the tide
+            g.setLineCap(.round)
+            for _ in 0..<26 {
+                g.setStrokeColor(UIColor(red: 0.74, green: 0.66, blue: 0.53,
+                                         alpha: .random(in: 0.25...0.55)).cgColor)
+                g.setLineWidth(.random(in: 1.5...4))
+                var cx: CGFloat = -20, cy = CGFloat.random(in: 0...dim)
+                g.move(to: CGPoint(x: cx, y: cy))
+                while cx < dim + 20 {
+                    cx += .random(in: 30...70); cy += .random(in: -12...12)
+                    g.addLine(to: CGPoint(x: cx, y: cy))
+                }
+                g.strokePath()
+            }
+            // grit and broken shell
+            for _ in 0..<9000 {
+                let v = CGFloat.random(in: 0.58...0.86)
+                UIColor(red: v, green: v * 0.92, blue: v * 0.78,
+                        alpha: .random(in: 0.15...0.5)).setFill()
+                let sz = CGFloat.random(in: 1...2.2)
+                g.fill(CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim), width: sz, height: sz))
+            }
+            for _ in 0..<160 {
+                UIColor(white: .random(in: 0.88...1.0), alpha: .random(in: 0.4...0.85)).setFill()
+                let r = CGFloat.random(in: 2...5)
+                g.fillEllipse(in: CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim),
+                                         width: r, height: r * .random(in: 0.5...0.9)))
             }
         }
     }
