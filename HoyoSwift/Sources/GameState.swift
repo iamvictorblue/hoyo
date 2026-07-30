@@ -146,6 +146,8 @@ struct HudSnapshot: Equatable {
     var flash: Double = 0          // damage flash opacity
     var nitroActive = false
     var invuln = false             // post-hit grace period, blinks the car
+    var comboLeft: Double = 0      // 1…0, how much of the combo window is left
+    var pendingStyle = 0           // drift points at risk right now
     var timeText = "0:00.0"
 }
 
@@ -181,6 +183,15 @@ final class GameState: ObservableObject {
     @Published var paused = false
     @Published var countLabel: String = ""      // "3" "2" "1" "¡DALE!"
     @Published var sceneReady = false           // false while the world builds
+
+    /// Shown once, on a player's first launch. Jump and the beam are the two least
+    /// guessable mechanics and nothing else explains them.
+    @Published var showHowTo: Bool = !UserDefaults.standard.bool(forKey: "hoyo_sawHowTo")
+
+    func dismissHowTo() {
+        showHowTo = false
+        UserDefaults.standard.set(true, forKey: "hoyo_sawHowTo")
+    }
 
     /// Which course the player has picked, and which one is actually loaded.
     @Published var selectedStage: Stage = .cordillera

@@ -142,7 +142,9 @@ struct HUDView: View {
             }
 
             switch state.phase {
-            case .intro: IntroOverlay(state: state, tilt: tilt)
+            case .intro:
+                IntroOverlay(state: state, tilt: tilt)
+                if state.showHowTo && state.sceneReady { HowToCard(state: state) }
             case .finished: EndOverlay(state: state, title: "¡LLEGASTE!",
                                        subtitle: state.loadedStage.finishLine)
             case .dead: EndOverlay(state: state, title: "GAME OVER",
@@ -206,11 +208,31 @@ struct HUDView: View {
                         .font(.data(30))
                         .foregroundStyle(Color.neonTeal)
                         .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
+                    // The combo bleeds away, so it needs a visible fuse — otherwise
+                    // losing it reads as the game punishing you at random.
                     if state.combo >= 2 {
-                        Text("COMBO x\(state.combo)")
-                            .font(.label(15))
-                            .foregroundStyle(Color.sunsetOrange)
-                            .shadow(color: .sunsetOrange.opacity(0.8), radius: 8)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("COMBO x\(state.combo)")
+                                .font(.label(15))
+                                .foregroundStyle(Color.sunsetOrange)
+                                .shadow(color: .sunsetOrange.opacity(0.8), radius: 8)
+                            ZStack(alignment: .trailing) {
+                                Capsule().fill(.white.opacity(0.14))
+                                Capsule()
+                                    .fill(state.hud.comboLeft < 0.3
+                                          ? Color.neonPink : Color.sunsetOrange)
+                                    .frame(width: 74 * state.hud.comboLeft)
+                            }
+                            .frame(width: 74, height: 3)
+                        }
+                    }
+
+                    // what a crash would cost you right now
+                    if state.hud.pendingStyle > 40 {
+                        Text("+\(state.hud.pendingStyle.formatted())")
+                            .font(.data(15))
+                            .foregroundStyle(Color.neonGold)
+                            .shadow(color: .neonGold.opacity(0.7), radius: 8)
                     }
                     if state.hud.invuln {
                         Text("INMUNE")
@@ -277,16 +299,16 @@ struct HUDView: View {
                 // corner where it's easiest to reach.
                 VStack(spacing: 11) {
                     HStack(spacing: 11) {
-                        TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold) {
+                        TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold, caption: "SALTA") {
                             state.input.jumpRequested = true
                         }
-                        TapButton(symbol: "bolt.fill", tint: .neonTeal) {
+                        TapButton(symbol: "bolt.fill", tint: .neonTeal, caption: "RAYO") {
                             state.input.fireRequested = true
                         }
                     }
                     HStack(spacing: 11) {
-                        HoldButton(symbol: "octagon.fill", tint: .red) { state.input.brake = $0 }
-                        HoldButton(symbol: "flame.fill", tint: .neonTeal) { state.input.nitro = $0 }
+                        HoldButton(symbol: "octagon.fill", tint: .red, caption: "FRENO") { state.input.brake = $0 }
+                        HoldButton(symbol: "flame.fill", tint: .neonTeal, caption: "NITRO") { state.input.nitro = $0 }
                     }
                 }
             }
@@ -607,10 +629,21 @@ struct TiltHint: View {
 struct TapButton: View {
     let symbol: String
     var tint: Color = .white
+    var caption: String? = nil
     let onTap: () -> Void
     @State private var pressed = false
 
     var body: some View {
+        VStack(spacing: 3) {
+            glyph
+            if let caption {
+                Text(caption).font(.label(9)).tracking(1)
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+    }
+
+    private var glyph: some View {
         Image(systemName: symbol)
             .font(.system(size: 27, weight: .semibold))
             .foregroundStyle(pressed ? .white : tint)
@@ -633,10 +666,21 @@ struct TapButton: View {
 struct HoldButton: View {
     let symbol: String
     var tint: Color = .white
+    var caption: String? = nil
     let onPress: (Bool) -> Void
     @State private var pressed = false
 
     var body: some View {
+        VStack(spacing: 3) {
+            glyph
+            if let caption {
+                Text(caption).font(.label(9)).tracking(1)
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+    }
+
+    private var glyph: some View {
         Image(systemName: symbol)
             .font(.system(size: 27, weight: .semibold))
             .foregroundStyle(pressed ? .white : tint)
@@ -837,6 +881,14 @@ struct PauseOverlay: View {
                     }
                 }
                 .padding(.top, 10)
+
+                // reachable again, not just on the very first launch
+                Button { state.showHowTo = true; state.requestTitle = true } label: {
+                    Text("CÓMO SE JUEGA")
+                        .font(.label(10)).tracking(2)
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+                .padding(.top, 12)
             }
             .padding(.vertical, 26).padding(.horizontal, 40)
             .background(Color(red: 0.07, green: 0.03, blue: 0.13).opacity(0.9),
@@ -948,6 +1000,61 @@ struct IntroOverlay: View {
             }
             .padding(.leading, 34)
             .padding(.bottom, 26)
+        }
+    }
+}
+
+/// First-run explainer. Says what each control is *for*, not just its name — the
+/// captions on the buttons already handle naming.
+struct HowToCard: View {
+    @ObservedObject var state: GameState
+
+    private let rows: [(String, String, String)] = [
+        ("arrowtriangle.left.and.line.vertical.and.arrowtriangle.right", "GUÍA",
+         "desliza el pad pa' virar"),
+        ("octagon.fill", "FRENO", "frena, y con guía haces drift"),
+        ("flame.fill", "NITRO", "corre más · las piraguas lo llenan"),
+        ("arrow.up.circle.fill", "SALTA", "brinca los hoyos y los carros"),
+        ("bolt.fill", "RAYO", "tapa los hoyos y tumba carros")
+    ]
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.72).ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("CÓMO SE JUEGA")
+                    .font(.display(30)).tracking(3)
+                    .foregroundStyle(.white)
+                SignRule(color: .neonGold, width: 150).padding(.top, 4)
+
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(rows, id: \.1) { row in
+                        HStack(spacing: 11) {
+                            Image(systemName: row.0)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.neonTeal)
+                                .frame(width: 20)
+                            Text(row.1)
+                                .font(.label(12)).tracking(2)
+                                .foregroundStyle(.white)
+                                .frame(width: 54, alignment: .leading)
+                            Text(row.2)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.creamText.opacity(0.85))
+                        }
+                    }
+                }
+                .padding(.top, 16)
+
+                SignButton("DALE") { state.dismissHowTo() }
+                    .padding(.top, 20)
+            }
+            .padding(.vertical, 24).padding(.horizontal, 34)
+            .background(Color(red: 0.07, green: 0.03, blue: 0.13).opacity(0.94),
+                        in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18)
+                .stroke(.white.opacity(0.12), lineWidth: 1))
         }
     }
 }

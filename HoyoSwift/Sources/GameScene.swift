@@ -270,6 +270,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var score: Float = 0, styleRun: Float = 0
     private var topSpeed: Float = 0
     private var holesHit = 0, nearMisses = 0, combo = 0
+    /// Counts down; the combo drops a step when it hits zero. Without this the
+    /// multiplier was sticky at x5 forever, so playing safe and scoring well were
+    /// the same thing — there was no greed in the game.
+    private var comboTimer: Float = 0
+    /// How long the current drift has been held. Longer drifts pay more, which is
+    /// what makes losing one hurt.
+    private var driftTime: Float = 0
     private var cd: Float = 0
     private var cdLabel = ""
     private var streakSystem = SCNParticleSystem()
@@ -1846,7 +1853,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         critters[i].alive = false
         critters[i].node.isHidden = true
         score += Float(kind.points)
-        combo = min(combo + 1, 5)
+        bumpCombo()
         popupAsync("\(kind.label) +\(kind.points)", .big)
         sound.playCoqui()
         let (cp, _, cr) = sample(bs)
@@ -1964,7 +1971,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     traffic[ti].v *= 0.62
                     traffic[ti].cool = 1.5
                     score += tc.isPolice ? 240 : 130
-                    combo = min(combo + 1, 5)
+                    bumpCombo()
                     popupAsync(tc.isPolice ? "¡LA JARA!" : "¡FUEGO!", .big)
                     sound.playThunk()
                     struck = true
@@ -2574,6 +2581,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         s = Self.startOffset; v = 8; x = 0; xd = 0
         hp = 100; nitro = 60
         score = 0; styleRun = 0; combo = 0; lastCombo = -1
+        comboTimer = 0; driftTime = 0
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
         jumpY = 0; jumpVel = 0; jumpCool = 0
@@ -2709,7 +2717,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         hp -= amount
         flashT = 1
         combo = 0
-        if let msg = msg {
+        comboTimer = 0
+        // Style points were banked the instant you stopped drifting and survived a
+        // crash untouched, so a drift never cost anything. Now it's at risk until
+        // you come out of it clean — and losing a big one is the headline, not the
+        // name of whatever you hit.
+        var headline = msg
+        if styleRun > 40 {
+            headline = "¡SE FUE! -\(Int(styleRun))"
+        }
+        styleRun = 0
+        driftTime = 0
+        if let msg = headline {
             Haptics.shared.crash(intensity: min(1, 0.45 + amount / 40))
             DispatchQueue.main.async {
                 self.state.popup(msg, tone)
@@ -2718,6 +2737,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             lastCombo = 0
         }
         if hp <= 0 { hp = 0; endGame(dead: true) }
+    }
+
+    /// Shorter at higher combo: x1 gets ~4 s of slack, x5 gets ~2.6 s.
+    private var comboWindow: Float { max(2.5, 4.4 - Float(combo) * 0.35) }
+
+    private func bumpCombo() {
+        combo = min(combo + 1, 5)
+        comboTimer = comboWindow
     }
 
     private func popupAsync(_ msg: String, _ tone: PopupTone = .praise) {
@@ -2799,6 +2826,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         playTime += Double(dt)
         if invuln > 0 { invuln = max(0, invuln - dt) }
+
+        // the multiplier bleeds away unless you keep threading hazards
+        if combo > 0 {
+            comboTimer -= dt
+            if comboTimer <= 0 {
+                combo -= 1
+                comboTimer = combo > 0 ? comboWindow : 0
+            }
+        }
         if Self.showPause, playTime > 2.5, !state.paused {
             DispatchQueue.main.async { self.state.paused = true }
         }
@@ -2917,8 +2953,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         smokeSystem.birthRate = drifting ? 90 : 0
         if drifting {
-            styleRun += v * dt * 4
+            // escalating rate: a long drift is worth far more than two short ones,
+            // which is the whole reason not to bail early
+            driftTime += dt
+            styleRun += v * dt * (3 + min(driftTime, 6) * 1.1)
         } else if styleRun > 0 {
+            driftTime = 0
             if styleRun > 50 { popupAsync("\(Shout.one(Shout.drift)) +\(Int(styleRun))", .big) }
             score += styleRun
             styleRun = 0
@@ -2984,7 +3024,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 // flying over a hoyo is the whole point of being able to jump
                 if airborne {
                     nearMisses += 1
-                    combo = min(combo + 1, 5)
+                    bumpCombo()
                     score += Float(60 * combo)
                     popupAsync("\(Shout.one(Shout.overHole)) +\(60 * combo)", .big)
                 } else if invuln <= 0 {
@@ -3003,7 +3043,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 holes[hIdx].passed = true
                 if abs(h.x - x) < h.r + 2.2 {
                     nearMisses += 1
-                    combo = min(combo + 1, 5)
+                    bumpCombo()
                     score += Float(40 * combo)
                     if combo >= 2 { popupAsync("\(Shout.one(Shout.nearMiss)) x\(combo) +\(40 * combo)", .praise) }
                     else if nearMisses % 3 == 0 { popupAsync("\(Shout.one(Shout.nearMiss)) +40", .praise) }
@@ -3110,7 +3150,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     // sailed clean over the roof
                     if !tc.clearedByJump {
                         traffic[ti].clearedByJump = true
-                        combo = min(combo + 1, 5)
+                        bumpCombo()
                         score += Float(150 * combo)
                         sound.playHorn()
                         popupAsync("\(Shout.one(Shout.overCar)) +\(150 * combo)", .big)
@@ -3141,7 +3181,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             } else if !tc.missed && tDs < -1 && tDs > -8 && abs(tc.x - x) < 3 &&
                       abs(tc.x - x) > 1.7 && v - tc.v > 12 {
                 traffic[ti].missed = true
-                combo = min(combo + 1, 5)
+                bumpCombo()
                 score += Float(80 * combo)
                 sound.playHorn()
                 popupAsync("¡FUA! +\(80 * combo)", .praise)
@@ -3331,6 +3371,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.hp = Double(hp)
             snap.nitro = Double(nitro)
             snap.charge = Double(charge)
+            snap.comboLeft = combo > 0 ? Double(simd_clamp(comboTimer / comboWindow, 0, 1)) : 0
+            snap.pendingStyle = Int(styleRun)
             snap.progress = Double(s / Self.total)
             snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1))
             snap.flash = Double(max(0, flashT))
