@@ -27,6 +27,29 @@ enum Stage: Int, CaseIterable {
         }
     }
 
+    /// The real road each course runs on. PR-143 is the Ruta Panorámica along the
+    /// cordillera; PR-191 is the road into El Yunque. Used as the route shield.
+    var route: String {
+        switch self {
+        case .cordillera: return "143"
+        case .yunque:     return "191"
+        }
+    }
+
+    /// End-screen line for finishing, and for dying.
+    var finishLine: String {
+        switch self {
+        case .cordillera: return "BAJASTE HASTA LA COSTA"
+        case .yunque:     return "CRUZASTE EL BOSQUE COMPLETO"
+        }
+    }
+    var failLine: String {
+        switch self {
+        case .cordillera: return "LOS HOYOS GANARON ESTA VEZ"
+        case .yunque:     return "LA VEREDA GANÓ ESTA VEZ"
+        }
+    }
+
     /// Stage 1 is always available; the rest are earned by finishing the previous.
     var unlocked: Bool {
         if self == .cordillera { return true }

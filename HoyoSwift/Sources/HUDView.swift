@@ -8,6 +8,9 @@ extension Color {
     static let neonGold = Color(red: 1.0, green: 0.82, blue: 0.25)
     static let sunsetOrange = Color(red: 1.0, green: 0.54, blue: 0.36)
     static let creamText = Color(red: 1, green: 0.85, blue: 0.69)
+    /// Signage: a cream enamel field and the near-black ink used on road markers.
+    static let signField = Color(red: 0.96, green: 0.94, blue: 0.88)
+    static let signInk = Color(red: 0.09, green: 0.07, blue: 0.10)
 }
 
 // MARK: - HUD
@@ -68,9 +71,9 @@ struct HUDView: View {
             switch state.phase {
             case .intro: IntroOverlay(state: state, tilt: tilt)
             case .finished: EndOverlay(state: state, title: "¡LLEGASTE!",
-                                       subtitle: "SOBREVIVISTE LOS HOYOS · A LA PLAYA")
+                                       subtitle: state.loadedStage.finishLine)
             case .dead: EndOverlay(state: state, title: "GAME OVER",
-                                   subtitle: "LOS HOYOS GANARON ESTA VEZ")
+                                   subtitle: state.loadedStage.failLine)
             case .playing, .countdown, .arrival: EmptyView()
             }
         }
@@ -351,28 +354,159 @@ struct ArrivalCard: View {
     }
 }
 
-/// Course selector on the title screen. Only appears once more than one course is
-/// unlocked, so a first-time player still sees the stripped-back title.
-struct StagePill: View {
-    let stage: Stage
-    let selected: Bool
+// MARK: - signage kit
+//
+// The screens are built out of Puerto Rican roadside signage rather than generic
+// arcade neon. Each course runs on a real road — PR-143 is the Ruta Panorámica
+// through the cordillera, PR-191 is the road into El Yunque — so a route shield
+// labels a stage the way a road sign labels a road. Numbers are monospaced
+// throughout: odometers and kilometre markers are, and it makes columns align.
+
+/// The signature element. Doubles as the stage selector and as the marker for the
+/// course you just ran.
+struct RouteShield: View {
+    let route: String
+    var selected = true
+    var compact = false
+
+    private var w: CGFloat { compact ? 46 : 58 }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("PR")
+                .font(.system(size: compact ? 8 : 10, weight: .heavy))
+                .tracking(2)
+                .foregroundStyle(Color.signInk.opacity(0.75))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, compact ? 1 : 2)
+                .background(Color.signInk.opacity(0.12))
+            Text(route)
+                .font(.system(size: compact ? 20 : 26, weight: .black, design: .monospaced))
+                .foregroundStyle(Color.signInk)
+                .padding(.bottom, compact ? 2 : 3)
+        }
+        .frame(width: w)
+        .background(selected ? Color.signField : Color.signField.opacity(0.35))
+        .overlay(RoundedRectangle(cornerRadius: 5)
+            .stroke(selected ? Color.neonTeal : Color.signInk.opacity(0.5),
+                    lineWidth: selected ? 2.5 : 1.5))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .opacity(selected ? 1 : 0.55)
+    }
+}
+
+/// Course selector. Only shown once a second course exists, so a first-time
+/// player still sees the stripped-back title.
+struct StagePicker: View {
+    @ObservedObject var state: GameState
+
+    var body: some View {
+        HStack(spacing: 9) {
+            ForEach(Stage.allCases.filter { $0.unlocked }, id: \.rawValue) { st in
+                Button {
+                    state.selectedStage = st
+                    state.refreshRecordLine()
+                } label: {
+                    HStack(spacing: 8) {
+                        RouteShield(route: st.route, selected: state.selectedStage == st,
+                                    compact: true)
+                        Text(st.name)
+                            .font(.system(size: 11, weight: .heavy)).tracking(2)
+                            .foregroundStyle(state.selectedStage == st
+                                             ? Color.white : Color.white.opacity(0.45))
+                    }
+                    .padding(.trailing, 12)
+                    .padding(.vertical, 4)
+                    .padding(.leading, 4)
+                    .background(state.selectedStage == st
+                                ? Color.white.opacity(0.10) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+    }
+}
+
+/// A label/value line. The value is monospaced and right-aligned so a column of
+/// them reads like a results slip.
+struct StatLine: View {
+    let label: String
+    let value: String
+    var accent: Color = .neonGold
+    var wide: CGFloat = 176
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.system(size: 10, weight: .heavy)).tracking(2)
+                .foregroundStyle(Color.creamText.opacity(0.8))
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.system(size: 17, weight: .black, design: .monospaced))
+                .foregroundStyle(accent)
+        }
+        .frame(width: wide)
+    }
+}
+
+/// Primary action. The only thing besides the wordmark allowed to glow.
+struct SignButton: View {
+    let title: String
+    var color: Color = .neonTeal
+    var filled = true
     let action: () -> Void
+
+    init(_ title: String, color: Color = .neonTeal, filled: Bool = true,
+         action: @escaping () -> Void) {
+        self.title = title; self.color = color; self.filled = filled; self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 1) {
-                Text(stage.name)
-                    .font(.system(size: 12, weight: .black)).tracking(2)
-                Text(stage.blurb)
-                    .font(.system(size: 8, weight: .semibold)).tracking(1)
-                    .opacity(0.75)
+            HStack(spacing: 9) {
+                Image(systemName: "play.fill").font(.system(size: 11, weight: .black))
+                Text(title).font(.system(size: 15, weight: .black)).tracking(3)
             }
-            .foregroundStyle(selected ? .black : .white)
-            .padding(.vertical, 7).padding(.horizontal, 16)
-            .background(selected ? Color.neonTeal : Color.black.opacity(0.35), in: Capsule())
-            .overlay(Capsule().stroke(selected ? Color.neonTeal : .white.opacity(0.3),
-                                     lineWidth: 1.5))
+            .foregroundStyle(filled ? Color.signInk : color)
+            .padding(.vertical, 12).padding(.horizontal, 24)
+            .background(filled ? color : Color.black.opacity(0.4), in: Capsule())
+            .overlay(Capsule().stroke(color, lineWidth: filled ? 0 : 2))
+            .shadow(color: filled ? color.opacity(0.55) : .clear, radius: 14)
         }
+    }
+}
+
+/// A quiet secondary action — no glow, no fill.
+struct GhostButton: View {
+    let title: String
+    var color: Color = .white
+    let action: () -> Void
+
+    init(_ title: String, color: Color = .white, action: @escaping () -> Void) {
+        self.title = title; self.color = color; self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .heavy)).tracking(3)
+                .foregroundStyle(color.opacity(0.85))
+                .padding(.vertical, 10).padding(.horizontal, 20)
+                .overlay(Capsule().stroke(color.opacity(0.35), lineWidth: 1.5))
+        }
+    }
+}
+
+/// Hairline rule under a screen title, in the accent of that screen.
+struct SignRule: View {
+    var color: Color = .neonGold
+    var width: CGFloat = 150
+
+    var body: some View {
+        Rectangle()
+            .fill(LinearGradient(colors: [color, color.opacity(0)],
+                                 startPoint: .leading, endPoint: .trailing))
+            .frame(width: width, height: 2)
     }
 }
 
@@ -559,32 +693,39 @@ struct PauseOverlay: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.72)
+            // Light enough to still see the road you're going back to.
+            Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.62)
                 .ignoresSafeArea()
-            VStack(spacing: 18) {
-                Text("PAUSA")
-                    .font(.system(size: 50, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(.white)
-                    .shadow(color: .neonPink, radius: 18)
 
-                // the only place controls are switched, now that the title screen
-                // is stripped back — so it needs a label
-                VStack(spacing: 8) {
+            VStack(spacing: 0) {
+                Text("EN PAUSA")
+                    .font(.system(size: 30, weight: .black)).tracking(6)
+                    .foregroundStyle(.white)
+                SignRule(color: .neonTeal, width: 130)
+                    .padding(.top, 6)
+
+                VStack(spacing: 7) {
                     Text("CONTROL")
-                        .font(.system(size: 10, weight: .heavy)).tracking(4)
-                        .foregroundStyle(.white.opacity(0.45))
+                        .font(.system(size: 9, weight: .heavy)).tracking(4)
+                        .foregroundStyle(.white.opacity(0.4))
                     SteerModePicker(state: state, tilt: tilt)
                 }
+                .padding(.top, 22)
 
-                HStack(spacing: 18) {
-                    CapsuleButton("SEGUIR", color: .neonTeal) { state.paused = false }
-                    CapsuleButton("REINICIAR", color: .neonPink) {
-                        state.paused = false
-                        state.requestReset = true
-                    }
+                SignButton("SEGUIR") { state.paused = false }
+                    .padding(.top, 24)
+
+                GhostButton("EMPEZAR DE NUEVO", color: .neonPink) {
+                    state.paused = false
+                    state.requestReset = true
                 }
+                .padding(.top, 10)
             }
+            .padding(.vertical, 26).padding(.horizontal, 40)
+            .background(Color(red: 0.07, green: 0.03, blue: 0.13).opacity(0.9),
+                        in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18)
+                .stroke(.white.opacity(0.12), lineWidth: 1))
         }
     }
 }
@@ -618,61 +759,62 @@ struct IntroOverlay: View {
     @ObservedObject var state: GameState
     let tilt: TiltObserver
 
+    private var multiStage: Bool {
+        Stage.allCases.contains { $0 != .cordillera && $0.unlocked }
+    }
+
     var body: some View {
-        ZStack {
-            // Light enough to read the Area 51 escape playing behind it. Legibility
-            // comes from the text's own shadows rather than from dimming the scene.
-            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.44),
-                                    Color(red: 0.16, green: 0.03, blue: 0.22).opacity(0.30)],
-                           startPoint: .top, endPoint: .bottom)
+        ZStack(alignment: .bottomLeading) {
+            // Weighted to the lower-left so the Area 51 escape stays legible in the
+            // upper-right, where the saucer actually flies.
+            LinearGradient(colors: [.clear,
+                                    Color(red: 0.06, green: 0.02, blue: 0.12).opacity(0.55),
+                                    Color(red: 0.05, green: 0.02, blue: 0.10).opacity(0.88)],
+                           startPoint: .topTrailing, endPoint: .bottomLeading)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text("¡HOYO!")
-                    .font(.system(size: 82, weight: .black, design: .rounded))
+                    .font(.system(size: 72, weight: .black, design: .rounded))
                     .italic()
-                    .foregroundStyle(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold, .neonTeal],
-                                                    startPoint: .leading, endPoint: .trailing))
-                    .shadow(color: .black.opacity(0.7), radius: 10, y: 3)
-                    .shadow(color: .neonPink.opacity(0.6), radius: 22)
+                    .foregroundStyle(LinearGradient(
+                        colors: [.neonPink, .sunsetOrange, .neonGold],
+                        startPoint: .leading, endPoint: .trailing))
+                    .shadow(color: .black.opacity(0.8), radius: 10, y: 3)
+                    .shadow(color: .neonPink.opacity(0.45), radius: 24)
 
-                Text("CARRERA CUESTA ABAJO POR PUERTO RICO")
-                    .font(.system(size: 13, weight: .semibold))
-                    .tracking(5)
-                    .foregroundStyle(Color.creamText)
-                    .shadow(color: .black.opacity(0.8), radius: 4)
-                    .padding(.top, 6)
+                SignRule(color: .neonGold, width: 200)
+                    .padding(.top, 2)
 
-                // The one thing a new player can't discover on their own.
-                Text("FRENO + GUÍA = DRIFT")
+                Text("CARRERA CUESTA ABAJO · PUERTO RICO")
                     .font(.system(size: 11, weight: .heavy))
-                    .tracking(3)
-                    .foregroundStyle(.white.opacity(0.42))
-                    .padding(.top, 20)
+                    .tracking(4)
+                    .foregroundStyle(Color.creamText)
+                    .padding(.top, 9)
 
-                if Stage.allCases.contains(where: { $0 != .cordillera && $0.unlocked }) {
-                    HStack(spacing: 10) {
-                        ForEach(Stage.allCases.filter { $0.unlocked }, id: \.rawValue) { st in
-                            StagePill(stage: st, selected: state.selectedStage == st) {
-                                state.selectedStage = st
-                                state.refreshRecordLine()
-                            }
-                        }
+                if multiStage {
+                    StagePicker(state: state)
+                        .padding(.top, 18)
+                } else {
+                    // one course so far: name the road it runs on
+                    HStack(spacing: 9) {
+                        RouteShield(route: Stage.cordillera.route, compact: true)
+                        Text("FRENO + GUÍA = DRIFT")
+                            .font(.system(size: 10, weight: .heavy)).tracking(2)
+                            .foregroundStyle(.white.opacity(0.42))
                     }
-                    .padding(.top, 16)
+                    .padding(.top, 18)
                 }
 
                 if !state.recordLine.isEmpty {
                     Text(state.recordLine)
-                        .font(.system(size: 13, weight: .bold))
-                        .tracking(1)
-                        .foregroundStyle(Color.neonGold)
-                        .shadow(color: .neonGold.opacity(0.5), radius: 8)
-                        .padding(.top, 10)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.neonGold.opacity(0.85))
+                        .padding(.top, 12)
                 }
 
                 if state.sceneReady {
-                    Button {
+                    SignButton("TOCA PA' ARRANCAR") {
                         tilt.reader.recalibrate()
                         if state.selectedStage != state.loadedStage,
                            let load = state.loadStageHandler {
@@ -687,22 +829,15 @@ struct IntroOverlay: View {
                         } else {
                             state.requestStart = true
                         }
-                    } label: {
-                        Text("TOCA PA' ARRANCAR")
-                            .font(.system(size: 19, weight: .black))
-                            .tracking(3)
-                            .foregroundStyle(.white)
-                            .padding(.vertical, 14).padding(.horizontal, 38)
-                            .background(.black.opacity(0.35), in: Capsule())
-                            .overlay(Capsule().stroke(Color.neonPink, lineWidth: 2))
-                            .shadow(color: .neonPink.opacity(0.6), radius: 14)
                     }
-                    .padding(.top, 26)
+                    .padding(.top, 18)
                 } else {
                     LoadingLabel()
-                        .padding(.top, 26)
+                        .padding(.top, 22)
                 }
             }
+            .padding(.leading, 34)
+            .padding(.bottom, 26)
         }
     }
 }
@@ -729,79 +864,6 @@ struct EndOverlay: View {
     let title: String
     let subtitle: String
 
-    var body: some View {
-        ZStack {
-            LinearGradient(colors: [Color(red: 0.08, green: 0.02, blue: 0.18).opacity(0.90),
-                                    Color(red: 0.18, green: 0.04, blue: 0.24).opacity(0.84)],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-            VStack(spacing: 10) {
-                Text(title)
-                    .font(.system(size: 52, weight: .black, design: .rounded))
-                    .italic()
-                    .foregroundStyle(LinearGradient(colors: [.neonPink, .sunsetOrange, .neonGold],
-                                                    startPoint: .leading, endPoint: .trailing))
-                    .shadow(color: .neonPink.opacity(0.6), radius: 16)
-                Text(subtitle)
-                    .font(.system(size: 13, weight: .semibold)).tracking(2)
-                    .foregroundStyle(Color.creamText)
-
-                if state.statMedal != .none {
-                    VStack(spacing: 1) {
-                        Text("MEDALLA")
-                            .font(.system(size: 9, weight: .heavy)).tracking(4)
-                            .foregroundStyle(.white.opacity(0.45))
-                        Text(state.statMedal.label)
-                            .font(.system(size: 26, weight: .black)).tracking(3)
-                            .foregroundStyle(medalColor)
-                            .shadow(color: medalColor.opacity(0.8), radius: 12)
-                    }
-                    .padding(.top, 6)
-                }
-
-                if let opened = state.unlockedStage {
-                    Text("¡\(opened.name) DESBLOQUEADO!")
-                        .font(.system(size: 16, weight: .black)).tracking(2)
-                        .foregroundStyle(Color.neonTeal)
-                        .shadow(color: .neonTeal.opacity(0.9), radius: 12)
-                        .padding(.top, 4)
-                }
-
-                if state.newRecordScore || state.newRecordTime {
-                    VStack(spacing: 2) {
-                        if state.newRecordScore { Text("¡NUEVO RÉCORD DE PUNTOS!") }
-                        if state.newRecordTime { Text("¡MEJOR TIEMPO!") }
-                    }
-                    .font(.system(size: 15, weight: .black))
-                    .foregroundStyle(Color.neonTeal)
-                    .shadow(color: .neonTeal.opacity(0.9), radius: 10)
-                    .padding(.top, 2)
-                }
-
-                HStack(spacing: 26) {
-                    stat("TIEMPO", state.statTime)
-                    stat("PUNTOS", "\(state.statScore)")
-                    stat("MÁXIMA", "\(state.statTopSpeed) km/h")
-                }
-                .padding(.top, 8)
-
-                stat("HOYOS COMÍOS", "\(state.statHolesHit) · ESQUIVES \(state.statNearMisses)")
-
-                // verbatim: interpolating an integer into Text localises it, and
-                // a track id reads oddly as "42,250"
-                Text(verbatim: "PISTA #\(state.statSeed % 100000)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .padding(.top, 2)
-
-                CapsuleButton("CORRER OTRA VEZ", color: .neonPink) {
-                    state.requestReset = true
-                }
-                .padding(.top, 12)
-            }
-        }
-    }
-
     private var medalColor: Color {
         switch state.statMedal {
         case .gold:   return .neonGold
@@ -810,14 +872,97 @@ struct EndOverlay: View {
         case .none:   return .clear
         }
     }
+    private var accent: Color { state.statFinished ? .neonTeal : .neonPink }
 
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(spacing: 1) {
-            Text(label).font(.system(size: 11, weight: .semibold)).tracking(1)
-                .foregroundStyle(Color(red: 1, green: 0.91, blue: 0.79))
-            Text(value).font(.system(size: 18, weight: .black))
-                .foregroundStyle(Color.neonGold)
-                .shadow(color: .neonGold.opacity(0.7), radius: 8)
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(colors: [Color(red: 0.06, green: 0.02, blue: 0.12).opacity(0.78),
+                                    Color(red: 0.05, green: 0.02, blue: 0.10).opacity(0.95)],
+                           startPoint: .topTrailing, endPoint: .bottomLeading)
+                .ignoresSafeArea()
+
+            HStack(alignment: .bottom, spacing: 40) {
+                // left: outcome + the numbers, as a results slip
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(.system(size: 42, weight: .black, design: .rounded))
+                        .italic()
+                        .foregroundStyle(.white)
+                        .shadow(color: accent.opacity(0.5), radius: 18)
+                    SignRule(color: accent, width: 170)
+                        .padding(.top, 3)
+                    Text(subtitle)
+                        .font(.system(size: 10, weight: .heavy)).tracking(3)
+                        .foregroundStyle(Color.creamText.opacity(0.85))
+                        .padding(.top, 8)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        StatLine(label: "TIEMPO", value: state.statTime)
+                        StatLine(label: "PUNTOS", value: "\(state.statScore)")
+                        StatLine(label: "MÁXIMA", value: "\(state.statTopSpeed) km/h")
+                        StatLine(label: "HOYOS / ESQUIVES",
+                                 value: "\(state.statHolesHit) / \(state.statNearMisses)",
+                                 accent: Color.creamText)
+                    }
+                    .padding(.top, 14)
+
+                    SignButton("OTRA VEZ", color: accent) {
+                        state.requestReset = true
+                    }
+                    .padding(.top, 18)
+                }
+
+                // right: route shield, medal stamp, and anything newly earned
+                VStack(alignment: .leading, spacing: 12) {
+                    RouteShield(route: state.loadedStage.route)
+
+                    if state.statMedal != .none {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("MEDALLA")
+                                .font(.system(size: 8, weight: .heavy)).tracking(3)
+                                .foregroundStyle(.white.opacity(0.4))
+                            Text(state.statMedal.label)
+                                .font(.system(size: 20, weight: .black)).tracking(2)
+                                .foregroundStyle(medalColor)
+                        }
+                    }
+
+                    if state.newRecordScore || state.newRecordTime {
+                        VStack(alignment: .leading, spacing: 1) {
+                            if state.newRecordScore {
+                                Text("RÉCORD DE PUNTOS")
+                                    .font(.system(size: 9, weight: .heavy)).tracking(2)
+                            }
+                            if state.newRecordTime {
+                                Text("MEJOR TIEMPO")
+                                    .font(.system(size: 9, weight: .heavy)).tracking(2)
+                            }
+                        }
+                        .foregroundStyle(Color.neonGold)
+                    }
+
+                    if let opened = state.unlockedStage {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("NUEVA RUTA")
+                                .font(.system(size: 8, weight: .heavy)).tracking(3)
+                                .foregroundStyle(.white.opacity(0.4))
+                            HStack(spacing: 7) {
+                                RouteShield(route: opened.route, compact: true)
+                                Text(opened.name)
+                                    .font(.system(size: 11, weight: .black)).tracking(1)
+                                    .foregroundStyle(Color.neonTeal)
+                            }
+                        }
+                    }
+
+                    Text(verbatim: "PISTA #\(state.statSeed % 100000)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.3))
+                }
+                .padding(.bottom, 4)
+            }
+            .padding(.leading, 34)
+            .padding(.bottom, 26)
         }
     }
 }

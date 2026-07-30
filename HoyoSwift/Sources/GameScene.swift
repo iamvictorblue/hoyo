@@ -227,6 +227,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             default: return 0
             }
         }
+        /// Arcade scale, not life scale. At 150 km/h a life-sized coquí is a
+        /// couple of pixels — you can't aim at what you can't see.
+        var displayScale: Float {
+            switch self {
+            case .coqui: return 3.0
+            case .lagartijo: return 2.4
+            case .hiker: return 1.45
+            case .sanpedrito: return 2.8
+            case .boa: return 1.9
+            }
+        }
+
         /// How many of each are scattered along the trail.
         var count: Int {
             switch self {
@@ -315,6 +327,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// `-autoplay` launch argument: self-driving smoke-test mode.
     static let autoplay = ProcessInfo.processInfo.arguments.contains("-autoplay")
+
+    /// `-showpause`: pauses itself shortly after the run starts, so the pause
+    /// screen can be inspected without a touch.
+    static let showPause = ProcessInfo.processInfo.arguments.contains("-showpause")
 
     /// `-startAt <metres>`: drop in partway down the course. Handy for looking at
     /// the pueblo or the costa without surviving the whole descent first.
@@ -502,7 +518,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// renderer; building detached does not.
     func buildWorld() -> (world: SCNNode, sky: [UIImage]) {
         let world = SCNNode()
-        let sky = Textures.skyCubemap(Self.currentStage == .yunque ? .rainforest : .sunset)
+        // The intro set is a Nevada desert, so it always sits under the dusk sky;
+        // a stage with its own sky swaps in when the race starts.
+        let sky = Textures.skyCubemap(.sunset)
+        raceSky = Self.currentStage == .yunque ? Textures.skyCubemap(.rainforest) : nil
 
         let ambient = SCNNode()
         ambient.light = SCNLight()
@@ -565,6 +584,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var worldAttached = false
     /// Kept so a stage change can tear the previous world back out.
     private var worldRoot: SCNNode?
+    /// Set when the loaded stage wants a different sky from the intro's.
+    private var raceSky: [UIImage]?
 
     /// Everything a stage build appends to. Cleared before rebuilding, otherwise a
     /// second stage would stack its geometry and entities on top of the first.
@@ -1685,6 +1706,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 grp.addChildNode(seg)
             }
         }
+        let sc = kind.displayScale
+        grp.scale = SCNVector3(sc, sc, sc)
         return grp
     }
 
@@ -1804,7 +1827,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
             // running into the bigger ones hurts
             if !critters[i].hitPlayer, kind.contactDamage > 0,
-               abs(ds) < 1.8, abs(critters[i].x - x) < 1.3, !airborne {
+               abs(ds) < 1.8, abs(critters[i].x - x) < 0.9 + kind.displayScale * 0.34,
+               !airborne {
                 critters[i].hitPlayer = true
                 shake = max(shake, 0.55)
                 sound.playThunk()
@@ -1951,7 +1975,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     guard critters[ci].alive else { continue }
                     let cs = critters[ci].s
                     guard cs > s - 2 else { continue }
-                    if cs >= lo && cs <= hi && abs(critters[ci].x - bx) < 1.9 {
+                    let tol = 1.1 + critters[ci].kind.displayScale * 0.38
+                    if cs >= lo && cs <= hi && abs(critters[ci].x - bx) < tol {
                         killCritter(ci, at: cs, bx)
                         struck = true
                         break
@@ -2562,6 +2587,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // the base is 6 km away and fully fogged, but there's no reason to keep
         // paying for it once the race starts
         introSet.isHidden = true
+        if let rs = raceSky { scene.background.contents = rs }
 
         // fresh course every race
         runSeed = UInt64.random(in: 1..<2147483646)
@@ -2725,6 +2751,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         playTime += Double(dt)
         if invuln > 0 { invuln = max(0, invuln - dt) }
+        if Self.showPause, playTime > 2.5, !state.paused {
+            DispatchQueue.main.async { self.state.paused = true }
+        }
 
         // ----- physics -----
         let i = Int(simd_clamp(s / Self.step, 0, Float(Self.count - 2)))
