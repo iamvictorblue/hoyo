@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 enum GamePhase {
     /// `arrival` is the pre-race beat: the saucer drops out of the sky onto the
@@ -299,6 +300,27 @@ final class GameState: ObservableObject {
     @Published var statSeed: UInt64 = 0
     @Published var statFinished = false
     @Published var statLaps = 1
+
+    /// Mirrors the system Reduce Motion switch. This game leans hard on camera
+    /// shake, motion blur, camera roll, a flashing damage overlay and a full-screen
+    /// white wash every lap — all of which are exactly what that setting exists to
+    /// turn down.
+    @Published private(set) var reduceMotion = UIAccessibility.isReduceMotionEnabled
+
+    private var motionObserver: NSObjectProtocol?
+
+    init() {
+        motionObserver = NotificationCenter.default.addObserver(
+            forName: UIAccessibility.reduceMotionStatusDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.reduceMotion = UIAccessibility.isReduceMotionEnabled
+        }
+    }
+
+    deinit {
+        if let o = motionObserver { NotificationCenter.default.removeObserver(o) }
+    }
 
     let input = GameInput()
 

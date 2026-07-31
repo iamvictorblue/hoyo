@@ -128,13 +128,13 @@ struct HUDView: View {
             }
 
             if !state.countLabel.isEmpty {
-                CountdownView(label: state.countLabel)
+                CountdownView(label: state.countLabel, calm: state.reduceMotion)
                     .id(state.countLabel)
                     .allowsHitTesting(false)
             }
 
             if !state.popupText.isEmpty {
-                PopupView(text: state.popupText, tone: state.popupTone)
+                PopupView(text: state.popupText, tone: state.popupTone, calm: state.reduceMotion)
                     .id(state.popupID)
                     .allowsHitTesting(false)
             }
@@ -148,13 +148,13 @@ struct HUDView: View {
             }
 
             if !state.lapLabel.isEmpty && state.phase == .playing {
-                RegionBanner(label: state.lapLabel, blurb: "SIGUE DÁNDOLE")
+                RegionBanner(label: state.lapLabel, blurb: "SIGUE DÁNDOLE", calm: state.reduceMotion)
                     .id(state.lapID)
                     .allowsHitTesting(false)
             }
 
             if !state.regionLabel.isEmpty && state.phase == .playing {
-                RegionBanner(label: state.regionLabel, blurb: state.regionBlurb)
+                RegionBanner(label: state.regionLabel, blurb: state.regionBlurb, calm: state.reduceMotion)
                     .id(state.regionID)
                     .allowsHitTesting(false)
             }
@@ -183,8 +183,12 @@ struct HUDView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     BarView(label: "CARRO", value: state.hud.hp / 100,
+                            // deep red rather than neon pink at the bottom: it reads
+                            // apart from the gold by brightness, not just hue
                             color: state.hud.hp > 50 ? .green
-                                 : (state.hud.hp > 25 ? .neonGold : .neonPink))
+                                 : (state.hud.hp > 25 ? .neonGold
+                                    : Color(red: 0.92, green: 0.18, blue: 0.12)),
+                            showValue: true)
                     BarView(label: "NITRO", value: state.hud.nitro / 100, color: .neonTeal)
                     BarView(label: "RAYO", value: state.hud.charge / 100, color: .neonGold)
                 }
@@ -374,13 +378,24 @@ struct BarView: View {
     let label: String
     let value: Double
     let color: Color
+    /// Shows the number alongside the bar. Colour is a weak channel on its own —
+    /// green/gold/pink is the most common confusion axis — so health carries length,
+    /// hue and a figure.
+    var showValue = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.label(10))
-                .tracking(3)
-                .foregroundStyle(Color.creamText.opacity(0.85))
+            HStack(spacing: 5) {
+                Text(label)
+                    .font(.label(10))
+                    .tracking(3)
+                    .foregroundStyle(Color.creamText.opacity(0.85))
+                if showValue {
+                    Text("\(Int(value * 100))")
+                        .font(.data(10))
+                        .foregroundStyle(color)
+                }
+            }
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.45))
                     .overlay(RoundedRectangle(cornerRadius: 2)
@@ -733,6 +748,7 @@ struct HoldButton: View {
 
 struct CountdownView: View {
     let label: String
+    var calm = false
     @State private var shown = false
 
     var body: some View {
@@ -741,10 +757,11 @@ struct CountdownView: View {
             .foregroundStyle(Color.neonGold)
             .shadow(color: .sunsetOrange, radius: 22)
             .shadow(color: Color(red: 0.7, green: 0, blue: 0.37), radius: 3, y: 5)
-            .scaleEffect(shown ? 1.0 : 2.2)
+            .scaleEffect(shown || calm ? 1.0 : 2.2)
             .opacity(shown ? 1 : 0)
             .onAppear {
-                withAnimation(.spring(response: 0.22, dampingFraction: 0.62)) { shown = true }
+                withAnimation(calm ? .easeOut(duration: 0.18)
+                                   : .spring(response: 0.22, dampingFraction: 0.62)) { shown = true }
                 withAnimation(.easeOut(duration: 0.3).delay(0.65)) { shown = false }
             }
     }
@@ -755,6 +772,7 @@ struct CountdownView: View {
 struct RegionBanner: View {
     let label: String
     let blurb: String
+    var calm = false
     @State private var shown = false
 
     var body: some View {
@@ -773,10 +791,11 @@ struct RegionBanner: View {
                 .foregroundStyle(Color.neonTeal)
                 .shadow(color: .black.opacity(0.8), radius: 4)
         }
-        .offset(x: shown ? 0 : -60, y: -18)
+        .offset(x: (shown || calm) ? 0 : -60, y: -18)
         .opacity(shown ? 1 : 0)
         .onAppear {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { shown = true }
+            withAnimation(calm ? .easeOut(duration: 0.3)
+                               : .spring(response: 0.42, dampingFraction: 0.78)) { shown = true }
             withAnimation(.easeOut(duration: 0.5).delay(2.1)) { shown = false }
         }
     }
@@ -785,6 +804,7 @@ struct RegionBanner: View {
 struct PopupView: View {
     let text: String
     var tone: PopupTone = .praise
+    var calm = false
     @State private var shown = false
 
     private var size: CGFloat {
@@ -819,13 +839,15 @@ struct PopupView: View {
             .foregroundStyle(paint)
             .shadow(color: .black.opacity(0.75), radius: 5, y: 2)
             .shadow(color: glow.opacity(0.7), radius: 14)
-            .scaleEffect(shown ? 1.0 : (tone == .big ? 0.3 : 0.55))
-            .rotationEffect(.degrees(shown ? 0 : (tone == .hit ? -6 : 3)))
+            .scaleEffect(shown || calm ? 1.0 : (tone == .big ? 0.3 : 0.55))
+            .rotationEffect(.degrees(shown || calm ? 0 : (tone == .hit ? -6 : 3)))
             .opacity(shown ? 1 : 0)
             .offset(y: -96)
             .onAppear {
-                withAnimation(.spring(response: tone == .big ? 0.3 : 0.24,
-                                      dampingFraction: tone == .big ? 0.5 : 0.62)) {
+                // Reduce Motion: fade in place instead of springing and rotating
+                withAnimation(calm ? .easeOut(duration: 0.2)
+                                   : .spring(response: tone == .big ? 0.3 : 0.24,
+                                             dampingFraction: tone == .big ? 0.5 : 0.62)) {
                     shown = true
                 }
                 withAnimation(.easeOut(duration: 0.4).delay(tone == .big ? 1.0 : 0.8)) {

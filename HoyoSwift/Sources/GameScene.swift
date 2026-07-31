@@ -724,6 +724,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Tears down whatever is loaded and builds the requested stage off the main
     /// thread, exactly as the first load does.
     func loadStage(_ stage: Stage, onReady: @escaping () -> Void) {
+        let t0 = CFAbsoluteTimeGetCurrent()
         worldAttached = false
         phase = .intro
         introT = 0
@@ -736,9 +737,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let built = self.buildWorld()
+            let tBuilt = CFAbsoluteTimeGetCurrent()
             DispatchQueue.main.async {
                 self.attach(world: built.world, sky: built.sky)
                 self.worldRoot = built.world
+                let tDone = CFAbsoluteTimeGetCurrent()
+                // read with: devicectl device process launch --console
+                print(String(format: "HOYO-PERF stage=%@ build=%.2fs attach=%.2fs total=%.2fs",
+                             String(describing: stage), tBuilt - t0, tDone - tBuilt, tDone - t0))
                 onReady()
             }
         }
@@ -3550,24 +3556,33 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         lookTarget.y += 1.15
         camLook = simd_mix(camLook, lookTarget, simd_float3(repeating: k))
         var finalCam = camPos
-        let rumble: Float = v > 40 ? (v - 40) * 0.004 : 0
+        // Reduce Motion: the shake and the high-speed rumble are the two things most
+        // likely to make someone put the phone down. Damping is still tracked so the
+        // gameplay timing is identical — only the camera displacement is dropped.
+        let calm = state.reduceMotion
+        let rumble: Float = (v > 40 && !calm) ? (v - 40) * 0.004 : 0
         if shake > 0.01 {
-            finalCam.x += Float.random(in: -0.5...0.5) * shake
-            finalCam.y += Float.random(in: -0.45...0.45) * shake
+            if !calm {
+                finalCam.x += Float.random(in: -0.5...0.5) * shake
+                finalCam.y += Float.random(in: -0.45...0.45) * shake
+            }
             shake *= exp(-dt * 4)
         }
         finalCam.x += Float.random(in: -1...1) * rumble
         finalCam.y += Float.random(in: -1...1) * rumble
         cameraNode.simdPosition = finalCam
         cameraNode.simdLook(at: camLook, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
-        cameraNode.simdOrientation = simd_mul(cameraNode.simdOrientation,
-            simd_quatf(angle: leanRoll * 0.45, axis: simd_float3(0, 0, 1)))
+        if !calm {
+            cameraNode.simdOrientation = simd_mul(cameraNode.simdOrientation,
+                simd_quatf(angle: leanRoll * 0.45, axis: simd_float3(0, 0, 1)))
+        }
         // Gentler again. The ramp reached 86° under boost, and a wide lens is what
         // was making the craft feel distant at speed — the sense of speed comes
         // from motion blur, wind streaks and camera rumble, not from lens width.
         let targetFov = Self.baseFov + CGFloat(v * 0.19) + (wantNitro ? 2 : 0)
         fov += (min(max(targetFov, Self.baseFov), 77) - fov) * CGFloat(min(1, 4.5 * dt))
-        cameraNode.camera?.fieldOfView = fov
+        cameraNode.camera?.fieldOfView = calm ? Self.baseFov + (fov - Self.baseFov) * 0.35 : fov
+        cameraNode.camera?.motionBlurIntensity = calm ? 0 : quality.motionBlur
 
         streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0
 
@@ -3589,10 +3604,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let gear = min(5, Int(v / gearSpan))
         let inGear = (v - Float(gear) * gearSpan) / gearSpan
         sound.engineFreq = Double(52 + inGear * 118 + Float(gear) * 9 + (wantNitro ? 26 : 0))
-        sound.engineLevel = Double(0.05 + simd_clamp(v / 64, 0, 1) * 0.075)
+        // Halved — the saw pair sits right in the ear and read as a drone. Wind and
+        // the gear steps carry the sense of speed; the motor just needs to be there.
+        sound.engineLevel = Double(0.026 + simd_clamp(v / 64, 0, 1) * 0.042)
         sound.windLevel = Double(simd_clamp(v / 90, 0, 0.35))
         sound.skidLevel = drifting ? Double(simd_clamp(v / 140, 0, 0.22)) : 0
-        sound.nitroLevel = wantNitro ? 0.05 : 0
+        sound.nitroLevel = wantNitro ? 0.035 : 0
         sound.rumbleLevel = offroad ? Double(simd_clamp(v / 55, 0, 0.32)) : 0
 
         // matching haptic while you're on the strips / dirt
@@ -3669,10 +3686,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.comboLeft = combo > 0 ? Double(simd_clamp(comboTimer / comboWindow, 0, 1)) : 0
             snap.pendingStyle = Int(styleRun)
             snap.lap = lap
-            snap.lapFlash = Double(min(1, lapFlash))
+            snap.lapFlash = Double(min(1, lapFlash)) * (state.reduceMotion ? 0.45 : 1)
             snap.progress = Double(s / Self.total)
-            snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1))
-            snap.flash = Double(max(0, flashT))
+            snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1)) * (state.reduceMotion ? 0.4 : 1)
+            snap.flash = Double(max(0, flashT)) * (state.reduceMotion ? 0.30 : 1)
             snap.nitroActive = wantNitro
             snap.invuln = invuln > 0
             snap.timeText = String(format: "%d:%04.1f", mm, ss)
