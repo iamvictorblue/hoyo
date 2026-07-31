@@ -209,6 +209,25 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
     private var traffic: [Traffic] = []
 
+    // MARK: - la jara
+    /// Cruisers that hunt you, as opposed to `traffic`, which merely exists. They
+    /// are their own pool because traffic is cordillera-only and the chase is the
+    /// story on every course.
+    private struct Pursuer {
+        var s: Float = 0, x: Float = 0, v: Float = 0
+        var node: SCNNode
+        var live = false
+        var life: Float = 0      // seconds before it loses interest
+        var ramCool: Float = 0
+        var spin: Float = 0
+    }
+    private var pursuers: [Pursuer] = []
+    /// 0…100. Rises while you hold a combo, so the better the run goes the more
+    /// attention it draws. Full spawns a cruiser and spends most of itself.
+    private var heat: Float = 0
+    private static let heatPerSpawn: Float = 70
+    private static let pursuerLife: Float = 20
+
     // MARK: - Yunque quarry
 
     private enum CritterKind: Int, CaseIterable {
@@ -696,6 +715,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         makeToolboxes(world)
         makeIguanas(world)
         makeTraffic(world)
+        makePursuers(world)
         makeCritters(world)
         buildCar()
         skidPool(world)
@@ -733,6 +753,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         holes.removeAll()
         piraguas.removeAll(); toolboxes.removeAll()
         iguanas.removeAll(); traffic.removeAll(); critters.removeAll()
+        pursuers.removeAll()
         bolts.removeAll(); patchNodes.removeAll()
         skidNodes.removeAll(); skidAge.removeAll()
         searchlights.removeAll()
@@ -1766,6 +1787,113 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return grp
     }
 
+    /// Heat, spawning, and the chase. The escalation is deliberate: holding a big
+    /// combo is what draws them, so the mechanic that had no downside now has one.
+    private func updatePursuit(_ dt: Float) {
+        let active = pursuers.reduce(0) { $0 + ($1.live ? 1 : 0) }
+
+        // Heat only builds while you are actually stringing things together, and
+        // bleeds off fast once you stop, so a careful run is left alone.
+        if combo >= 2 {
+            heat += dt * (4 + Float(combo) * 2.6)
+        } else {
+            heat -= dt * 11
+        }
+        heat = simd_clamp(heat, 0, 100)
+
+        if heat >= 100, active < pursuers.count {
+            heat -= Self.heatPerSpawn
+            spawnPursuer()
+        }
+
+        for i in 0..<pursuers.count where pursuers[i].live {
+            var p = pursuers[i]
+            p.life -= dt
+            if p.ramCool > 0 { p.ramCool -= dt }
+
+            // It comes from behind but does not stay there: with a chase camera you
+            // would never see it, and the beam only fires forward, so a cruiser
+            // sitting on your bumper is damage you can neither see nor answer. It
+            // overtakes into frame and harasses from in front, where it can be shot.
+            let gap = s - p.s
+            let target = s + 13
+            let want = v + simd_clamp((target - p.s) * 0.35, -9, 15)
+            p.v += (want - p.v) * min(1, 2.2 * dt)
+            p.v = simd_clamp(p.v, 0, 70)
+            p.s += p.v * dt
+            // slide into your lane
+            p.x += simd_clamp(x - p.x, -1, 1) * dt * 3.4
+            p.x = simd_clamp(p.x, -Self.barrier, Self.barrier)
+
+            // Ram. Airborne is a genuine escape: they cannot follow you up.
+            if p.ramCool <= 0, !airborne, abs(p.s - s) < 3.4, abs(p.x - x) < 1.9 {
+                p.ramCool = 1.7
+                let side: Float = x >= p.x ? 1 : -1
+                xd += side * 7
+                v *= 0.9
+                shake = max(shake, 0.9)
+                sound.playThunk()
+                damage(9, "¡LA JARA!", tone: .hit)
+            }
+
+            // Gives up if you break away, or once it has had its run at you.
+            if p.life <= 0 || gap > 150 {
+                p.live = false
+                p.node.isHidden = true
+            }
+            pursuers[i] = p
+            positionPursuer(pursuers[i])
+        }
+
+        // light bars, only while someone is actually chasing
+        if active > 0 {
+            let flash = sin(Float(playTime) * 11) > 0
+            policeRedMat.emission.intensity = flash ? 2.6 : 0.05
+            policeBlueMat.emission.intensity = flash ? 0.05 : 2.6
+        }
+    }
+
+    private func spawnPursuer() {
+        guard let i = pursuers.firstIndex(where: { !$0.live }) else { return }
+        pursuers[i].live = true
+        pursuers[i].s = max(0, s - 58)
+        pursuers[i].x = x
+        pursuers[i].v = v
+        pursuers[i].life = Self.pursuerLife
+        pursuers[i].ramCool = 0
+        pursuers[i].spin = 0
+        pursuers[i].node.isHidden = false
+        positionPursuer(pursuers[i])
+        sound.playSiren()
+        Haptics.shared.crash(intensity: 0.6)
+        popupAsync("¡LA JARA TE VIO!", .hit)
+    }
+
+    private func positionPursuer(_ p: Pursuer) {
+        let (pp, pt, pr) = sample(p.s)
+        p.node.simdPosition = pp + pr * p.x
+        p.node.simdLook(at: pp + pr * p.x + pt, up: simd_float3(0, 1, 0),
+                        localFront: simd_float3(0, 0, -1))
+        if p.spin != 0 { p.node.eulerAngles.y += p.spin }
+    }
+
+    private func clearPursuit() {
+        heat = 0
+        for i in 0..<pursuers.count {
+            pursuers[i].live = false
+            pursuers[i].node.isHidden = true
+        }
+    }
+
+    private func makePursuers(_ parent: SCNNode) {
+        for _ in 0..<2 {
+            let node = trafficCar(UIColor(white: 0.93, alpha: 1), police: true)
+            node.isHidden = true
+            parent.addChildNode(node)
+            pursuers.append(Pursuer(node: node))
+        }
+    }
+
     private func makeTraffic(_ parent: SCNNode) {
         guard Self.currentStage == .cordillera else { return }
         let colors: [UIColor] = [
@@ -2227,7 +2355,25 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
             var struck = false
 
-            // traffic first — a car is the bigger target and the better payoff
+            // Cruisers first: they are the thing actively hurting you, so a shot
+            // that could hit either should always take the pursuer.
+            for pi in 0..<pursuers.count where pursuers[pi].live {
+                let pc = pursuers[pi]
+                if pc.s >= lo && pc.s <= hi && abs(pc.x - bx) < 2.6 {
+                    pursuers[pi].live = false
+                    pursuers[pi].node.isHidden = true
+                    score += Float(300 * max(1, combo))
+                    bumpCombo()
+                    sound.playThunk()
+                    popupAsync("¡LA TUMBASTE! +\(300 * max(1, combo))", .big)
+                    Haptics.shared.crash(intensity: 0.7)
+                    struck = true
+                    break
+                }
+            }
+
+            // traffic next — a car is the bigger target and the better payoff
+            if !struck {
             for ti in 0..<traffic.count {
                 let tc = traffic[ti]
                 guard tc.s < Self.total, tc.s > s - 4 else { continue }
@@ -2243,6 +2389,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     struck = true
                     break
                 }
+            }
             }
 
             // Yunque quarry
@@ -3047,6 +3194,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         chassisNode.opacity = 1
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         loadGhost()
+        clearPursuit()
         playTime = 0
         hudClock = 0
         coquiT = 2
@@ -3152,6 +3300,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         phase = dead ? .dead : .finished
         for f in flameNodes { f.isHidden = true }
         ghostNode.isHidden = true
+        clearPursuit()
         let mm = Int(playTime) / 60
         let ss = playTime.truncatingRemainder(dividingBy: 60)
         let timeStr = String(format: "%d:%04.1f", mm, ss)
@@ -3432,6 +3581,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if ft > 4 && ft.truncatingRemainder(dividingBy: 1.6) < dt * 1.5 { fireBolt() }
         }
         updateBolts(dt)
+        updatePursuit(dt)
         recordGhost()
         playGhost()
 
@@ -3993,6 +4143,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.charge = Double(charge)
             snap.comboLeft = combo > 0 ? Double(simd_clamp(comboTimer / comboWindow, 0, 1)) : 0
             snap.pendingStyle = Int(styleRun)
+            snap.heat = Double(heat / 100)
+            snap.chased = pursuers.reduce(0) { $0 + ($1.live ? 1 : 0) }
             snap.ghostOn = !ghostNode.isHidden
             snap.ghostGap = Double(ghostGap)
             snap.lap = lap

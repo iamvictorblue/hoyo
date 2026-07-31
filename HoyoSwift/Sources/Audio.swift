@@ -37,6 +37,7 @@ final class SoundEngine: ObservableObject {
     private var jumpBuffer: AVAudioPCMBuffer?
     private var zapBuffer: AVAudioPCMBuffer?
     private var floatBuffer: AVAudioPCMBuffer?
+    private var sirenBuffer: AVAudioPCMBuffer?
     private var cordilleraPhrase: AVAudioPCMBuffer?
     private var stagePhrases: [Int: AVAudioPCMBuffer] = [:]
     private var loadedPhrase: Stage?
@@ -147,6 +148,7 @@ final class SoundEngine: ObservableObject {
         jumpBuffer = renderJump()
         zapBuffer = renderZap()
         floatBuffer = renderFloat()
+        sirenBuffer = renderSiren()
         cordilleraPhrase = renderPhrase(for: .cordillera)
 
         do {
@@ -177,6 +179,7 @@ final class SoundEngine: ObservableObject {
     func playJump()  { if let b = jumpBuffer { fxPlayer.scheduleBuffer(b) } }
     func playZap()   { if let b = zapBuffer { fxPlayer.scheduleBuffer(b) } }
     func playFloat() { if let b = floatBuffer { fxPlayer.scheduleBuffer(b) } }
+    func playSiren() { if let b = sirenBuffer { fxPlayer.scheduleBuffer(b) } }
     func playBeep(final: Bool) {
         if let b = final ? beepHiBuffer : beepBuffer { fxPlayer.scheduleBuffer(b) }
     }
@@ -271,6 +274,23 @@ final class SoundEngine: ObservableObject {
             let env = min(t / 0.1, 1) * max(0, 1 - t / 1.1)
             // slow tremolo on top of the sweep
             d[i] += Float(sin(2 * .pi * 1760 * t) * sin(2 * .pi * 7 * t) * env * 0.035)
+        }
+        return buf
+    }
+
+    /// Two-tone wail. Deliberately not a loop: it announces the cruiser arriving
+    /// and then gets out of the way of the engine bed.
+    private func renderSiren() -> AVAudioPCMBuffer? {
+        guard let (buf, d, n) = makeBuffer(seconds: 1.6) else { return nil }
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            // alternates roughly three times across the buffer
+            let hi = Int(t / 0.26) % 2 == 0
+            let f = hi ? 780.0 : 580.0
+            let env = min(t / 0.05, 1) * max(0, 1 - t / 1.6)
+            var v = sin(2 * .pi * f * t) * 0.10
+            v += sin(2 * .pi * f * 2 * t) * 0.035     // a little grit
+            d[i] += Float(v * env)
         }
         return buf
     }

@@ -193,6 +193,14 @@ struct HUDView: View {
                             showValue: true)
                     BarView(label: "NITRO", value: state.hud.nitro / 100, color: .neonTeal)
                     BarView(label: "RAYO", value: state.hud.charge / 100, color: .neonGold)
+                    // Only present once you've drawn attention — a permanently
+                    // empty fourth bar would just be clutter on a careful run.
+                    if state.hud.heat > 0.02 || state.hud.chased > 0 {
+                        BarView(label: state.hud.chased > 0
+                                ? "JARA x\(state.hud.chased)" : "BUSCADO",
+                                value: state.hud.chased > 0 ? 1 : state.hud.heat,
+                                color: Color(red: 0.95, green: 0.22, blue: 0.30))
+                    }
                 }
                 .frame(width: 168)
 

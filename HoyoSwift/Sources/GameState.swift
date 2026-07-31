@@ -222,6 +222,8 @@ struct HudSnapshot: Equatable {
     var lapFlash: Double = 0       // white wash that hides the lap teleport
     var floatLeft: Double = 0      // 1…0 while the triple-jump float is running
     var pendingStyle = 0           // drift points at risk right now
+    var heat: Double = 0           // 0…1 wanted meter
+    var chased = 0                 // cruisers currently on you
     var ghostOn = false            // a recorded ghost is on course right now
     var ghostGap: Double = 0       // metres ahead of it; negative means behind
     var timeText = "0:00.0"
