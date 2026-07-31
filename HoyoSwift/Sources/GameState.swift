@@ -85,6 +85,9 @@ enum Stage: Int, CaseIterable {
     /// isn't comparable to a single run of the course.
     var bestScoreKey: String { "hoyo_bestScore_\(rawValue)" }
     var bestTimeKey: String { "hoyo_bestTime_\(rawValue)" }
+    /// Position trace of the fastest run, replayed as the ghost. Written only when
+    /// bestTimeKey is, so the two never disagree about which run they describe.
+    var ghostKey: String { "hoyo_ghost_\(rawValue)" }
     var endlessScoreKey: String { "hoyo_endlessScore_\(rawValue)" }
     var endlessLapKey: String { "hoyo_endlessLaps_\(rawValue)" }
 
@@ -217,6 +220,8 @@ struct HudSnapshot: Equatable {
     var lapFlash: Double = 0       // white wash that hides the lap teleport
     var floatLeft: Double = 0      // 1…0 while the triple-jump float is running
     var pendingStyle = 0           // drift points at risk right now
+    var ghostOn = false            // a recorded ghost is on course right now
+    var ghostGap: Double = 0       // metres ahead of it; negative means behind
     var timeText = "0:00.0"
 }
 

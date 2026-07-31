@@ -141,6 +141,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private let playerNode = SCNNode()
     private let chassisNode = SCNNode()
     private let blobNode = SCNNode()
+    private let ghostNode = SCNNode()
     private var frontWheelNodes: [SCNNode] = []
     private var spinWheelNodes: [SCNNode] = []
     private var ufoLightRing = SCNNode()
@@ -325,6 +326,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var jumpY: Float = 0        // height above the road
     private var jumpVel: Float = 0
     private var jumpCool: Float = 0
+    // ghost — the fastest run played back alongside this one
+    /// One sample per `ghostStep` of race time: course distance, lateral offset,
+    /// height. Indexed rather than time-stamped, so `ghostPlay[i]` is exactly
+    /// `i * ghostStep` seconds into the run and playback can never drift.
+    private static let ghostStep: Double = 0.1
+    private var ghostRec: [SIMD3<Float>] = []
+    private var ghostPlay: [SIMD3<Float>] = []
+    private var ghostGap: Float = 0
     // beam
     private var charge: Float = 100
     private var fireCool: Float = 0
@@ -700,6 +709,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         world.addChildNode(dustNode)
         world.addChildNode(sparkNode)
         world.addChildNode(blobNode)
+        buildGhost(world)
 
         return (world, sky)
     }
@@ -2696,6 +2706,80 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
     }
 
+    /// Arms the ghost for a fresh run. Race mode only: endless wraps the course, so
+    /// a trace indexed on distance would teleport at every lap line.
+    private func loadGhost() {
+        ghostRec.removeAll(keepingCapacity: true)
+        ghostRec.reserveCapacity(1400)
+        ghostPlay = []
+        ghostGap = 0
+        ghostNode.isHidden = true
+        guard mode == .race, Self.startOffset <= 40,
+              let data = UserDefaults.standard.data(forKey: Self.currentStage.ghostKey),
+              data.count % MemoryLayout<SIMD3<Float>>.stride == 0
+        else { return }
+        ghostPlay = data.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: SIMD3<Float>.self))
+        }
+    }
+
+    /// One sample per `ghostStep`, indexed off race time rather than accumulated,
+    /// so a dropped frame shifts nothing. Capped so a very long run cannot grow it
+    /// without bound.
+    private func recordGhost() {
+        guard mode == .race, Self.startOffset <= 40, ghostRec.count < 3000 else { return }
+        let want = Int(playTime / Self.ghostStep)
+        while ghostRec.count <= want {
+            ghostRec.append(SIMD3(s, x, jumpY))
+        }
+    }
+
+    /// Places the ghost at where the record run was at this moment. Once its trace
+    /// runs out it has finished the course, so it leaves rather than freezing.
+    private func playGhost() {
+        guard !ghostPlay.isEmpty else { ghostNode.isHidden = true; return }
+        let t = playTime / Self.ghostStep
+        let i = Int(t)
+        guard i >= 0, i + 1 < ghostPlay.count else {
+            ghostNode.isHidden = true
+            return
+        }
+        let f = Float(t - Double(i))
+        let a = ghostPlay[i], b = ghostPlay[i + 1]
+        let g = a + (b - a) * f
+        let (gp, gt, gr) = sample(g.x)
+        ghostNode.isHidden = false
+        ghostNode.simdPosition = gp + gr * g.y + simd_float3(0, g.z + 0.35, 0)
+        ghostNode.simdLook(at: gp + gr * g.y + gt + simd_float3(0, g.z + 0.35, 0),
+                           up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+        ghostGap = s - g.x
+        // Neck and neck it sits exactly on top of your craft and hides it, which is
+        // precisely when you least want the view blocked. Fade it out up close.
+        ghostNode.opacity = CGFloat(simd_clamp((abs(ghostGap) - 2.5) / 9, 0, 1))
+    }
+
+    /// The ghost is the same hull as the player's, flattened to a flat teal shell so
+    /// it reads as a trace rather than a second craft you might mistake for traffic.
+    /// It never collides — nothing looks at this node but the renderer.
+    private func buildGhost(_ parent: SCNNode) {
+        let built = ufoHull()
+        let mat = SCNMaterial()
+        mat.lightingModel = .constant
+        mat.diffuse.contents = UIColor(red: 0.35, green: 1, blue: 0.86, alpha: 1)
+        mat.transparency = 0.28
+        mat.writesToDepthBuffer = false
+        mat.isDoubleSided = true
+        built.node.enumerateHierarchy { n, _ in
+            n.geometry?.materials = [mat]
+            n.castsShadow = false
+        }
+        ghostNode.addChildNode(built.node)
+        ghostNode.isHidden = true
+        // draw after the world so it reads as an overlay through scenery
+        ghostNode.renderingOrder = 10
+        parent.addChildNode(ghostNode)
+    }
+
     private func buildCar() {
         let built = ufoHull()
         chassisNode.addChildNode(built.node)
@@ -2848,6 +2932,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         jumpChain = 0; jumpChainT = 0; floatT = 0
         chassisNode.opacity = 1
         driftYaw = 0; leanRoll = 0; pitchAng = 0
+        loadGhost()
         playTime = 0
         hudClock = 0
         coquiT = 2
@@ -2952,6 +3037,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private func endGame(dead: Bool) {
         phase = dead ? .dead : .finished
         for f in flameNodes { f.isHidden = true }
+        ghostNode.isHidden = true
         let mm = Int(playTime) / 60
         let ss = playTime.truncatingRemainder(dividingBy: 60)
         let timeStr = String(format: "%d:%04.1f", mm, ss)
@@ -2985,6 +3071,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if bestTime == 0 || playTime < bestTime {
                 newTimeRec = true
                 defaults.set((playTime * 10).rounded() / 10, forKey: stage.bestTimeKey)
+                // The trace belongs to this run, so it is written with the time it
+                // describes and never separately.
+                let trace = ghostRec.withUnsafeBufferPointer { Data(buffer: $0) }
+                defaults.set(trace, forKey: stage.ghostKey)
             }
         }
         // finishing a stage opens the next one
@@ -3221,6 +3311,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             if ft > 4 && ft.truncatingRemainder(dividingBy: 1.6) < dt * 1.5 { fireBolt() }
         }
         updateBolts(dt)
+        recordGhost()
+        playGhost()
 
         // ----- jump -----
         if jumpCool > 0 { jumpCool = max(0, jumpCool - dt) }
@@ -3780,6 +3872,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.charge = Double(charge)
             snap.comboLeft = combo > 0 ? Double(simd_clamp(comboTimer / comboWindow, 0, 1)) : 0
             snap.pendingStyle = Int(styleRun)
+            snap.ghostOn = !ghostNode.isHidden
+            snap.ghostGap = Double(ghostGap)
             snap.lap = lap
             snap.lapFlash = Double(min(1, lapFlash)) * (state.reduceMotion ? 0.45 : 1)
             snap.floatLeft = Double(floatT / Self.floatDuration)

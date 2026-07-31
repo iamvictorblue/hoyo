@@ -233,6 +233,20 @@ struct HUDView: View {
                     }
                     .frame(width: 216, height: 6)
 
+                    if state.hud.ghostOn {
+                        let ahead = state.hud.ghostGap >= 0
+                        HStack(spacing: 5) {
+                            Image(systemName: ahead ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 9, weight: .black))
+                            Text("\(ahead ? "+" : "")\(Int(state.hud.ghostGap)) m")
+                                .font(.data(12))
+                        }
+                        .foregroundStyle(ahead ? Color.neonTeal : Color.neonPink)
+                        .padding(.vertical, 3).padding(.horizontal, 9)
+                        .background(.black.opacity(0.3), in: Capsule())
+                        .padding(.top, 4)
+                    }
+
                     if state.hud.floatLeft > 0 {
                         HStack(spacing: 7) {
                             Image(systemName: "arrow.up.circle.fill")
