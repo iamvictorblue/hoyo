@@ -232,6 +232,26 @@ struct HUDView: View {
                         }
                     }
                     .frame(width: 216, height: 6)
+
+                    if state.hud.floatLeft > 0 {
+                        HStack(spacing: 7) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("FLOTANDO")
+                                .font(.label(11)).tracking(3)
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.black.opacity(0.35))
+                                Capsule().fill(Color.neonTeal)
+                                    .frame(width: 46 * state.hud.floatLeft)
+                            }
+                            .frame(width: 46, height: 4)
+                        }
+                        .foregroundStyle(Color.neonTeal)
+                        .padding(.vertical, 4).padding(.horizontal, 10)
+                        .background(.black.opacity(0.35), in: Capsule())
+                        .shadow(color: .neonTeal.opacity(0.5), radius: 10)
+                        .padding(.top, 4)
+                    }
                 }
 
                 Spacer()
@@ -1130,6 +1150,7 @@ struct HowToCard: View {
         ("octagon.fill", "FRENO", "frena, y con guía haces drift"),
         ("flame.fill", "NITRO", "corre más · las piraguas lo llenan"),
         ("arrow.up.circle.fill", "SALTA", "brinca los hoyos y los carros"),
+        ("arrow.up.to.line", "A VOLAR", "brinca tres veces seguidas y flotas"),
         ("bolt.fill", "RAYO", "tapa los hoyos y tumba carros")
     ]
 

@@ -36,6 +36,7 @@ final class SoundEngine: ObservableObject {
     private var beepHiBuffer: AVAudioPCMBuffer?
     private var jumpBuffer: AVAudioPCMBuffer?
     private var zapBuffer: AVAudioPCMBuffer?
+    private var floatBuffer: AVAudioPCMBuffer?
     private var cordilleraPhrase: AVAudioPCMBuffer?
     private var stagePhrases: [Int: AVAudioPCMBuffer] = [:]
     private var loadedPhrase: Stage?
@@ -145,6 +146,7 @@ final class SoundEngine: ObservableObject {
         beepHiBuffer = renderBeep(freq: 1420, dur: 0.3)
         jumpBuffer = renderJump()
         zapBuffer = renderZap()
+        floatBuffer = renderFloat()
         cordilleraPhrase = renderPhrase(for: .cordillera)
 
         do {
@@ -174,6 +176,7 @@ final class SoundEngine: ObservableObject {
     func playHorn()  { if let b = hornBuffer { fxPlayer.scheduleBuffer(b) } }
     func playJump()  { if let b = jumpBuffer { fxPlayer.scheduleBuffer(b) } }
     func playZap()   { if let b = zapBuffer { fxPlayer.scheduleBuffer(b) } }
+    func playFloat() { if let b = floatBuffer { fxPlayer.scheduleBuffer(b) } }
     func playBeep(final: Bool) {
         if let b = final ? beepHiBuffer : beepBuffer { fxPlayer.scheduleBuffer(b) }
     }
@@ -253,6 +256,21 @@ final class SoundEngine: ObservableObject {
             let noise = Double.random(in: -1...1, using: &rng)
             d[i] += Float((noise - last) * env * env * 0.10)
             last = noise
+        }
+        return buf
+    }
+
+    /// Antigravity: a long rising sweep with a shimmer over it, so the third hop is
+    /// audibly a different event from the two that set it up.
+    private func renderFloat() -> AVAudioPCMBuffer? {
+        guard let (buf, d, n) = makeBuffer(seconds: 1.1) else { return nil }
+        addSweep(d, n, start: 0, dur: 0.9, f0: 110, f1: 880, amp: 0.16)
+        addSweep(d, n, start: 0.06, dur: 0.85, f0: 165, f1: 1320, amp: 0.09)
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            let env = min(t / 0.1, 1) * max(0, 1 - t / 1.1)
+            // slow tremolo on top of the sweep
+            d[i] += Float(sin(2 * .pi * 1760 * t) * sin(2 * .pi * 7 * t) * env * 0.035)
         }
         return buf
     }

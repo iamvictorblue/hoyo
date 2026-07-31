@@ -195,6 +195,7 @@ struct HudSnapshot: Equatable {
     var comboLeft: Double = 0      // 1…0, how much of the combo window is left
     var lap = 1                    // endless only
     var lapFlash: Double = 0       // white wash that hides the lap teleport
+    var floatLeft: Double = 0      // 1…0 while the triple-jump float is running
     var pendingStyle = 0           // drift points at risk right now
     var timeText = "0:00.0"
 }
