@@ -345,6 +345,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private static let jumpChainWindow: Float = 2.0
     private static let floatDuration: Float = 10
     private static let floatHeight: Float = 12
+    private static let floatCost: Float = 50
     private var jumpChain = 0
     private var jumpChainT: Float = 0
     private var floatT: Float = 0
@@ -2275,7 +2276,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
 
             // place it
-            bolts[i].y += (0.75 - bolts[i].y) * min(1, 3.2 * dt)
+            // 3.2/s left a bolt fired from float altitude still ~5 m up at its
+            // target; this reaches road level within about 15 m of travel
+            bolts[i].y += (0.75 - bolts[i].y) * min(1, 9.0 * dt)
             let (bp, bt, br) = sample(bs)
             let world = bp + br * bx + simd_float3(0, bolts[i].y, 0)
             bolts[i].node.simdPosition = world
@@ -2948,6 +2951,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     private func endGame(dead: Bool) {
         phase = dead ? .dead : .finished
+        for f in flameNodes { f.isHidden = true }
         let mm = Int(playTime) / 60
         let ss = playTime.truncatingRemainder(dividingBy: 60)
         let timeStr = String(format: "%d:%04.1f", mm, ss)
@@ -3169,7 +3173,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let wantNitro = nitroIn && nitro > 0
         let steer = simd_clamp(steerIn, -1, 1)
         let drifting = braking && abs(steer) > 0.28 && v > 12
-        let offroad = abs(x) > Self.roadHalf + 0.3
+        let offroad = abs(x) > Self.roadHalf + 0.3 && !airborne
 
         var acc: Float = 9.0 - grade * 9.81 * 4
         acc -= 0.0042 * v * v
@@ -3188,8 +3192,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         brakeLightMaterial.emission.contents = UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1)
         brakeLightMaterial.emission.intensity = braking ? 1.6 : 0
         for f in flameNodes {
-            f.isHidden = !(wantNitro || floating)
-            if wantNitro { f.scale = SCNVector3(1, 0.7 + Float.random(in: 0...0.9), 1) }
+            let lit = wantNitro || floating
+            f.isHidden = !lit
+            // floating holds a steady thruster; nitro flickers
+            if lit { f.scale = SCNVector3(1, wantNitro ? 0.7 + Float.random(in: 0...0.9) : 1.15, 1) }
         }
 
         // ----- beam -----
@@ -3218,16 +3224,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 jumpChain += 1
                 jumpChainT = Self.jumpChainWindow
                 jumpCool = 0.35
-                if jumpChain >= 3 {
+                if jumpChain >= 3 && nitro >= Self.floatCost {
                     // third hop in the rhythm: go up and stay up
                     jumpChain = 0
                     jumpChainT = 0
                     floatT = Self.floatDuration
+                    nitro -= Self.floatCost
                     jumpVel = 0
                     sound.playFloat()
                     Haptics.shared.crash(intensity: 0.8)
                     popupAsync("¡A VOLAR!", .big)
                 } else {
+                    if jumpChain >= 3 { jumpChain = 0; popupAsync("FALTA NITRO", .hit) }
                     jumpVel = Self.jumpImpulse
                     sound.playJump()
                     Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
@@ -3258,6 +3266,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 // landing — a drop from float altitude hits far harder than a hop
                 let impact = simd_clamp(-jumpVel / 24, 0.25, 1)
                 jumpY = 0; jumpVel = 0
+                // Recovery is charged here, not at take-off: a take-off cooldown
+                // shorter than the airtime can never bind, which is what let you
+                // stay airborne ~92% of a run by holding the button.
+                jumpCool = 0.42 + 0.25 * impact
                 shake = max(shake, 0.4 + impact * 0.75)
                 sound.playThunk()
                 Haptics.shared.crash(intensity: 0.4 + impact * 0.5)
@@ -3323,7 +3335,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // glancing scrape shoves the car back toward the asphalt instead of
             // letting you ride the rail.
             xd = -side * max(abs(xd) * 0.6, 4.5)
-            if v > 6 {
+            // Above rail height the craft is over it, not scraping it. Containment
+            // stays (the whole world is built around x), the punishment does not.
+            if v > 6 && jumpY < 1.6 {
                 v *= 0.78
                 shake = max(shake, 0.9)
                 sound.playThunk()
@@ -3391,7 +3405,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // toolboxes
         for tbi in 0..<toolboxes.count {
             let tb = toolboxes[tbi]
-            if !tb.taken && abs(tb.s - s) < 2.4 && abs(tb.x - x) < 1.6 {
+            if !tb.taken && abs(tb.s - s) < 2.4 && abs(tb.x - x) < 1.6 && jumpY < 2.5 {
                 toolboxes[tbi].taken = true
                 tb.node.isHidden = true
                 hp = min(100, hp + 26)
@@ -3405,7 +3419,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // piraguas
         for qi in 0..<piraguas.count {
             let q = piraguas[qi]
-            if !q.taken && abs(q.s - s) < 2.4 && abs(q.x - x) < 1.6 {
+            if !q.taken && abs(q.s - s) < 2.4 && abs(q.x - x) < 1.6 && jumpY < 2.5 {
                 piraguas[qi].taken = true
                 q.node.isHidden = true
                 nitro = min(100, nitro + 35)
@@ -3427,7 +3441,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 }
             }
             if !iguanas[gi].hit && iguanas[gi].stateRaw == 1 &&
-               abs(igDs) < 2 && abs(iguanas[gi].x - x) < 1.2 {
+               abs(igDs) < 2 && abs(iguanas[gi].x - x) < 1.2 && !airborne {
                 iguanas[gi].hit = true
                 iguanas[gi].stateRaw = 2
                 iguanas[gi].node.eulerAngles.z = 2.6
@@ -3481,7 +3495,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                         sound.playHorn()
                         popupAsync("\(Shout.one(Shout.overCar)) +\(150 * combo)", .big)
                     }
-                } else if closing > 16 {
+                } else if closing > 16 && !tc.clearedByJump {
                     // hit it hard enough to shove it out of the lane rather than
                     // bounce off it — the tapón is traffic, not a wall
                     traffic[ti].cool = 1.2
@@ -3594,7 +3608,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // going fastest — which is when you most want to see it.
         // Floating puts the craft 12 m up; the deck-level rig would leave it off the
         // bottom of the frame, so pull back and climb with it.
-        let liftK = simd_clamp(jumpY / Self.floatHeight, 0, 1)
+        let liftK = simd_clamp((jumpY - 3) / (Self.floatHeight - 3), 0, 1)
         let camDist = 4.3 + v * 0.018 - (wantNitro ? 0.85 : 0) + liftK * 7
         var target = carPos - tan * camDist
         target.y += 1.62 + v * 0.007 + liftK * 3.5
@@ -3751,7 +3765,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.comboLeft = combo > 0 ? Double(simd_clamp(comboTimer / comboWindow, 0, 1)) : 0
             snap.pendingStyle = Int(styleRun)
             snap.lap = lap
-            snap.lapFlash = Double(min(1, lapFlash))
+            snap.lapFlash = Double(min(1, lapFlash)) * (state.reduceMotion ? 0.45 : 1)
             snap.floatLeft = Double(floatT / Self.floatDuration)
             snap.progress = Double(s / Self.total)
             snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1)) * (state.reduceMotion ? 0.4 : 1)
