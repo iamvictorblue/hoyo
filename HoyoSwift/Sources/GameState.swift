@@ -88,28 +88,37 @@ enum Stage: Int, CaseIterable {
     var endlessScoreKey: String { "hoyo_endlessScore_\(rawValue)" }
     var endlessLapKey: String { "hoyo_endlessLaps_\(rawValue)" }
 
-    /// Score needed for each medal, tuned per course rather than shared — the same
-    /// number meant very different things on three courses with different income.
+    /// Score needed for each medal. These are anchored on measurement, not on a
+    /// model of the courses — an earlier model reasoned from near-miss geometry,
+    /// concluded Yunque should score highest, and set its thresholds 18% above
+    /// Guajataca's. Real play says the opposite.
     ///
-    /// Every course pays the same ~7,600 of skill-independent score (distance,
-    /// piraguas, toolboxes). What differs:
+    /// Every course is 3,600 m and pays the same skill-independent floor: 4,320
+    /// for distance (score is `v * dt * 1.2`, which integrates to 1.2 x distance
+    /// regardless of speed) plus 26 piraguas and 14 toolboxes, so 7,620 in all.
     ///
-    /// - Hole *count* is identical everywhere (the density ramp is keyed on progress,
-    ///   not stage), but the lateral spread scales with road width while the
-    ///   near-miss window is fixed at r + 2.2. So the narrow Yunque trail packs
-    ///   holes into your line (~79% are near-missable) where Isla Verde's wide sand
-    ///   spreads them thin (~44%). Near-miss income is the single biggest term.
-    /// - Traffic — overtakes and parries — exists only on Guajataca.
-    /// - Drift income follows twistiness: the trail most, the flat shoreline least.
+    /// Instrumented spawn counts for what differs:
     ///
-    /// That puts skilled ceilings around 23k / 27k / 19k, so the thresholds are
-    /// Guajataca's original numbers scaled by 1.0 / 1.18 / 0.83. Gold is meant to
-    /// sit slightly above a strong run on each course, not be routine.
+    ///                 holes   cars          critters      road half-width
+    ///   Guajataca      127    pool of 9       —                6.8
+    ///   El Yunque      107    none          70 / 5,820 pts      4.6
+    ///   Isla Verde     111    none          62 / 5,480 pts      7.6
+    ///
+    /// - Guajataca is the only course with traffic, and a car pays 150 x combo to
+    ///   clear (750 at cap) or 120–250 to ram. That single term outweighs the
+    ///   near-miss geometry the old model was built on, and it is why Guajataca
+    ///   has the richest economy despite the widest tolerances.
+    /// - Yunque and Isla Verde are within 4% of each other on every income term.
+    ///   Their thresholds should differ only by how hard each is to survive, and
+    ///   the Yunque trail is a third the width of Isla Verde's sand with the same
+    ///   number of holes in it — so it gets the lower bar, not the higher one.
+    ///
+    /// Gold sits slightly above a strong run on each course, so it stays a chase.
     var medalThresholds: (bronze: Int, silver: Int, gold: Int) {
         switch self {
-        case .cordillera: return (8_000, 16_000, 26_000)
-        case .yunque:     return (9_500, 19_000, 30_000)
-        case .playa:      return (6_500, 13_000, 21_500)
+        case .cordillera: return (9_000, 18_000, 27_000)
+        case .yunque:     return (7_500, 14_500, 21_500)
+        case .playa:      return (8_000, 15_500, 23_000)
         }
     }
 }
