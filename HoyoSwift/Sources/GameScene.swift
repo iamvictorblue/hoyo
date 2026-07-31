@@ -2955,6 +2955,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let mm = Int(playTime) / 60
         let ss = playTime.truncatingRemainder(dividingBy: 60)
         let timeStr = String(format: "%d:%04.1f", mm, ss)
+        // Finishing under par pays 90 a second. Only on a completed race — there is
+        // no finish line in endless, and dying is not a fast time. Gated on
+        // startOffset for the same reason the records are: dropping in at 3,300 m
+        // with -startAt finishes in 9 s and would bank a 7,700-point "bonus".
+        var bonus = 0
+        if !dead && mode == .race && Self.startOffset <= 40 {
+            bonus = max(0, Int((Self.currentStage.parTime - playTime) * 90))
+            score += Float(bonus)
+        }
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
         let medal = mode == .endless ? .none : Medal.forScore(sc, on: Self.currentStage)
@@ -2991,6 +3000,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.statHolesHit = hh
             self.state.statNearMisses = nm
             self.state.statMedal = medal
+            self.state.statTimeBonus = bonus
             self.state.statFinished = !dead
             self.state.statLaps = self.lap
             self.state.newRecordScore = newScoreRec
@@ -3301,7 +3311,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             score += styleRun
             styleRun = 0
         }
-        score += v * dt * 1.2
+        // Distance income used to be a flat `v * dt * 1.2`, which integrates to
+        // 1.2 x distance — the same 4,320 on every course no matter how you drove.
+        // Speed paid nothing on its own in a game about going downhill fast. Now
+        // the rate per metre scales with speed, so a hard run banks roughly three
+        // times what a crawl does over the same ground.
+        let payNorm = simd_clamp((v - 22) / 30, 0, 1)
+        score += v * dt * (0.55 + 1.45 * payNorm)
 
         // ----- skid trail -----
         let (skidPos, skidTan, skidRgt) = sample(s)

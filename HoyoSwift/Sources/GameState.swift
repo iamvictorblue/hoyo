@@ -88,6 +88,17 @@ enum Stage: Int, CaseIterable {
     var endlessScoreKey: String { "hoyo_endlessScore_\(rawValue)" }
     var endlessLapKey: String { "hoyo_endlessLaps_\(rawValue)" }
 
+    /// Target time for the finish bonus, in seconds. Beat it and every second
+    /// under pays; miss it and you simply get nothing, never a penalty. Set about
+    /// 15 s above a strong run on each course so the bonus is earned, not given.
+    var parTime: Double {
+        switch self {
+        case .cordillera: return 95
+        case .yunque:     return 100   // the trail is the slowest of the three
+        case .playa:      return 95
+        }
+    }
+
     /// Score needed for each medal. These are anchored on measurement, not on a
     /// model of the courses — an earlier model reasoned from near-miss geometry,
     /// concluded Yunque should score highest, and set its thresholds 18% above
@@ -307,6 +318,7 @@ final class GameState: ObservableObject {
     @Published var statHolesHit = 0
     @Published var statNearMisses = 0
     @Published var statMedal: Medal = .none
+    @Published var statTimeBonus = 0
     @Published var statSeed: UInt64 = 0
     @Published var statFinished = false
     @Published var statLaps = 1

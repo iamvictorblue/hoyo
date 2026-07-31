@@ -1253,6 +1253,13 @@ struct EndOverlay: View {
                             StatLine(label: "VUELTAS", value: "\(state.statLaps)")
                         }
                         StatLine(label: "TIEMPO", value: state.statTime)
+                        // Only when it paid — a "+0" every run teaches nothing and
+                        // reads as a penalty for finishing.
+                        if state.statTimeBonus > 0 {
+                            StatLine(label: "BONO",
+                                     value: "+\(state.statTimeBonus.formatted())",
+                                     accent: Color.neonGold)
+                        }
                         StatLine(label: "PUNTOS", value: state.statScore.formatted())
                         StatLine(label: "MÁXIMA", value: "\(state.statTopSpeed) km/h")
                         StatLine(label: "HOYOS / ESQUIVES",
