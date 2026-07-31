@@ -304,6 +304,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// multiplier was sticky at x5 forever, so playing safe and scoring well were
     /// the same thing — there was no greed in the game.
     private var comboTimer: Float = 0
+    // endless
+    private var mode: GameMode = .race
+    private var lap = 1
+    /// White wash that covers the lap teleport. The course is a descent, so wrapping
+    /// from sea level back to the mountain top is a visible jump unless the screen is
+    /// opaque at the moment it happens. Starts above 1 so there's a guaranteed run of
+    /// fully-white frames before the world moves under the player.
+    private var lapFlash: Float = 0
+    private var lapWrapPending = false
     /// How long the current drift has been held. Longer drifts pay more, which is
     /// what makes losing one hurt.
     private var driftTime: Float = 0
@@ -1520,9 +1529,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         while cs < Self.total - 260 {
             let prog = cs / Self.total
             let w = Self.regionWeights(prog)
-            let clusterMax = w.x * 2.4 + w.y * 4.2 + w.z * 1.9
-            let radiusMax  = w.x * 1.30 + w.y * 0.80 + w.z * 0.95
-            let spacing    = w.x * 74 + w.y * 40 + w.z * 104
+            // Endless laps tighten the whole field. Capped so a long run stays
+            // playable rather than becoming an unbroken wall of holes.
+            let lapK = min(Float(lap - 1), 6)
+            let clusterMax = (w.x * 2.4 + w.y * 4.2 + w.z * 1.9) + lapK * 0.45
+            let radiusMax  = (w.x * 1.30 + w.y * 0.80 + w.z * 0.95) + lapK * 0.06
+            let spacing    = (w.x * 74 + w.y * 40 + w.z * 104) * pow(0.9, lapK)
             let n = 1 + Int(runRng.next() * clusterMax)
             let gapC = (runRng.next() - 0.5) * (Self.roadHalf * 1.2)
             for _ in 0..<n {
@@ -2804,6 +2816,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         hp = 100; nitro = 60
         score = 0; styleRun = 0; combo = 0; lastCombo = -1
         comboTimer = 0; driftTime = 0
+        mode = state.mode
+        lap = 1; lapFlash = 0; lapWrapPending = false
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
         jumpY = 0; jumpVel = 0; jumpCool = 0
@@ -2846,6 +2860,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.countLabel = ""
             self.state.regionLabel = ""
             self.state.regionBlurb = ""
+            self.state.lapLabel = ""
             self.state.newRecordScore = false
             self.state.newRecordTime = false
             self.state.unlockedStage = nil
@@ -2880,6 +2895,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
     }
 
+    /// Next lap of an endless run. Keeps score, combo and damage — the attrition is
+    /// what eventually ends the run — but relays the whole hazard field harder.
+    private func beginLap() {
+        lap += 1
+        s = Self.startOffset
+        v = min(v, 34)                       // carry momentum, but not all of it
+        x = 0; xd = 0
+        hp = min(100, hp + 12)               // surviving a lap is worth a little back
+        invuln = 1.2                         // don't die to the first hole of a lap
+        clearSkids()
+        // Seed the region tracker to wherever the lap restarts rather than clearing
+        // it. Clearing made the region re-announce on the same frame the lap banner
+        // appeared, and the two drew on top of each other. The next region still
+        // announces normally once you cross into it.
+        lastRegion = Region.at(progress: Self.startOffset / Self.total)
+        runSeed = UInt64.random(in: 1..<2147483646)
+        runRng = Lcg(runSeed)
+        layoutHazards()
+        let n = lap
+        DispatchQueue.main.async {
+            self.state.showLap(n)
+            self.state.statSeed = self.runSeed
+        }
+    }
+
     private func endGame(dead: Bool) {
         phase = dead ? .dead : .finished
         let mm = Int(playTime) / 60
@@ -2887,16 +2927,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let timeStr = String(format: "%d:%04.1f", mm, ss)
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
-        let medal = Medal.forScore(sc, on: Self.currentStage)
+        let medal = mode == .endless ? .none : Medal.forScore(sc, on: Self.currentStage)
         let defaults = UserDefaults.standard
         // A run that skipped part of the course isn't a record. Without this the
         // -startAt debug flag writes nonsense best times.
         let eligible = Self.startOffset <= 40
         let stage = Self.currentStage
-        let newScoreRec = eligible && sc > defaults.integer(forKey: stage.bestScoreKey)
-        if newScoreRec { defaults.set(sc, forKey: stage.bestScoreKey) }
+        let endless = mode == .endless
+        let scoreKey = endless ? stage.endlessScoreKey : stage.bestScoreKey
+        let newScoreRec = eligible && sc > defaults.integer(forKey: scoreKey)
+        if newScoreRec { defaults.set(sc, forKey: scoreKey) }
+        if endless, lap > defaults.integer(forKey: stage.endlessLapKey) {
+            defaults.set(lap, forKey: stage.endlessLapKey)
+        }
         var newTimeRec = false
-        if !dead && eligible {
+        if !dead && eligible && !endless {
             let bestTime = defaults.double(forKey: stage.bestTimeKey)
             if bestTime == 0 || playTime < bestTime {
                 newTimeRec = true
@@ -2905,7 +2950,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         // finishing a stage opens the next one
         var opened: Stage?
-        if !dead, eligible, let nxt = stage.next, !nxt.unlocked {
+        if !dead, eligible, !endless, let nxt = stage.next, !nxt.unlocked {
             nxt.unlock()
             opened = nxt
         }
@@ -2917,6 +2962,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.statNearMisses = nm
             self.state.statMedal = medal
             self.state.statFinished = !dead
+            self.state.statLaps = self.lap
             self.state.newRecordScore = newScoreRec
             self.state.newRecordTime = newTimeRec
             self.state.unlockedStage = opened
@@ -3360,7 +3406,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 // el tapón is a town problem: cars bunch up tight through the
                 // pueblo and thin out on the mountain and the coastal run-in
                 let w = Self.regionWeights(s / Self.total)
-                let gap = w.x * 300 + w.y * 130 + w.z * 260
+                let gap = (w.x * 300 + w.y * 130 + w.z * 260) * pow(0.88, min(Float(lap - 1), 6))
                 traffic[ti].s = s + gap * (0.7 + runRng.next() * 0.9)
                 traffic[ti].x = Self.laneCentres[Int(runRng.next() * 4) % 4]
                 // and it crawls slower in town
@@ -3427,7 +3473,27 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             } else { tc.node.isHidden = true }
         }
 
-        if s >= Self.total - 8 { endGame(dead: false) }
+        if s >= Self.total - 8 {
+            if mode == .endless {
+                if !lapWrapPending {
+                    lapWrapPending = true
+                    lapFlash = 1.45
+                    sound.playCoqui()
+                    Haptics.shared.tap(intensity: 0.7, sharpness: 0.5)
+                }
+                s = Self.total - 8          // hold at the line while the wash covers
+            } else {
+                endGame(dead: false)
+            }
+        }
+        if lapFlash > 0 {
+            lapFlash = max(0, lapFlash - dt * 2.1)
+            // teleport only once the wash has actually been on screen a few frames
+            if lapWrapPending && lapFlash <= 1.0 {
+                lapWrapPending = false
+                beginLap()
+            }
+        }
 
         // ----- place the car -----
         let (pos, tan, rgt) = sample(s)
@@ -3602,6 +3668,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.charge = Double(charge)
             snap.comboLeft = combo > 0 ? Double(simd_clamp(comboTimer / comboWindow, 0, 1)) : 0
             snap.pendingStyle = Int(styleRun)
+            snap.lap = lap
+            snap.lapFlash = Double(min(1, lapFlash))
             snap.progress = Double(s / Self.total)
             snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1))
             snap.flash = Double(max(0, flashT))

@@ -112,6 +112,7 @@ struct GameSceneView: UIViewRepresentable {
         // `-stage <n>` jumps straight to a course, unlocking it — for testing a
         // stage without finishing the one before it.
         let args = ProcessInfo.processInfo.arguments
+        if args.contains("-endless") { state.mode = .endless }
         if let i = args.firstIndex(of: "-stage"), i + 1 < args.count,
            let n = Int(args[i + 1]), let want = Stage(rawValue: n) {
             want.unlock()

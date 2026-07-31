@@ -139,6 +139,20 @@ struct HUDView: View {
                     .allowsHitTesting(false)
             }
 
+            // covers the lap teleport
+            if state.hud.lapFlash > 0.001 {
+                Color.white
+                    .opacity(state.hud.lapFlash)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+
+            if !state.lapLabel.isEmpty && state.phase == .playing {
+                RegionBanner(label: state.lapLabel, blurb: "SIGUE DÁNDOLE")
+                    .id(state.lapID)
+                    .allowsHitTesting(false)
+            }
+
             if !state.regionLabel.isEmpty && state.phase == .playing {
                 RegionBanner(label: state.regionLabel, blurb: state.regionBlurb)
                     .id(state.regionID)
@@ -183,6 +197,11 @@ struct HUDView: View {
                         RouteShield(route: state.loadedStage.route, compact: true)
                             .scaleEffect(0.62)
                             .frame(width: 30, height: 22)
+                        if state.mode == .endless {
+                            Text("V\(state.hud.lap)")
+                                .font(.data(19))
+                                .foregroundStyle(Color.neonGold)
+                        }
                         Text(state.hud.timeText)
                         .font(.system(size: 21, weight: .heavy, design: .rounded))
                         .monospacedDigit()
@@ -943,9 +962,11 @@ struct IntroOverlay: View {
     private var multiStage: Bool {
         Stage.allCases.contains { $0 != .cordillera && $0.unlocked }
     }
+    /// Race only — see `endGame`.
     private var bestMedal: Medal {
-        Medal.forScore(UserDefaults.standard.integer(forKey: state.selectedStage.bestScoreKey),
-                       on: state.selectedStage)
+        guard state.mode == .race else { return .none }
+        return Medal.forScore(UserDefaults.standard.integer(forKey: state.selectedStage.bestScoreKey),
+                              on: state.selectedStage)
     }
 
     var body: some View {
@@ -990,8 +1011,31 @@ struct IntroOverlay: View {
                     .padding(.top, 10)
                     .opacity(entered ? 1 : 0)
 
+                    HStack(spacing: 9) {
+                        ForEach([GameMode.race, GameMode.endless], id: \.rawValue) { m in
+                            Button {
+                                state.mode = m
+                                state.refreshRecordLine()
+                            } label: {
+                                Text(m.name)
+                                    .font(.label(11)).tracking(2)
+                                    .foregroundStyle(state.mode == m ? .black : .white.opacity(0.5))
+                                    .padding(.vertical, 6).padding(.horizontal, 14)
+                                    .background(state.mode == m ? Color.neonGold : Color.white.opacity(0.08),
+                                                in: Capsule())
+                                    .overlay(Capsule().stroke(state.mode == m
+                                                              ? Color.neonGold : .white.opacity(0.25),
+                                                              lineWidth: 1.5))
+                            }
+                        }
+                        Text(state.mode.blurb)
+                            .font(.label(9)).tracking(2)
+                            .foregroundStyle(.white.opacity(0.35))
+                    }
+                    .padding(.top, 18)
+
                     if multiStage {
-                        StagePicker(state: state).padding(.top, 20)
+                        StagePicker(state: state).padding(.top, 12)
                     } else {
                         HStack(spacing: 10) {
                             RouteShield(route: Stage.cordillera.route, compact: true)
@@ -999,7 +1043,7 @@ struct IntroOverlay: View {
                                 .font(.label(10)).tracking(2)
                                 .foregroundStyle(.white.opacity(0.45))
                         }
-                        .padding(.top, 20)
+                        .padding(.top, 12)
                     }
 
                     // records, quiet — a stat line, not a headline
@@ -1162,6 +1206,9 @@ struct EndOverlay: View {
                         .padding(.top, 8)
 
                     VStack(alignment: .leading, spacing: 5) {
+                        if state.mode == .endless {
+                            StatLine(label: "VUELTAS", value: "\(state.statLaps)")
+                        }
                         StatLine(label: "TIEMPO", value: state.statTime)
                         StatLine(label: "PUNTOS", value: state.statScore.formatted())
                         StatLine(label: "MÁXIMA", value: "\(state.statTopSpeed) km/h")
@@ -1186,7 +1233,8 @@ struct EndOverlay: View {
                 VStack(alignment: .leading, spacing: 12) {
                     RouteShield(route: state.loadedStage.route)
 
-                    if let up = Medal.next(after: state.statScore, on: state.loadedStage) {
+                    if state.mode == .race,
+                       let up = Medal.next(after: state.statScore, on: state.loadedStage) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("PA' \(up.medal.label)")
                                 .font(.label(9)).tracking(3)

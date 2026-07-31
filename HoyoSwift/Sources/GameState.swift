@@ -7,6 +7,15 @@ enum GamePhase {
     case intro, arrival, countdown, playing, finished, dead
 }
 
+/// How a course is played.
+enum GameMode: Int {
+    case race = 0       // one run of the course, timed, with a finish line
+    case endless = 1    // lap it until the craft gives out
+
+    var name: String { self == .race ? "CARRERA" : "SIN FIN" }
+    var blurb: String { self == .race ? "DE PUNTA A PUNTA" : "HASTA QUE AGUANTES" }
+}
+
 /// A playable course. Each one rebuilds the world: its own path shape, surface,
 /// terrain palette, scenery, hazards and quarry.
 enum Stage: Int, CaseIterable {
@@ -71,9 +80,12 @@ enum Stage: Int, CaseIterable {
     /// The stage finishing this one opens up, if any.
     var next: Stage? { Stage(rawValue: rawValue + 1) }
 
-    /// Records are kept per stage.
+    /// Records are kept per stage, and separately per mode — an endless score
+    /// isn't comparable to a single run of the course.
     var bestScoreKey: String { "hoyo_bestScore_\(rawValue)" }
     var bestTimeKey: String { "hoyo_bestTime_\(rawValue)" }
+    var endlessScoreKey: String { "hoyo_endlessScore_\(rawValue)" }
+    var endlessLapKey: String { "hoyo_endlessLaps_\(rawValue)" }
 
     /// Score needed for each medal, tuned per course rather than shared — the same
     /// number meant very different things on three courses with different income.
@@ -180,6 +192,8 @@ struct HudSnapshot: Equatable {
     var nitroActive = false
     var invuln = false             // post-hit grace period, blinks the car
     var comboLeft: Double = 0      // 1…0, how much of the combo window is left
+    var lap = 1                    // endless only
+    var lapFlash: Double = 0       // white wash that hides the lap teleport
     var pendingStyle = 0           // drift points at risk right now
     var timeText = "0:00.0"
 }
@@ -237,6 +251,10 @@ final class GameState: ObservableObject {
     }
 
     /// Which course the player has picked, and which one is actually loaded.
+    @Published var mode: GameMode = GameMode(
+        rawValue: UserDefaults.standard.integer(forKey: "hoyo_mode")) ?? .race {
+        didSet { UserDefaults.standard.set(mode.rawValue, forKey: "hoyo_mode") }
+    }
     @Published var selectedStage: Stage = .cordillera
     @Published var loadedStage: Stage = .cordillera
     /// Set on the end screen when finishing a stage opened the next one.
@@ -246,6 +264,14 @@ final class GameState: ObservableObject {
     @Published var regionLabel = ""
     @Published var regionBlurb = ""
     @Published var regionID = 0
+
+    @Published var lapLabel = ""
+    @Published var lapID = 0
+
+    func showLap(_ n: Int) {
+        lapLabel = "VUELTA \(n)"
+        lapID += 1
+    }
 
     func showRegion(_ r: Region) {
         regionLabel = r.label
@@ -259,7 +285,7 @@ final class GameState: ObservableObject {
     }
 
     // records
-    @Published var recordLine: String = GameState.makeRecordLine(for: .cordillera)
+    @Published var recordLine: String = ""
     @Published var newRecordScore = false
     @Published var newRecordTime = false
 
@@ -272,6 +298,7 @@ final class GameState: ObservableObject {
     @Published var statMedal: Medal = .none
     @Published var statSeed: UInt64 = 0
     @Published var statFinished = false
+    @Published var statLaps = 1
 
     let input = GameInput()
 
@@ -293,18 +320,26 @@ final class GameState: ObservableObject {
     }
 
     func refreshRecordLine() {
-        recordLine = Self.makeRecordLine(for: selectedStage)
+        recordLine = Self.makeRecordLine(for: selectedStage, mode: mode)
     }
 
-    static func makeRecordLine(for stage: Stage) -> String {
-        let best = UserDefaults.standard.integer(forKey: stage.bestScoreKey)
-        let time = UserDefaults.standard.double(forKey: stage.bestTimeKey)
+    static func makeRecordLine(for stage: Stage, mode: GameMode) -> String {
+        let d = UserDefaults.standard
         var parts: [String] = []
-        if best > 0 { parts.append("RÉCORD \(best) pts") }
-        if time > 0 {
-            let mm = Int(time) / 60
-            let ss = time.truncatingRemainder(dividingBy: 60)
-            parts.append(String(format: "MEJOR TIEMPO %d:%04.1f", mm, ss))
+        if mode == .endless {
+            let best = d.integer(forKey: stage.endlessScoreKey)
+            let laps = d.integer(forKey: stage.endlessLapKey)
+            if best > 0 { parts.append("RÉCORD \(best) pts") }
+            if laps > 0 { parts.append("\(laps) VUELTAS") }
+        } else {
+            let best = d.integer(forKey: stage.bestScoreKey)
+            let time = d.double(forKey: stage.bestTimeKey)
+            if best > 0 { parts.append("RÉCORD \(best) pts") }
+            if time > 0 {
+                let mm = Int(time) / 60
+                let ss = time.truncatingRemainder(dividingBy: 60)
+                parts.append(String(format: "MEJOR TIEMPO %d:%04.1f", mm, ss))
+            }
         }
         return parts.joined(separator: "  ·  ")
     }
