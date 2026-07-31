@@ -3,9 +3,11 @@ import Combine
 import UIKit
 
 enum GamePhase {
-    /// `arrival` is the pre-race beat: the saucer drops out of the sky onto the
-    /// mountain road before the countdown starts.
-    case intro, arrival, countdown, playing, finished, dead
+    /// `cutscene` is the one-shot escape from the base, played on first launch and
+    /// on demand after that. `intro` is the title screen, which uses the same set
+    /// as a looping backdrop. `arrival` is the pre-race beat: the saucer drops out
+    /// of the sky onto the road before the countdown starts.
+    case cutscene, intro, arrival, countdown, playing, finished, dead
 }
 
 /// How a course is played.
@@ -276,6 +278,13 @@ final class GameState: ObservableObject {
         showHowTo = false
         UserDefaults.standard.set(true, forKey: "hoyo_sawHowTo")
     }
+
+    /// The escape plays itself on a first launch and is opt-in after that.
+    var sawIntro: Bool { UserDefaults.standard.bool(forKey: "hoyo_sawIntro") }
+    func markIntroSeen() { UserDefaults.standard.set(true, forKey: "hoyo_sawIntro") }
+    /// Set by a tap during the cutscene, and by the title's replay button.
+    @Published var skipCutscene = false
+    @Published var requestCutscene = false
 
     /// Which course the player has picked, and which one is actually loaded.
     @Published var mode: GameMode = GameMode(

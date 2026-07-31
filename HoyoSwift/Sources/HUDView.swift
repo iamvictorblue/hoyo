@@ -164,6 +164,8 @@ struct HUDView: View {
             }
 
             switch state.phase {
+            case .cutscene:
+                CutsceneOverlay(state: state)
             case .intro:
                 IntroOverlay(state: state, tilt: tilt)
                 if state.showHowTo && state.sceneReady { HowToCard(state: state) }
@@ -1010,6 +1012,47 @@ struct CapsuleButton: View {
 
 // MARK: - overlays
 
+/// Letterbox, a skip affordance, and nothing else — the shot is the content. The
+/// whole surface is the skip target, so nobody has to hunt for a small button.
+struct CutsceneOverlay: View {
+    @ObservedObject var state: GameState
+    @State private var showSkip = false
+
+    var body: some View {
+        ZStack {
+            VStack {
+                Rectangle().fill(.black).frame(height: 42)
+                Spacer()
+                Rectangle().fill(.black).frame(height: 42)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            if showSkip {
+                Text("TOCA PA' SEGUIR")
+                    .font(.label(12)).tracking(3)
+                    .foregroundStyle(.white.opacity(0.62))
+                    .padding(.vertical, 7).padding(.horizontal, 15)
+                    .background(.black.opacity(0.4), in: Capsule())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: .bottomTrailing)
+                    .padding(.trailing, 26).padding(.bottom, 26)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { state.skipCutscene = true }
+        // Hold the prompt back a beat: offering an exit before the shot has begun
+        // invites people to leave before they have seen anything.
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                withAnimation(.easeIn(duration: 0.4)) { showSkip = true }
+            }
+        }
+    }
+}
+
 struct IntroOverlay: View {
     @ObservedObject var state: GameState
     let tilt: TiltObserver
@@ -1138,6 +1181,17 @@ struct IntroOverlay: View {
                             }
                         }
                         .padding(.top, 20)
+
+                        // Quiet on purpose: the title was deliberately kept simple,
+                        // so replaying the escape is a muted line, not a button
+                        // competing with ARRANCAR.
+                        Button { state.requestCutscene = true } label: {
+                            Text("VER LA FUGA")
+                                .font(.label(10)).tracking(2)
+                                .foregroundStyle(.white.opacity(0.38))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 12)
                     } else {
                         LoadingLabel().padding(.top, 24)
                     }

@@ -378,6 +378,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// bright sea-peach on the coast.
     private var arrivalT: Float = 0
     private var introT: Float = 0
+    private var cutsceneT: Float = 0
     private var introSet = SCNNode()
     private let introUfo = SCNNode()
     private var introUfoRing = SCNNode()
@@ -2433,8 +2434,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Breaks cover quickly, then spends the back half of the loop climbing away
     /// through the right of frame, where the centred title block isn't.
     private static let ufoPath: [IntroKey] = [
-        IntroKey(t: 0.0,  p: simd_float3(-40,  4.5, -26)),  // sitting in the hangar mouth
-        IntroKey(t: 3.0,  p: simd_float3(-38,  7.0, -25)),  // spooling up
+        IntroKey(t: 0.0,  p: simd_float3(-40,  2.3, -26)),  // down in the hangar mouth
+        IntroKey(t: 3.0,  p: simd_float3(-38,  6.2, -25)),  // spooling up, clears the roof
         IntroKey(t: 4.4,  p: simd_float3(-31, 15.0, -23)),  // breaks cover
         IntroKey(t: 6.8,  p: simd_float3(-14, 24.0, -10)),  // hauls right, over the wire
         IntroKey(t: 11.5, p: simd_float3( 16, 34.0,  22))   // straight over the camera
@@ -2443,6 +2444,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// fixed frame with a slow drift reads like a poster and always works.
     private static let introCam = simd_float3(2, 12, 42)
     private static let introBaseLook = simd_float3(-24, 11, -26)
+
+    // ---- one-shot cutscene ----
+    /// Runs slightly past the craft path's 11.5 s so the last beat can breathe
+    /// before the cut to the title.
+    private static let cutsceneDur: Float = 12.4
+    private static let alarmAt: Float = 2.2      // klaxon, lights go red
+    private static let lockOnAt: Float = 4.6     // searchlights stop sweeping
+    /// Camera moves for real here, unlike the title's locked-off frame: in close on
+    /// the hangar while nothing is happening, then pulling back and climbing as the
+    /// craft does, so the escape has somewhere to go.
+    private static let cutsceneCam: [IntroKey] = [
+        IntroKey(t: 0.0,  p: simd_float3(-14,  7, 15)),  // medium on the hangar
+        IntroKey(t: 2.2,  p: simd_float3(-10,  8, 21)),  // eases back on the alarm
+        IntroKey(t: 4.6,  p: simd_float3( -4, 11, 28)),  // it breaks cover
+        IntroKey(t: 8.0,  p: simd_float3(  0, 14, 35)),
+        IntroKey(t: 12.4, p: introCam)                   // exactly the title's frame
+    ]
 
     private static func samplePath(_ keys: [IntroKey], _ t: Float) -> simd_float3 {
         if t <= keys[0].t { return keys[0].p }
@@ -2648,6 +2666,102 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
 
     /// Drives the looping escape. Called from the `.intro` branch of the frame.
+    /// The one-shot escape. Same set and same craft path as the title backdrop, but
+    /// played once, with beats and a camera that moves, then handed to the title.
+    private func updateCutscene(_ dt: Float) {
+        cutsceneT += dt
+        let t = cutsceneT
+        let o = Self.introOrigin
+
+        // Desert dusk, until the klaxon turns the whole base red.
+        let alarm = Self.smoothStep(Self.alarmAt, Self.alarmAt + 0.45, t)
+        scene.fogColor = UIColor(red: CGFloat(0.84 + 0.16 * alarm),
+                                 green: CGFloat(0.62 - 0.36 * alarm),
+                                 blue: CGFloat(0.48 - 0.30 * alarm), alpha: 1)
+        // bars idle before the alarm and strobe hard after it
+        let barRate: Float = t < Self.alarmAt ? 3 : 11
+        let flash = sin(t * barRate) > 0
+        let hot: CGFloat = t < Self.alarmAt ? 1.1 : 2.6
+        policeRedMat.emission.intensity = flash ? hot : 0.05
+        policeBlueMat.emission.intensity = flash ? 0.05 : hot
+
+        let ufoLocal = Self.samplePath(Self.ufoPath, t)
+        let ufoWorld = o + ufoLocal
+        introUfo.simdPosition = ufoLocal
+        let ahead = Self.samplePath(Self.ufoPath, min(Self.introLoop, t + 0.12))
+        let vel = ahead - ufoLocal
+        let speed = simd_length(vel)
+        if speed > 0.001 {
+            let dir = vel / speed
+            introUfo.eulerAngles = SCNVector3(-dir.y * 0.5, atan2(dir.x, -dir.z), -dir.x * 0.42)
+        }
+        // the ring spins up with the alarm — it reads as the craft powering on
+        introUfoRing.eulerAngles.y += dt * (1.2 + 5.5 * alarm)
+
+        placeCutsceneCamera(t, ufoLocal: ufoLocal, alarm: alarm)
+
+        for (i, light) in searchlights.enumerated() {
+            let phase = Float(i) * 2.1
+            if t > Self.lockOnAt {
+                light.simdLook(at: ufoWorld, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
+            } else {
+                // lazy before the alarm, frantic after it
+                let rate: Float = t < Self.alarmAt ? 0.55 : 2.1
+                light.eulerAngles = SCNVector3(-0.85, sin(t * rate + phase) * 0.9, 0)
+            }
+        }
+
+        if t > 2.8 && t < 4.6 {
+            dustNode.simdPosition = o + simd_float3(ufoLocal.x, 0.3, ufoLocal.z)
+            dustSystem.birthRate = 90
+        } else if t < 0.2 || t > 4.6 {
+            dustSystem.birthRate = 0
+        }
+
+        if t >= Self.cutsceneDur || state.skipCutscene { endCutscene() }
+    }
+
+    /// Arms the escape from the top. Safe from the title at any time.
+    func startCutscene() {
+        cutsceneT = 0
+        introSet.isHidden = false
+        if let sky = introSky { scene.background.contents = sky }
+        introUfo.simdPosition = Self.samplePath(Self.ufoPath, 0)
+        placeCutsceneCamera(0, ufoLocal: Self.samplePath(Self.ufoPath, 0), alarm: 0)
+        phase = .cutscene
+        DispatchQueue.main.async {
+            self.state.skipCutscene = false
+            self.state.phase = .cutscene
+        }
+    }
+
+    /// Shared by the first frame and every later one: `attach` parks the camera at
+    /// the world origin, 6 km from the base, so anything that starts the cutscene
+    /// must place it in the same step or the opening frame renders black.
+    private func placeCutsceneCamera(_ t: Float, ufoLocal: simd_float3, alarm: Float) {
+        let o = Self.introOrigin
+        cameraNode.simdPosition = o + Self.samplePath(Self.cutsceneCam, t)
+        // Attention shifts from the hangar to the craft as it climbs, so the early
+        // beats hold on the base rather than tracking a saucer that has not moved.
+        let attention = Self.smoothStep(Self.alarmAt + 0.6, Self.lockOnAt + 1.0, t)
+        let look = simd_mix(Self.introBaseLook, ufoLocal, simd_float3(repeating: attention))
+        cameraNode.simdLook(at: o + look, up: simd_float3(0, 1, 0),
+                            localFront: simd_float3(0, 0, -1))
+        cameraNode.camera?.fieldOfView = CGFloat(52 + 12 * alarm)
+    }
+
+    private func endCutscene() {
+        cutsceneT = 0
+        introT = 0
+        dustSystem.birthRate = 0
+        phase = .intro
+        DispatchQueue.main.async {
+            self.state.skipCutscene = false
+            self.state.markIntroSeen()
+            self.state.phase = .intro
+        }
+    }
+
     private func updateIntro(_ dt: Float) {
         introT += dt
         if introT > Self.introLoop { introT -= Self.introLoop }
@@ -3183,6 +3297,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if state.requestStart { state.requestStart = false; sound.start(); resetGame() }
         if state.requestReset { state.requestReset = false; resetGame() }
         if state.requestTitle { state.requestTitle = false; returnToTitle() }
+        if state.requestCutscene {
+            state.requestCutscene = false
+            startCutscene()
+        }
 
         if let n = oceanNormal {
             let fx = Float(time * 0.015).truncatingRemainder(dividingBy: 1)
@@ -3197,6 +3315,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
 
         switch phase {
+        case .cutscene:
+            updateCutscene(dt)
+            return
         case .intro:
             updateIntro(dt)
             return

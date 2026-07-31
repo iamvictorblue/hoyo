@@ -125,6 +125,10 @@ struct GameSceneView: UIViewRepresentable {
             state.refreshRecordLine()
             if args.contains("-autoplay") {
                 state.requestStart = true
+            } else if !state.sawIntro || args.contains("-intro") {
+                // First launch only: the escape explains why a saucer is racing
+                // potholes. `-intro` replays it for testing.
+                controller.startCutscene()
             }
         }
         return view
