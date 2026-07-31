@@ -2859,7 +2859,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         playerNode.simdPosition = pos + simd_float3(0, 0.02, 0)
         playerNode.simdLook(at: pos + tan, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
         let seed = runSeed
+        let st = Self.currentStage
         DispatchQueue.main.async {
+            self.sound.setStage(st)
             self.state.phase = .arrival
             self.state.paused = false
             self.state.combo = 0
@@ -2885,6 +2887,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if let sky = introSky { scene.background.contents = sky }
         sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
         sound.nitroLevel = 0; sound.rumbleLevel = 0
+        sound.forestLevel = 0; sound.surfLevel = 0
         streakSystem.birthRate = 0; smokeSystem.birthRate = 0
         sparkSystem.birthRate = 0; dustSystem.birthRate = 0
         clearSkids()
@@ -2981,6 +2984,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if !dead { sound.playCoqui() } else { sound.playThunk() }
         sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
         sound.nitroLevel = 0; sound.rumbleLevel = 0
+        sound.forestLevel = 0; sound.surfLevel = 0
         streakSystem.birthRate = 0
         smokeSystem.birthRate = 0
         sparkSystem.birthRate = 0
@@ -3588,13 +3592,29 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // Coquís calling in the background. On the island at dusk this is the
         // ambience, not a sound effect — sparse in town, constant in the forest.
-        coquiT -= dt
-        if coquiT <= 0 {
-            sound.playCoquiAmbient()
-            let inTown = Self.currentStage != .yunque
-                && Region.at(progress: s / Self.total) == .pueblo
-            let base: Float = Self.currentStage == .yunque ? 1.4 : (inTown ? 5.0 : 2.4)
-            coquiT = base + Float.random(in: 0...2.4)
+        switch Self.currentStage {
+        case .yunque:
+            sound.forestLevel = 0.05
+            sound.surfLevel = 0
+        case .playa:
+            sound.forestLevel = 0
+            sound.surfLevel = 0.045
+        case .cordillera:
+            sound.forestLevel = 0
+            sound.surfLevel = 0
+        }
+
+        // Coquís call in the forest and up on the mountain. The shore has surf and
+        // gaviotas instead — a coquí on open sand at midday would be wrong.
+        if Self.currentStage != .playa {
+            coquiT -= dt
+            if coquiT <= 0 {
+                sound.playCoquiAmbient()
+                let inTown = Self.currentStage == .cordillera
+                    && Region.at(progress: s / Self.total) == .pueblo
+                let base: Float = Self.currentStage == .yunque ? 1.4 : (inTown ? 5.0 : 2.4)
+                coquiT = base + Float.random(in: 0...2.4)
+            }
         }
 
         // ----- audio -----

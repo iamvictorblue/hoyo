@@ -24,6 +24,10 @@ final class SoundEngine: ObservableObject {
     var nitroLevel: Double = 0
     /// Rumble-strip / off-asphalt buzz: lowpassed noise gated at ~34 Hz.
     var rumbleLevel: Double = 0
+    /// Canopy bed for El Yunque: fine highpassed hiss, like leaves and light rain.
+    var forestLevel: Double = 0
+    /// Shore bed for Isla Verde: lowpassed noise breathing on a ~9 s swell.
+    var surfLevel: Double = 0
 
     private var coquiBuffer: AVAudioPCMBuffer?
     private var thunkBuffer: AVAudioPCMBuffer?
@@ -32,6 +36,30 @@ final class SoundEngine: ObservableObject {
     private var beepHiBuffer: AVAudioPCMBuffer?
     private var jumpBuffer: AVAudioPCMBuffer?
     private var zapBuffer: AVAudioPCMBuffer?
+    private var cordilleraPhrase: AVAudioPCMBuffer?
+    private var stagePhrases: [Int: AVAudioPCMBuffer] = [:]
+    private var loadedPhrase: Stage?
+
+    /// Swaps the groove and the ambient bed to match the course. Phrases are
+    /// rendered on first use and kept — each is a couple of seconds of PCM.
+    func setStage(_ stage: Stage) {
+        guard started, loadedPhrase != stage else { return }
+        loadedPhrase = stage
+        let buf: AVAudioPCMBuffer?
+        if stage == .cordillera {
+            buf = cordilleraPhrase
+        } else if let cached = stagePhrases[stage.rawValue] {
+            buf = cached
+        } else {
+            let made = renderPhrase(for: stage)
+            if let made { stagePhrases[stage.rawValue] = made }
+            buf = made
+        }
+        guard let buf else { return }
+        musicPlayer.stop()
+        musicPlayer.scheduleBuffer(buf, at: nil, options: .loops)
+        musicPlayer.play()
+    }
 
     func start() {
         guard !started else { return }
@@ -47,6 +75,7 @@ final class SoundEngine: ObservableObject {
         var phase1 = 0.0, phase2 = 0.0, rumblePhase = 0.0
         var lpEngine = 0.0, lpWind = 0.0, bpSkid = 0.0, lastNoise = 0.0
         var lpRumble = 0.0
+        var lpSurf = 0.0, hpForest = 0.0, lastForest = 0.0, surfPhase = 0.0
         var rng = SystemRandomNumberGenerator()
 
         let node = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
@@ -58,6 +87,8 @@ final class SoundEngine: ObservableObject {
             let eLvl = self.engineLevel, wLvl = self.windLevel
             let sLvl = self.skidLevel, nLvl = self.nitroLevel
             let rLvl = self.rumbleLevel
+            let fLvl = self.forestLevel, suLvl = self.surfLevel
+            let surfStep = 1.0 / (9.0 * self.sampleRate)
             let rumbleStep = 34.0 / self.sampleRate
             for frame in 0..<Int(frameCount) {
                 phase1 += f1; if phase1 >= 1 { phase1 -= 1 }
@@ -78,9 +109,19 @@ final class SoundEngine: ObservableObject {
                 rumblePhase += rumbleStep; if rumblePhase >= 1 { rumblePhase -= 1 }
                 let chop = rumblePhase < 0.55 ? 1.0 : 0.25
 
+                // canopy: bright hiss, no low end
+                hpForest = noise - lastForest
+                lastForest = noise
+                // shore: dark noise on a slow swell, so it breathes rather than sits
+                lpSurf += 0.012 * (noise - lpSurf)
+                surfPhase += surfStep; if surfPhase >= 1 { surfPhase -= 1 }
+                let swell = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(2 * .pi * surfPhase), 2)
+
                 let sample = lpEngine * eLvl + lpWind * wLvl * 2.2
                            + skid * sLvl + hp * nLvl
                            + lpRumble * rLvl * chop * 3.0
+                           + hpForest * fLvl * 0.5
+                           + lpSurf * suLvl * swell * 5.0
                 buf[frame] = Float(max(-1, min(1, sample)))
             }
             return noErr
@@ -104,15 +145,16 @@ final class SoundEngine: ObservableObject {
         beepHiBuffer = renderBeep(freq: 1420, dur: 0.3)
         jumpBuffer = renderJump()
         zapBuffer = renderZap()
-        let bar = renderDembowPhrase()
+        cordilleraPhrase = renderPhrase(for: .cordillera)
 
         do {
             try engine.start()
             musicPlayer.volume = 0.28
             fxPlayer.volume = 1.0
-            if let bar = bar {
+            if let bar = cordilleraPhrase {
                 musicPlayer.scheduleBuffer(bar, at: nil, options: .loops)
                 musicPlayer.play()
+                loadedPhrase = .cordillera
             }
             fxPlayer.volume = 1.0
             ambientPlayer.volume = 0.22
@@ -247,25 +289,51 @@ final class SoundEngine: ObservableObject {
     /// Four bars of dembow at 108 BPM rather than one. A single looping bar is the
     /// most fatiguing thing you can put under a game — the bass walks across the
     /// phrase and the last bar carries a snare fill, so it breathes.
-    private func renderDembowPhrase() -> AVAudioPCMBuffer? {
-        let stepDur = 60.0 / 108.0 / 4.0
+    /// One looping phrase per course.
+    ///
+    /// Guajataca keeps the dembow the game shipped with. El Yunque drops the tempo
+    /// and most of the kicks and hands the groove to wood and shaker, so it reads as
+    /// something played rather than programmed. Isla Verde lifts the tempo, thins the
+    /// low end and puts the weight on offbeats.
+    private func renderPhrase(for stage: Stage) -> AVAudioPCMBuffer? {
+        let bpm: Double
+        switch stage {
+        case .cordillera: bpm = 108
+        case .yunque:     bpm = 96
+        case .playa:      bpm = 116
+        }
+        let stepDur = 60.0 / bpm / 4.0
         let bars = 4
         let barDur = stepDur * 16
         guard let (buf, d, n) = makeBuffer(seconds: barDur * Double(bars)) else { return nil }
         // a walking bass line across the phrase instead of the same four notes
-        let bassLine: [[Double]] = [
+        var bassLine: [[Double]] = [
             [55, 55, 65.41, 49],
             [55, 55, 73.42, 49],
             [49, 49, 65.41, 58.27],
             [55, 65.41, 73.42, 82.41]
         ]
+        // the beach sits a fifth up and lighter; the forest drops and simplifies
+        if stage == .playa {
+            bassLine = bassLine.map { $0.map { $0 * 1.5 } }
+        } else if stage == .yunque {
+            bassLine = [[49, 49, 55, 49], [49, 49, 58.27, 49],
+                        [43.65, 43.65, 55, 49], [49, 55, 58.27, 49]]
+        }
+        let kickSteps: [Int]
+        let bassAmp: Double
+        switch stage {
+        case .cordillera: kickSteps = [0, 4, 8, 12]; bassAmp = 0.22
+        case .yunque:     kickSteps = [0, 8];        bassAmp = 0.13
+        case .playa:      kickSteps = [0, 6, 8];     bassAmp = 0.15
+        }
         var rng = SystemRandomNumberGenerator()
 
         for bar in 0..<bars {
         let barOffset = Double(bar) * barDur
         let bass = bassLine[bar]
 
-        for (k, step) in [0, 4, 8, 12].enumerated() {
+        for (k, step) in kickSteps.enumerated() {
             let t0 = barOffset + Double(step) * stepDur
             addSweep(d, n, start: t0, dur: 0.14, f0: 135, f1: 42, amp: 0.8)
             // bass: filtered saw approximated by first 3 harmonics
@@ -279,11 +347,18 @@ final class SoundEngine: ObservableObject {
                 let env = min(t / 0.015, 1) * max(0, 1 - t / 0.3)
                 var s = 0.0
                 for h in 1...3 { s += sin(2 * .pi * f * Double(h) * t) / Double(h) }
-                d[i] += Float(s * env * 0.22)
+                d[i] += Float(s * env * bassAmp)
             }
         }
-        // the fourth bar gets extra snares — a turnaround into the next phrase
-        let snareSteps = bar == bars - 1 ? [3, 6, 11, 13, 14, 15] : [3, 6, 11, 14]
+        // the fourth bar gets extra hits — a turnaround into the next phrase
+        var snareSteps = bar == bars - 1 ? [3, 6, 11, 13, 14, 15] : [3, 6, 11, 14]
+        if stage == .yunque {
+            // busier and syncopated, like hands on a drum rather than a snare
+            snareSteps = bar == bars - 1 ? [2, 3, 6, 7, 10, 11, 13, 14, 15]
+                                         : [2, 3, 6, 10, 11, 14]
+        } else if stage == .playa {
+            snareSteps = bar == bars - 1 ? [3, 7, 11, 13, 15] : [3, 7, 11, 15]
+        }
         for step in snareSteps {
             let i0 = Int((barOffset + Double(step) * stepDur) * sampleRate)
             var bp = 0.0
@@ -294,19 +369,42 @@ final class SoundEngine: ObservableObject {
                 let env = max(0, 1 - t / 0.11)
                 let noise = Double.random(in: -1...1, using: &rng)
                 bp += 0.3 * (noise - bp)
-                d[i] += Float(((noise - bp) * 0.5 + sin(2 * .pi * 210 * t) * 0.35) * env * env * 0.45)
+                switch stage {
+                case .yunque:
+                    // wood: mostly pitched body, very little noise
+                    d[i] += Float(((noise - bp) * 0.16
+                                   + sin(2 * .pi * 340 * t) * 0.5
+                                   + sin(2 * .pi * 505 * t) * 0.22)
+                                  * env * env * 0.34)
+                case .playa:
+                    // rim/clave: bright and short
+                    d[i] += Float(((noise - bp) * 0.28
+                                   + sin(2 * .pi * 900 * t) * 0.45)
+                                  * env * env * env * 0.30)
+                case .cordillera:
+                    d[i] += Float(((noise - bp) * 0.5 + sin(2 * .pi * 210 * t) * 0.35)
+                                  * env * env * 0.45)
+                }
             }
         }
-        for step in [2, 6, 10, 14] {
+        let hatSteps: [Int]
+        switch stage {
+        case .cordillera: hatSteps = [2, 6, 10, 14]
+        case .yunque:     hatSteps = [1, 3, 5, 7, 9, 11, 13, 15]   // shaker, every off
+        case .playa:      hatSteps = [2, 4, 6, 10, 12, 14]
+        }
+        let hatLen = stage == .yunque ? 0.055 : 0.04
+        let hatAmp = stage == .yunque ? 0.075 : (stage == .playa ? 0.10 : 0.12)
+        for step in hatSteps {
             let i0 = Int((barOffset + Double(step) * stepDur) * sampleRate)
             var last = 0.0
-            for j in 0..<Int(0.04 * sampleRate) {
+            for j in 0..<Int(hatLen * sampleRate) {
                 let i = i0 + j
                 if i >= n { break }
                 let t = Double(j) / sampleRate
-                let env = max(0, 1 - t / 0.04)
+                let env = max(0, 1 - t / hatLen)
                 let noise = Double.random(in: -1...1, using: &rng)
-                d[i] += Float((noise - last) * env * 0.12)
+                d[i] += Float((noise - last) * env * hatAmp)
                 last = noise
             }
         }
