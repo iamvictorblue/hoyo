@@ -402,6 +402,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private let introUfo = SCNNode()
     private var introUfoRing = SCNNode()
     private var searchlights: [SCNNode] = []
+    private var introSea: SCNNode?
+    private var introFoam: SCNNode?
+    private var cityBeacons: [SCNNode] = []
+    private var lighthouse: SCNNode?
 
     private static let regionFog: [simd_float3] = [
         simd_float3(0.86, 0.58, 0.62),
@@ -622,14 +626,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// renderer; building detached does not.
     func buildWorld() -> (world: SCNNode, sky: [UIImage]) {
         let world = SCNNode()
-        // The intro set is a Nevada desert, so it always sits under the dusk sky;
-        // a stage with its own sky swaps in when the race starts.
+        // The intro set is a night coastline, so it sits under a night sky; the
+        // stage's own sky swaps in when the race starts. Cordillera races under the
+        // sunset, which is why it is built here rather than only in the switch.
+        introSky = Textures.skyCubemap(.night)
         let sky = Textures.skyCubemap(.sunset)
-        introSky = sky
+        // Every stage sets one, including cordillera: the scene now opens on the
+        // night intro sky, so a nil here would leave the race under it.
         switch Self.currentStage {
         case .yunque: raceSky = Textures.skyCubemap(.rainforest)
         case .playa:  raceSky = Textures.skyCubemap(.tropical)
-        case .cordillera: raceSky = nil
+        case .cordillera: raceSky = sky
         }
 
         let ambient = SCNNode()
@@ -757,6 +764,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         bolts.removeAll(); patchNodes.removeAll()
         skidNodes.removeAll(); skidAge.removeAll()
         searchlights.removeAll()
+        cityBeacons.removeAll()
+        introSea = nil; introFoam = nil; lighthouse = nil
         flameNodes.removeAll(); frontWheelNodes.removeAll(); spinWheelNodes.removeAll()
         // these nodes persist across stages, so their children must be shed
         for n in [chassisNode, playerNode, dustNode, sparkNode, introUfo] {
@@ -814,11 +823,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             scene.fogDensityExponent = 1.6
             scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
         }
-        scene.background.contents = sky
+        // Starts on the intro set, so it opens under the night sky; `resetGame`
+        // swaps in the race sky when a run begins.
+        scene.background.contents = introSky ?? sky
         // Same cubemap as the image-based lighting source, so the car's paint and
         // glass actually reflect the sunset instead of a flat specular dot. Only
         // the physicallyBased materials sample it.
-        scene.lightingEnvironment.contents = sky
+        // Matches the background. Lighting the night coastline with the sunset
+        // cubemap turned the whole set orange.
+        scene.lightingEnvironment.contents = introSky ?? sky
         scene.lightingEnvironment.intensity = 0.85
         // `cameraNode` is a long-lived node that SCNView holds as its pointOfView, so
         // it must only ever be touched on the main thread. The camera *object* is
@@ -2576,38 +2589,61 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private static let introOrigin = simd_float3(6000, 0, 6000)
     private static let introLoop: Float = 11.5
 
-    /// The craft climbs out of the hangar at lower-left and exits upper-right, so
-    /// it stays clear of the centred title block instead of hiding behind it.
-    /// Breaks cover quickly, then spends the back half of the loop climbing away
-    /// through the right of frame, where the centred title block isn't.
+    /// The arrival, in world space. It comes down out of the cloud deck far out to
+    /// sea, sheds altitude across the bay, skims the water, crosses the beach and
+    /// rises over the city — where the title finds it.
     private static let ufoPath: [IntroKey] = [
-        IntroKey(t: 0.0,  p: simd_float3(-40,  2.3, -26)),  // down in the hangar mouth
-        IntroKey(t: 3.0,  p: simd_float3(-38,  6.2, -25)),  // spooling up, clears the roof
-        IntroKey(t: 4.4,  p: simd_float3(-31, 15.0, -23)),  // breaks cover
-        IntroKey(t: 6.8,  p: simd_float3(-14, 24.0, -10)),  // hauls right, over the wire
-        IntroKey(t: 11.5, p: simd_float3( 16, 34.0,  22))   // straight over the camera
+        IntroKey(t: 0.0,  p: simd_float3(-520, 430, 1500)),   // above the deck, inbound
+        IntroKey(t: 2.6,  p: simd_float3(-370, 268, 1080)),   // punches cloud
+        IntroKey(t: 5.4,  p: simd_float3(-190,  96,  640)),   // bay opens up below
+        IntroKey(t: 7.6,  p: simd_float3( -80,  22,  330)),   // levels off at sea level
+        IntroKey(t: 9.6,  p: simd_float3( -22,  14,  120)),   // skims in toward the sand
+        IntroKey(t: 11.2, p: simd_float3(  26,  30,   34)),   // crosses the surf
+        IntroKey(t: 12.4, p: simd_float3(  52,  44,   12))    // settles into title framing
     ]
-    /// Locked-off wide shot. A moving camera was impossible to compose blind; a
-    /// fixed frame with a slow drift reads like a poster and always works.
-    private static let introCam = simd_float3(2, 12, 42)
-    private static let introBaseLook = simd_float3(-24, 11, -26)
+
+    /// One camera setup per beat. Cutting between framings is both more filmic than
+    /// a single continuous move and far easier to compose blind — each shot only has
+    /// to work for its own two seconds.
+    private struct Shot {
+        let t0: Float, t1: Float
+        let from: simd_float3, to: simd_float3          // camera travel
+        let lookFrom: simd_float3, lookTo: simd_float3  // aim travel
+        let fov: CGFloat
+        /// Track the craft instead of the fixed aim, 0…1.
+        let follow: Float
+    }
+    private static let shots: [Shot] = [
+        // 1. wide on the cloud deck. The craft is a speck against sky, then isn't.
+        Shot(t0: 0.0, t1: 3.4,
+             from: simd_float3(-190, 396, 830), to: simd_float3(-140, 366, 760),
+             lookFrom: simd_float3(-430, 300, 1180), lookTo: simd_float3(-380, 270, 1080),
+             fov: 46, follow: 0.78),
+        // 2. behind and above, as the bay and the skyline resolve underneath
+        Shot(t0: 3.4, t1: 7.0,
+             from: simd_float3(-330, 214, 900), to: simd_float3(-186, 118, 560),
+             lookFrom: simd_float3(-120, 40, 120), lookTo: simd_float3(-60, 24, -60),
+             fov: 58, follow: 0.5),
+        // 3. low on the water as it comes past, city lights behind it
+        Shot(t0: 7.0, t1: 9.9,
+             from: simd_float3(-168, 30, 236), to: simd_float3(-74, 22, 136),
+             lookFrom: simd_float3(-60, 18, 60), lookTo: simd_float3(-30, 14, -40),
+             fov: 64, follow: 0.82),
+        // 4. from the shallows, crossing the surf and rising into the title frame
+        Shot(t0: 9.9, t1: 12.4,
+             from: simd_float3(54, 26, 120), to: introCam,
+             lookFrom: simd_float3(-6, 20, 20), lookTo: introBaseLook,
+             fov: 60, follow: 0.55)
+    ]
+
+    /// Where the title screen sits once the arrival is over: over the sand looking
+    /// back at the skyline, with the craft hovering off to the right of the type.
+    private static let introCam = simd_float3(30, 40, 78)
+    private static let introBaseLook = simd_float3(-40, 40, -180)
 
     // ---- one-shot cutscene ----
-    /// Runs slightly past the craft path's 11.5 s so the last beat can breathe
-    /// before the cut to the title.
     private static let cutsceneDur: Float = 12.4
-    private static let alarmAt: Float = 2.2      // klaxon, lights go red
-    private static let lockOnAt: Float = 4.6     // searchlights stop sweeping
-    /// Camera moves for real here, unlike the title's locked-off frame: in close on
-    /// the hangar while nothing is happening, then pulling back and climbing as the
-    /// craft does, so the escape has somewhere to go.
-    private static let cutsceneCam: [IntroKey] = [
-        IntroKey(t: 0.0,  p: simd_float3(-14,  7, 15)),  // medium on the hangar
-        IntroKey(t: 2.2,  p: simd_float3(-10,  8, 21)),  // eases back on the alarm
-        IntroKey(t: 4.6,  p: simd_float3( -4, 11, 28)),  // it breaks cover
-        IntroKey(t: 8.0,  p: simd_float3(  0, 14, 35)),
-        IntroKey(t: 12.4, p: introCam)                   // exactly the title's frame
-    ]
+    private static let touchSea: Float = 7.6     // levels off just above the water
 
     private static func samplePath(_ keys: [IntroKey], _ t: Float) -> simd_float3 {
         if t <= keys[0].t { return keys[0].p }
@@ -2622,135 +2658,232 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return keys[keys.count - 1].p
     }
 
+    /// The night coastline the craft arrives over. Replaces the Area 51 desert:
+    /// a grey hangar in flat sand had nothing to do with a game whose whole
+    /// identity is Puerto Rico, and a dark sea under a moon gives the lighting
+    /// something to do. Doubles as the title backdrop.
     private func buildIntroSet(_ parent: SCNNode) {
         let set = SCNNode()
         set.simdPosition = Self.introOrigin
 
-        // desert floor
-        let groundMat = SCNMaterial()
-        groundMat.lightingModel = .lambert
-        groundMat.diffuse.contents = Self.groundTexture
-        groundMat.diffuse.wrapS = .repeat
-        groundMat.diffuse.wrapT = .repeat
-        groundMat.diffuse.contentsTransform = SCNMatrix4MakeScale(90, 90, 1)
-        groundMat.multiply.contents = UIColor(red: 0.86, green: 0.72, blue: 0.50, alpha: 1)
-        let ground = SCNNode(geometry: SCNPlane(width: 1400, height: 1400))
-        ground.geometry!.materials = [groundMat]
-        ground.eulerAngles.x = -.pi / 2
-        ground.castsShadow = false
-        set.addChildNode(ground)
+        // ---- sea ----
+        // PBR and nearly smooth so it mirrors the moon and the craft's own glow;
+        // the normal map is the only thing giving it surface.
+        let seaMat = SCNMaterial()
+        seaMat.lightingModel = .physicallyBased
+        seaMat.diffuse.contents = UIColor(red: 0.004, green: 0.011, blue: 0.026, alpha: 1)
+        seaMat.metalness.contents = 0.0
+        seaMat.roughness.contents = 0.30
+        seaMat.normal.contents = Textures.waterNormal()
+        seaMat.normal.wrapS = .repeat
+        seaMat.normal.wrapT = .repeat
+        seaMat.normal.contentsTransform = SCNMatrix4MakeScale(620, 620, 1)
+        seaMat.normal.intensity = 1.6
+        let sea = SCNNode(geometry: SCNPlane(width: 5200, height: 5200))
+        sea.geometry!.materials = [seaMat]
+        sea.eulerAngles.x = -.pi / 2
+        sea.castsShadow = false
+        set.addChildNode(sea)
+        introSea = sea
 
-        // hangar: box plus a barrel roof
-        let wallMat = lambert(UIColor(white: 0.52, alpha: 1))
-        let hangar = SCNNode(geometry: SCNBox(width: 34, height: 11, length: 20, chamferRadius: 0))
-        hangar.geometry!.materials = [wallMat]
-        hangar.position = SCNVector3(-38, 5.5, -34)
-        set.addChildNode(hangar)
-        let roof = SCNNode(geometry: SCNCylinder(radius: 10.2, height: 34))
-        roof.geometry!.materials = [lambert(UIColor(white: 0.60, alpha: 1))]
-        roof.eulerAngles.z = .pi / 2
-        roof.position = SCNVector3(-38, 11, -34)
-        set.addChildNode(roof)
-        // open doorway the craft slips out of
-        let doorway = SCNNode(geometry: SCNBox(width: 11, height: 9, length: 0.6, chamferRadius: 0))
-        doorway.geometry!.materials = [constant(UIColor(red: 0.03, green: 0.04, blue: 0.05, alpha: 1))]
-        doorway.position = SCNVector3(-40, 4.6, -23.8)
-        set.addChildNode(doorway)
+        // ---- the island: a dark landmass across the far side of the water ----
+        let landMat = lambert(UIColor(red: 0.020, green: 0.026, blue: 0.030, alpha: 1))
+        let land = SCNNode(geometry: SCNBox(width: 3000, height: 10, length: 1000,
+                                            chamferRadius: 0))
+        land.geometry!.materials = [landMat]
+        land.simdPosition = simd_float3(0, -3, -640)   // top sits at y = 2
+        set.addChildNode(land)
 
-        // perimeter fence
-        let fencePostGeo = SCNBox(width: 0.3, height: 4.4, length: 0.3, chamferRadius: 0)
-        fencePostGeo.materials = [lambert(UIColor(white: 0.44, alpha: 1))]
-        let meshMat = SCNMaterial()
-        meshMat.lightingModel = .constant
-        meshMat.diffuse.contents = UIColor(white: 0.72, alpha: 1)
-        meshMat.transparency = 0.16
-        meshMat.isDoubleSided = true
-        meshMat.writesToDepthBuffer = false
-        var fx: Float = -90
-        while fx <= 90 {
-            let post = SCNNode(geometry: fencePostGeo)
-            post.position = SCNVector3(fx, 2.2, 20)
-            set.addChildNode(post)
-            fx += 6
-        }
-        let mesh = SCNNode(geometry: SCNPlane(width: 180, height: 4.2))
-        mesh.geometry!.materials = [meshMat]
-        mesh.position = SCNVector3(0, 2.1, 20)
-        mesh.castsShadow = false
-        set.addChildNode(mesh)
+        // beach: a pale strip where the land meets the water
+        let sandMat = SCNMaterial()
+        sandMat.lightingModel = .lambert
+        sandMat.diffuse.contents = Textures.wetSand()
+        sandMat.diffuse.wrapS = .repeat
+        sandMat.diffuse.wrapT = .repeat
+        sandMat.diffuse.contentsTransform = SCNMatrix4MakeScale(60, 6, 1)
+        sandMat.multiply.contents = UIColor(red: 0.10, green: 0.105, blue: 0.125, alpha: 1)
+        let beach = SCNNode(geometry: SCNPlane(width: 2600, height: 130))
+        beach.geometry!.materials = [sandMat]
+        beach.eulerAngles.x = -.pi / 2
+        beach.simdPosition = simd_float3(0, 1.6, -118)
+        beach.castsShadow = false
+        set.addChildNode(beach)
 
-        // warning sign on the fence
-        let signMat = constant(.white)
-        signMat.diffuse.contents = Textures.banner(text: "AREA 51",
-            background: UIColor(red: 0.55, green: 0.09, blue: 0.10, alpha: 1))
-        signMat.isDoubleSided = true
-        let sign = SCNNode(geometry: SCNPlane(width: 7.5, height: 1.25))
-        sign.geometry!.materials = [signMat]
-        sign.position = SCNVector3(-15, 2.9, 19.8)
-        set.addChildNode(sign)
+        // surf line — additive foam where the water meets the sand
+        let foamMat = SCNMaterial()
+        foamMat.lightingModel = .constant
+        foamMat.diffuse.contents = Textures.softCircle()
+        foamMat.multiply.contents = UIColor(red: 0.55, green: 0.72, blue: 0.80, alpha: 1)
+        foamMat.blendMode = .add
+        foamMat.writesToDepthBuffer = false
+        let foam = SCNNode(geometry: SCNPlane(width: 2600, height: 46))
+        foam.geometry!.materials = [foamMat]
+        foam.eulerAngles.x = -.pi / 2
+        foam.simdPosition = simd_float3(0, 1.9, -52)
+        foam.castsShadow = false
+        set.addChildNode(foam)
+        introFoam = foam
 
-        // radio masts with red beacons
-        let mastMat = lambert(UIColor(white: 0.38, alpha: 1))
-        let beaconMat = constant(UIColor(red: 1, green: 0.15, blue: 0.12, alpha: 1))
-        beaconMat.emission.contents = UIColor(red: 1, green: 0.15, blue: 0.12, alpha: 1)
-        beaconMat.emission.intensity = 1.8
-        for mx in [Float(-46), Float(34)] {
-            let mast = SCNNode(geometry: SCNCylinder(radius: 0.34, height: 30))
-            mast.geometry!.materials = [mastMat]
-            mast.position = SCNVector3(mx, 15, -46)
-            set.addChildNode(mast)
-            let beacon = SCNNode(geometry: SCNSphere(radius: 0.7))
-            beacon.geometry!.materials = [beaconMat]
-            beacon.position = SCNVector3(mx, 30.4, -46)
-            set.addChildNode(beacon)
-        }
+        // ---- the city: blocks with lit windows, thickening toward the middle ----
+        let blockMat = lambert(UIColor(red: 0.055, green: 0.060, blue: 0.080, alpha: 1))
+        var cityRng = Lcg(90210)
+        for i in 0..<150 {
+            let bx: Float = (cityRng.next() - 0.5) * 2100
+            let bz: Float = -230 - cityRng.next() * 560
+            // taller toward the centre of frame, so the skyline has a shape
+            let central: Float = 1 - min(abs(bx) / 1050, 1)
+            let h: Float = 16 + cityRng.next() * (26 + central * 92)
+            let w: Float = 14 + cityRng.next() * 22
+            let b = SCNNode(geometry: SCNBox(width: CGFloat(w), height: CGFloat(h),
+                                             length: CGFloat(w * 0.8), chamferRadius: 0))
+            b.geometry!.materials = [blockMat]
+            b.simdPosition = simd_float3(bx, 2 + h / 2, bz)
+            set.addChildNode(b)
 
-        // searchlights: a yaw pivot at the head, beam cone pointing down -Z
-        let beamMat = SCNMaterial()
-        beamMat.lightingModel = .constant
-        beamMat.diffuse.contents = UIColor(red: 0.60, green: 0.78, blue: 0.95, alpha: 1)
-        beamMat.transparency = 0.05
-        beamMat.blendMode = .add
-        beamMat.writesToDepthBuffer = false
-        beamMat.isDoubleSided = true
-        let headMat = constant(UIColor(red: 1, green: 0.97, blue: 0.86, alpha: 1))
-        headMat.emission.contents = UIColor(red: 1, green: 0.97, blue: 0.86, alpha: 1)
-        headMat.emission.intensity = 0.5
-        for sx in [Float(-30), Float(6), Float(40)] {
-            let pole = SCNNode(geometry: SCNCylinder(radius: 0.26, height: 7))
-            pole.geometry!.materials = [mastMat]
-            pole.position = SCNVector3(sx, 3.5, 12)
-            set.addChildNode(pole)
-
-            let pivot = SCNNode()
-            pivot.position = SCNVector3(sx, 7.2, 12)
-            let head = SCNNode(geometry: SCNSphere(radius: 0.34))
-            head.geometry!.materials = [headMat]
-            pivot.addChildNode(head)
-            let beamH: Float = 110
-            let beam = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 2.4, height: CGFloat(beamH)))
-            beam.geometry!.materials = [beamMat]
-            beam.eulerAngles.x = .pi / 2         // apex toward +Z…
-            beam.position = SCNVector3(0, 0, -beamH / 2)   // …shifted so it sits at the head
-            beam.castsShadow = false
-            pivot.addChildNode(beam)
-            set.addChildNode(pivot)
-            searchlights.append(pivot)
+            // window light: one emissive face rather than per-window geometry —
+            // 150 buildings of real windows would cost more than the whole race.
+            let lit = SCNMaterial()
+            lit.lightingModel = .constant
+            let warm: Float = cityRng.next()
+            let wg: CGFloat = CGFloat(0.66 + warm * 0.20)
+            let wb: CGFloat = CGFloat(0.30 + warm * 0.30)
+            lit.diffuse.contents = UIColor(red: 0.95, green: wg, blue: wb, alpha: 1)
+            lit.transparency = CGFloat(0.30 + cityRng.next() * 0.45)
+            lit.blendMode = .add
+            lit.writesToDepthBuffer = false
+            let face = SCNNode(geometry: SCNPlane(width: CGFloat(w * 0.82),
+                                                  height: CGFloat(h * 0.74)))
+            face.geometry!.materials = [lit]
+            face.simdPosition = simd_float3(bx, 2 + h / 2, bz + w * 0.41)
+            face.castsShadow = false
+            set.addChildNode(face)
+            if i % 9 == 0 {
+                // a red aircraft beacon on the tall ones
+                let bc = SCNNode(geometry: SCNSphere(radius: 1.5))
+                let bm = constant(UIColor(red: 1, green: 0.16, blue: 0.13, alpha: 1))
+                bm.emission.contents = UIColor(red: 1, green: 0.16, blue: 0.13, alpha: 1)
+                bm.emission.intensity = 2.4
+                bc.geometry!.materials = [bm]
+                bc.simdPosition = simd_float3(bx, 2 + h + 2, bz)
+                set.addChildNode(bc)
+                cityBeacons.append(bc)
+            }
         }
 
-        // cruisers parked at the gate
-        for (i, px) in [Float(-16), Float(2), Float(20)].enumerated() {
-            let car = trafficCar(UIColor(white: 0.93, alpha: 1), police: true)
-            car.position = SCNVector3(px, 0, 15)
-            car.eulerAngles.y = Float(i) * 0.35 - 0.35
-            set.addChildNode(car)
+        // ---- El Morro: headland, fort, and the lighthouse that sweeps ----
+        let head = SCNNode(geometry: SCNBox(width: 300, height: 54, length: 210,
+                                            chamferRadius: 8))
+        head.geometry!.materials = [lambert(UIColor(red: 0.055, green: 0.062, blue: 0.058, alpha: 1))]
+        head.simdPosition = simd_float3(-560, 8, -170)
+        set.addChildNode(head)
+        // the fort's stepped bastion, lit warm from below like the real thing
+        let fortMat = lambert(UIColor(red: 0.16, green: 0.145, blue: 0.115, alpha: 1))
+        // Written out rather than driven from a tuple array: a heterogeneous tuple
+        // literal here sent the type checker into an effectively infinite solve.
+        let tiers: [SIMD4<Float>] = [
+            SIMD4(-560, 40, -170, 160),
+            SIMD4(-560, 54, -182, 112),
+            SIMD4(-560, 66, -192, 72)
+        ]
+        let tierH: [CGFloat] = [16, 13, 11]
+        for (k, spec) in tiers.enumerated() {
+            let side = CGFloat(spec.w)
+            let tier = SCNNode(geometry: SCNBox(width: side, height: tierH[k],
+                                                length: side * 0.62, chamferRadius: 1))
+            tier.geometry!.materials = [fortMat]
+            tier.simdPosition = simd_float3(spec.x, spec.y, spec.z)
+            set.addChildNode(tier)
         }
+        // garita — the sentry box that is the island's whole visual shorthand
+        let garita = SCNNode(geometry: SCNCylinder(radius: 7, height: 17))
+        garita.geometry!.materials = [fortMat]
+        garita.simdPosition = simd_float3(-644, 50, -150)
+        set.addChildNode(garita)
+        let dome = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 8.4, height: 11))
+        dome.geometry!.materials = [fortMat]
+        dome.simdPosition = simd_float3(-644, 64, -150)
+        set.addChildNode(dome)
+
+        let lampMat = constant(UIColor(red: 1, green: 0.93, blue: 0.74, alpha: 1))
+        lampMat.emission.contents = UIColor(red: 1, green: 0.93, blue: 0.74, alpha: 1)
+        lampMat.emission.intensity = 2.2
+        let lamp = SCNNode(geometry: SCNSphere(radius: 3.2))
+        lamp.geometry!.materials = [lampMat]
+        lamp.simdPosition = simd_float3(-560, 80, -192)
+        set.addChildNode(lamp)
+        // Sweeping beam. A cone read as a solid white bar across the sky at any
+        // opacity that made it visible at all, so this is a flat additive blade
+        // that turns edge-on and effectively disappears half of every rotation.
+        let sweepMat = SCNMaterial()
+        sweepMat.lightingModel = .constant
+        sweepMat.diffuse.contents = Textures.softCircle()
+        sweepMat.multiply.contents = UIColor(red: 1, green: 0.95, blue: 0.80, alpha: 1)
+        sweepMat.transparency = 0.16
+        sweepMat.blendMode = .add
+        sweepMat.writesToDepthBuffer = false
+        sweepMat.isDoubleSided = true
+        let sweepPivot = SCNNode()
+        sweepPivot.simdPosition = simd_float3(-560, 80, -192)
+        let beamLen: Float = 560
+        let sweep = SCNNode(geometry: SCNPlane(width: 26, height: CGFloat(beamLen)))
+        sweep.geometry!.materials = [sweepMat]
+        sweep.eulerAngles.x = .pi / 2
+        sweep.simdPosition = simd_float3(0, 0, -beamLen / 2)
+        sweep.castsShadow = false
+        sweepPivot.addChildNode(sweep)
+        set.addChildNode(sweepPivot)
+        lighthouse = sweepPivot
+
+        // ---- cloud deck the craft punches through on the way in ----
+        let cloudMat = SCNMaterial()
+        cloudMat.lightingModel = .constant
+        cloudMat.diffuse.contents = Textures.softCircle()
+        cloudMat.multiply.contents = UIColor(red: 0.30, green: 0.34, blue: 0.50, alpha: 1)
+        cloudMat.blendMode = .add
+        cloudMat.writesToDepthBuffer = false
+        var cloudRng = Lcg(4242)
+        for _ in 0..<26 {
+            let cw: CGFloat = CGFloat(260 + cloudRng.next() * 420)
+            let ch: CGFloat = CGFloat(200 + cloudRng.next() * 300)
+            let c = SCNNode(geometry: SCNPlane(width: cw, height: ch))
+            c.geometry!.materials = [cloudMat]
+            c.eulerAngles.x = -.pi / 2
+            let cx: Float = (cloudRng.next() - 0.5) * 1700
+            let cy: Float = 250 + cloudRng.next() * 90
+            let cz: Float = 500 + cloudRng.next() * 1100
+            c.simdPosition = simd_float3(cx, cy, cz)
+            c.castsShadow = false
+            set.addChildNode(c)
+        }
+
+        let moon = SCNLight()
+        moon.type = .directional
+        moon.color = UIColor(red: 0.62, green: 0.72, blue: 0.98, alpha: 1)
+        moon.intensity = 300
+        moon.castsShadow = false
+        let moonNode = SCNNode()
+        moonNode.light = moon
+        // aimed along the moon direction baked into the night cubemap
+        moonNode.simdLook(at: simd_float3(0.45, -0.30, 0.84), up: simd_float3(0, 1, 0),
+                          localFront: simd_float3(0, 0, -1))
+        set.addChildNode(moonNode)
 
         // the craft itself — same hull the player flies
-        let built = ufoHull(scale: 2.4)
+        let built = ufoHull(scale: 4.2)
         introUfoRing = built.lightRing
         introUfo.addChildNode(built.node)
         set.addChildNode(introUfo)
+
+        // Its own light, so it actually illuminates the water it skims. The set is
+        // otherwise lit only by emissive materials.
+        let glow = SCNLight()
+        glow.type = .omni
+        glow.color = UIColor(red: 0.45, green: 1.0, blue: 0.85, alpha: 1)
+        glow.intensity = 2600
+        glow.attenuationEndDistance = 260
+        let glowNode = SCNNode()
+        glowNode.light = glow
+        introUfo.addChildNode(glowNode)
 
         introSet = set
         parent.addChildNode(set)
@@ -2813,88 +2946,102 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
 
     /// Drives the looping escape. Called from the `.intro` branch of the frame.
-    /// The one-shot escape. Same set and same craft path as the title backdrop, but
-    /// played once, with beats and a camera that moves, then handed to the title.
+    /// The arrival. Four shots with hard cuts between them, over the night coastline.
     private func updateCutscene(_ dt: Float) {
         cutsceneT += dt
         let t = cutsceneT
-        let o = Self.introOrigin
-
-        // Desert dusk, until the klaxon turns the whole base red.
-        let alarm = Self.smoothStep(Self.alarmAt, Self.alarmAt + 0.45, t)
-        scene.fogColor = UIColor(red: CGFloat(0.84 + 0.16 * alarm),
-                                 green: CGFloat(0.62 - 0.36 * alarm),
-                                 blue: CGFloat(0.48 - 0.30 * alarm), alpha: 1)
-        // bars idle before the alarm and strobe hard after it
-        let barRate: Float = t < Self.alarmAt ? 3 : 11
-        let flash = sin(t * barRate) > 0
-        let hot: CGFloat = t < Self.alarmAt ? 1.1 : 2.6
-        policeRedMat.emission.intensity = flash ? hot : 0.05
-        policeBlueMat.emission.intensity = flash ? 0.05 : hot
-
         let ufoLocal = Self.samplePath(Self.ufoPath, t)
-        let ufoWorld = o + ufoLocal
         introUfo.simdPosition = ufoLocal
-        let ahead = Self.samplePath(Self.ufoPath, min(Self.introLoop, t + 0.12))
+
+        // Bank into the direction of travel. The descent is steep, so pitch has to
+        // read as well as roll or it looks like it is sliding down an invisible ramp.
+        let ahead = Self.samplePath(Self.ufoPath, min(Self.cutsceneDur, t + 0.16))
         let vel = ahead - ufoLocal
-        let speed = simd_length(vel)
-        if speed > 0.001 {
-            let dir = vel / speed
-            introUfo.eulerAngles = SCNVector3(-dir.y * 0.5, atan2(dir.x, -dir.z), -dir.x * 0.42)
+        let sp = simd_length(vel)
+        if sp > 0.001 {
+            let dir = vel / sp
+            introUfo.eulerAngles = SCNVector3(-dir.y * 0.85, atan2(dir.x, -dir.z), -dir.x * 0.55)
         }
-        // the ring spins up with the alarm — it reads as the craft powering on
-        introUfoRing.eulerAngles.y += dt * (1.2 + 5.5 * alarm)
+        // spins up as it descends, eases once it is level over the water
+        let descend = Self.smoothStep(0, Self.touchSea, t)
+        introUfoRing.eulerAngles.y += dt * (2 + 7 * descend)
 
-        placeCutsceneCamera(t, ufoLocal: ufoLocal, alarm: alarm)
+        nightAtmosphere()
+        placeCutsceneCamera(t, ufoLocal: ufoLocal)
+        animateCoast(t)
 
-        for (i, light) in searchlights.enumerated() {
-            let phase = Float(i) * 2.1
-            if t > Self.lockOnAt {
-                light.simdLook(at: ufoWorld, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
-            } else {
-                // lazy before the alarm, frantic after it
-                let rate: Float = t < Self.alarmAt ? 0.55 : 2.1
-                light.eulerAngles = SCNVector3(-0.85, sin(t * rate + phase) * 0.9, 0)
-            }
-        }
-
-        if t > 2.8 && t < 4.6 {
-            dustNode.simdPosition = o + simd_float3(ufoLocal.x, 0.3, ufoLocal.z)
-            dustSystem.birthRate = 90
-        } else if t < 0.2 || t > 4.6 {
+        // Entry burn while it is still shedding altitude; nothing once it levels off.
+        if t < Self.touchSea {
+            dustNode.simdPosition = Self.introOrigin + ufoLocal
+            dustSystem.birthRate = 140
+        } else {
             dustSystem.birthRate = 0
         }
 
         if t >= Self.cutsceneDur || state.skipCutscene { endCutscene() }
     }
 
-    /// Arms the escape from the top. Safe from the title at any time.
+    /// Night air over the water. Reaches much further than any race fog: the
+    /// opening shot is 1.5 km out, and haze at race distances turned the sea into a
+    /// flat sheet of whatever colour the last stage happened to leave behind.
+    private func nightAtmosphere() {
+        scene.fogColor = UIColor(red: 0.020, green: 0.032, blue: 0.070, alpha: 1)
+        scene.fogStartDistance = 900
+        scene.fogEndDistance = 4600
+        scene.fogDensityExponent = 1.5
+    }
+
+    /// Ambient life in the set, shared by the cutscene and the title backdrop so the
+    /// coast does not freeze the moment the arrival ends.
+    private func animateCoast(_ t: Float) {
+        lighthouse?.eulerAngles.y = t * 0.55
+        // beacons blink out of phase — a whole skyline flashing in unison reads fake
+        for (i, b) in cityBeacons.enumerated() {
+            let on = sin(t * 2.1 + Float(i) * 1.7) > 0.55
+            b.geometry?.firstMaterial?.emission.intensity = on ? 2.6 : 0.15
+        }
+        introFoam?.opacity = CGFloat(0.55 + 0.25 * sin(t * 0.9))
+        // the sea drifts, so the moon smear is never perfectly still
+        if let n = introSea?.geometry?.firstMaterial?.normal {
+            let f = (t * 0.006).truncatingRemainder(dividingBy: 1)
+            n.contentsTransform = SCNMatrix4Mult(SCNMatrix4MakeTranslation(f, f * 0.4, 0),
+                                                 SCNMatrix4MakeScale(220, 220, 1))
+        }
+    }
+
+    /// Shared by the first frame and every later one: `attach` parks the camera at
+    /// the world origin, 6 km from the set, so anything that starts the cutscene
+    /// must place it in the same step or the opening frame renders black.
+    private func placeCutsceneCamera(_ t: Float, ufoLocal: simd_float3) {
+        let o = Self.introOrigin
+        let shot = Self.shots.last { t >= $0.t0 } ?? Self.shots[0]
+        let u = simd_clamp((t - shot.t0) / (shot.t1 - shot.t0), 0, 1)
+        let e = u * u * (3 - 2 * u)                     // ease within the shot
+        cameraNode.simdPosition = o + simd_mix(shot.from, shot.to, simd_float3(repeating: e))
+        let staged = simd_mix(shot.lookFrom, shot.lookTo, simd_float3(repeating: e))
+        // Each shot blends its composed aim with the craft's real position, so the
+        // framing stays deliberate but the subject never drifts out of it.
+        let look = simd_mix(staged, ufoLocal, simd_float3(repeating: shot.follow))
+        cameraNode.simdLook(at: o + look, up: simd_float3(0, 1, 0),
+                            localFront: simd_float3(0, 0, -1))
+        cameraNode.camera?.fieldOfView = shot.fov
+    }
+
+    /// Arms the arrival from the top. Safe to call from the title at any time.
     func startCutscene() {
         cutsceneT = 0
         introSet.isHidden = false
-        if let sky = introSky { scene.background.contents = sky }
+        if let sky = introSky {
+            scene.background.contents = sky
+            scene.lightingEnvironment.contents = sky
+        }
         introUfo.simdPosition = Self.samplePath(Self.ufoPath, 0)
-        placeCutsceneCamera(0, ufoLocal: Self.samplePath(Self.ufoPath, 0), alarm: 0)
+        placeCutsceneCamera(0, ufoLocal: Self.samplePath(Self.ufoPath, 0))
         phase = .cutscene
         DispatchQueue.main.async {
             self.state.skipCutscene = false
             self.state.phase = .cutscene
         }
-    }
-
-    /// Shared by the first frame and every later one: `attach` parks the camera at
-    /// the world origin, 6 km from the base, so anything that starts the cutscene
-    /// must place it in the same step or the opening frame renders black.
-    private func placeCutsceneCamera(_ t: Float, ufoLocal: simd_float3, alarm: Float) {
-        let o = Self.introOrigin
-        cameraNode.simdPosition = o + Self.samplePath(Self.cutsceneCam, t)
-        // Attention shifts from the hangar to the craft as it climbs, so the early
-        // beats hold on the base rather than tracking a saucer that has not moved.
-        let attention = Self.smoothStep(Self.alarmAt + 0.6, Self.lockOnAt + 1.0, t)
-        let look = simd_mix(Self.introBaseLook, ufoLocal, simd_float3(repeating: attention))
-        cameraNode.simdLook(at: o + look, up: simd_float3(0, 1, 0),
-                            localFront: simd_float3(0, 0, -1))
-        cameraNode.camera?.fieldOfView = CGFloat(52 + 12 * alarm)
     }
 
     private func endCutscene() {
@@ -2911,61 +3058,33 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     private func updateIntro(_ dt: Float) {
         introT += dt
-        if introT > Self.introLoop { introT -= Self.introLoop }
 
-        // dry desert dusk while we're at the base
-        scene.fogColor = UIColor(red: 0.84, green: 0.62, blue: 0.48, alpha: 1)
-        // the gate cruisers' bars flash here too — the race loop isn't running
-        let flash = sin(introT * 9) > 0
-        policeRedMat.emission.intensity = flash ? 2.2 : 0.05
-        policeBlueMat.emission.intensity = flash ? 0.05 : 2.2
+        nightAtmosphere()
 
-        let o = Self.introOrigin
-        let ufoLocal = Self.samplePath(Self.ufoPath, introT)
-        let ufoWorld = o + ufoLocal
-        introUfo.simdPosition = ufoLocal
+        // The craft holds station off to the right of the type, breathing rather
+        // than flying. The old backdrop replayed the escape on an 11.5 s loop, which
+        // hard-cut the craft from high-right back down to the hangar every time.
+        let hoverBase = Self.samplePath(Self.ufoPath, Self.cutsceneDur)
+        let bob = simd_float3(sin(introT * 0.37) * 2.4,
+                              sin(introT * 0.53) * 1.5,
+                              sin(introT * 0.29) * 1.8)
+        introUfo.simdPosition = hoverBase + bob
+        introUfo.eulerAngles = SCNVector3(sin(introT * 0.45) * 0.05,
+                                          0.5 + sin(introT * 0.23) * 0.12,
+                                          sin(introT * 0.31) * 0.06)
+        introUfoRing.eulerAngles.y += dt * 2.2
 
-        // bank into the direction of travel, sampled from the path itself
-        let ahead = Self.samplePath(Self.ufoPath, min(Self.introLoop, introT + 0.12))
-        let vel = ahead - ufoLocal
-        let speed = simd_length(vel)
-        if speed > 0.001 {
-            let dir = vel / speed
-            introUfo.eulerAngles = SCNVector3(-dir.y * 0.5, atan2(dir.x, -dir.z), -dir.x * 0.42)
-        }
-        introUfoRing.eulerAngles.y += dt * 4.5
-
-        // Fixed position with a slow drift, but the aim eases from the base to the
-        // craft as it climbs — a fully locked frame kept losing the saucer.
-        let drift = simd_float3(sin(introT * 0.28) * 1.1, sin(introT * 0.21) * 0.5, 0)
-        cameraNode.simdPosition = o + Self.introCam + drift
-        let attention = Self.smoothStep(3.2, 5.6, introT)
-        var look = simd_mix(Self.introBaseLook, ufoLocal, simd_float3(repeating: attention))
-        look.x -= 7                       // bias left so the craft frames right of centre
-        cameraNode.simdLook(at: o + look, up: simd_float3(0, 1, 0),
-                            localFront: simd_float3(0, 0, -1))
+        // slow drift, so the frame is alive without ever recomposing itself
+        let drift = simd_float3(sin(introT * 0.19) * 3.2, sin(introT * 0.14) * 1.4, 0)
+        cameraNode.simdPosition = Self.introOrigin + Self.introCam + drift
+        cameraNode.simdLook(at: Self.introOrigin + Self.introBaseLook,
+                            up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
         cameraNode.camera?.fieldOfView = 60
 
-        // searchlights sweep, then lock on once it's airborne
-        for (i, light) in searchlights.enumerated() {
-            let phase = Float(i) * 2.1
-            if introT > 4.0 {
-                light.simdLook(at: ufoWorld, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
-            } else {
-                let sweep = sin(introT * 0.8 + phase) * 0.9
-                light.eulerAngles = SCNVector3(-0.85, sweep, 0)
-            }
-        }
-
-        // A little dust as it breaks cover. The race's rate (320) threw puffs big
-        // enough to completely hide the craft at this camera distance.
-        if introT > 2.8 && introT < 4.6 {
-            dustNode.simdPosition = o + simd_float3(ufoLocal.x, 0.3, ufoLocal.z)
-            dustSystem.birthRate = 55
-        } else if introT < 0.2 || introT > 4.6 {
-            dustSystem.birthRate = 0
-        }
+        animateCoast(introT)
+        dustSystem.birthRate = 0
     }
+
 
     /// Arms the ghost for a fresh run. Race mode only: endless wraps the course, so
     /// a trace indexed on distance would teleport at every lap line.
@@ -3208,7 +3327,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // the base is 6 km away and fully fogged, but there's no reason to keep
         // paying for it once the race starts
         introSet.isHidden = true
-        if let rs = raceSky { scene.background.contents = rs }
+        if let rs = raceSky {
+            scene.background.contents = rs
+            scene.lightingEnvironment.contents = rs
+        }
 
         // fresh course every race
         runSeed = UInt64.random(in: 1..<2147483646)
@@ -3250,7 +3372,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         introT = 0
         lastRegion = nil
         introSet.isHidden = false
-        if let sky = introSky { scene.background.contents = sky }
+        if let sky = introSky {
+            scene.background.contents = sky
+            scene.lightingEnvironment.contents = sky
+        }
         sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
         sound.nitroLevel = 0; sound.rumbleLevel = 0
         sound.forestLevel = 0; sound.surfLevel = 0

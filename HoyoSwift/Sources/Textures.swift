@@ -7,7 +7,7 @@ enum Textures {
     /// Six cubemap faces: sunset gradient by elevation with the sun disc,
     /// its glow, and early stars baked in. Used as the scene background, so it
     /// pans correctly with the camera and is never touched by fog.
-    enum SkyMood { case sunset, rainforest, tropical }
+    enum SkyMood { case sunset, rainforest, tropical, night }
 
     static func skyCubemap(_ mood: SkyMood = .sunset) -> [UIImage] {
         let n = 256
@@ -32,6 +32,39 @@ enum Textures {
                     default: d = simd_float3(-u, -v, -1)    // -Z
                     }
                     d = simd_normalize(d)
+                    if mood == .night {
+                        // Caribbean night: deep blue overhead, a warm lift at the
+                        // horizon from the city, a moon, and dense stars. The moon
+                        // sits where the set puts its glare on the water.
+                        let t = simd_clamp((d.y + 0.15) / 1.1, 0, 1)
+                        var c2 = simd_mix(simd_float3(0.055, 0.085, 0.165),
+                                          simd_float3(0.008, 0.014, 0.045),
+                                          simd_float3(repeating: powf(t, 0.6)))
+                        // Sodium haze, kept tight to the horizon: the sea is a near
+                        // mirror, so a broad warm band turns the whole ocean orange.
+                        if d.y < 0.07 {
+                            let g = powf(1 - simd_clamp(abs(d.y) / 0.07, 0, 1), 3)
+                            c2 += simd_float3(0.055, 0.028, 0.009) * g
+                        }
+                        let moonDir = simd_normalize(simd_float3(-0.45, 0.30, -0.84))
+                        let md = simd_dot(d, moonDir)
+                        if md > 0 {
+                            c2 += simd_float3(0.85, 0.88, 1.0) * powf(md, 6000) * 3.2   // disc
+                            c2 += simd_float3(0.35, 0.42, 0.62) * powf(md, 60) * 0.30   // halo
+                        }
+                        if d.y > -0.04 {
+                            let h = starHash(d)
+                            if h > 0.9975 {
+                                let b = (h - 0.9975) / 0.0025
+                                c2 += simd_float3(repeating: b * 0.95) * min(1, (d.y + 0.04) * 5)
+                            }
+                        }
+                        let i2 = (y * n + x) * 4
+                        pixels[i2] = UInt8(min(max(c2.x, 0), 1) * 255)
+                        pixels[i2 + 1] = UInt8(min(max(c2.y, 0), 1) * 255)
+                        pixels[i2 + 2] = UInt8(min(max(c2.z, 0), 1) * 255)
+                        continue
+                    }
                     if mood != .sunset {
                         // Overcast canopy light: no sun, no stars, brightest near the
                         // horizon where the mist glows. A sunset sky over a rainforest
