@@ -197,7 +197,7 @@ struct HUDView: View {
                     // empty fourth bar would just be clutter on a careful run.
                     if state.hud.heat > 0.02 || state.hud.chased > 0 {
                         BarView(label: state.hud.chased > 0
-                                ? "JARA x\(state.hud.chased)" : "BUSCADO",
+                                ? "POLICÍA x\(state.hud.chased)" : "TE BUSCAN",
                                 value: state.hud.chased > 0 ? 1 : state.hud.heat,
                                 color: Color(red: 0.95, green: 0.22, blue: 0.30))
                     }
@@ -1087,7 +1087,7 @@ struct CutsceneOverlay: View {
             .allowsHitTesting(false)
 
             if showSkip {
-                Text("TOCA PA' SEGUIR")
+                Text("TOCA PA' EMPEZAR")
                     .font(.label(12)).tracking(3)
                     .foregroundStyle(.white.opacity(0.62))
                     .padding(.vertical, 7).padding(.horizontal, 15)
@@ -1288,7 +1288,7 @@ struct HowToCard: View {
     private let rows: [(String, String, String)] = [
         ("arrowtriangle.left.and.line.vertical.and.arrowtriangle.right", "GUÍA",
          "desliza el pad pa' virar"),
-        ("octagon.fill", "FRENO", "frena, y con guía haces drift"),
+        ("octagon.fill", "FRENO", "frena y vira a la vez pa' patinar"),
         ("flame.fill", "NITRO", "corre más · las piraguas lo llenan"),
         ("arrow.up.circle.fill", "SALTA", "brinca los hoyos y los carros"),
         ("arrow.up.to.line", "A VOLAR", "brinca tres veces seguidas y flotas"),

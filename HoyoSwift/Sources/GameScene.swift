@@ -209,7 +209,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
     private var traffic: [Traffic] = []
 
-    // MARK: - la jara
+    // MARK: - la policía
     /// Cruisers that hunt you, as opposed to `traffic`, which merely exists. They
     /// are their own pool because traffic is cordillera-only and the chase is the
     /// story on every course.
@@ -1881,7 +1881,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 v *= 0.9
                 shake = max(shake, 0.9)
                 sound.playThunk()
-                damage(9, "¡LA JARA!", tone: .hit)
+                damage(9, "¡LA POLICÍA!", tone: .hit)
             }
 
             // Gives up if you break away, or once it has had its run at you.
@@ -1907,7 +1907,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         positionPursuer(pursuers[i])
         sound.playSiren()
         Haptics.shared.crash(intensity: 0.6)
-        popupAsync("¡LA JARA TE VIO!", .hit)
+        popupAsync("¡TE VIO LA POLICÍA!", .hit)
     }
 
     private func positionPursuer(_ p: Pursuer) {
@@ -2429,7 +2429,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     traffic[ti].cool = 1.5
                     score += tc.isPolice ? 240 : 130
                     bumpCombo()
-                    popupAsync(tc.isPolice ? "¡LA JARA!" : "¡FUEGO!", .big)
+                    popupAsync(tc.isPolice ? "¡LA POLICÍA!" : "¡FUEGO!", .big)
                     sound.playThunk()
                     struck = true
                     break
@@ -3472,7 +3472,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         x = 0; xd = 0
         // The wrap moves you back to the start, so a live cruiser's gap becomes
         // hugely negative and `gap > 150` can never retire it: it would sit out its
-        // full life invisible at the far end while the HUD showed JARA x1.
+        // full life invisible at the far end while the HUD showed POLICÍA x1.
         clearPursuit()
         hp = min(100, hp + 12)               // surviving a lap is worth a little back
         invuln = 1.2                         // don't die to the first hole of a lap
@@ -3693,16 +3693,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Shouts, in Puerto Rican Spanish. Pools rather than single strings, so the
     /// game doesn't say the exact same thing every time something happens.
     private enum Shout {
-        static let pothole   = ["¡HOYO!", "¡AY!", "¡ESE HOYO!", "¡RAYOS!"]
-        static let nearMiss  = ["¡CASI!", "¡POR POCO!", "¡QUÉ CHULO!", "¡CHÉVERE!"]
-        static let drift     = ["¡WEPA!", "¡ESO ES!", "¡BRUTAL!"]
+        // "¡RAYOS!" was dubbed-cartoon Spanish, not anything anyone says here.
+        // "cantazo" is the PR word for a hard knock, and "¡ño!" is the sound you
+        // actually make when you hit one.
+        static let pothole   = ["¡HOYO!", "¡ÑO!", "¡ESE HOYO!", "¡QUÉ CANTAZO!"]
+        static let nearMiss  = ["¡CASI!", "¡POR POCO!", "¡QUÉ CHULO!", "¡CHÉVERE!",
+                                "¡POR UN PELO!"]
+        static let drift     = ["¡WEPA!", "¡ESO ES!", "¡BRUTAL!", "¡DIABLO!"]
         static let piragua   = ["¡PIRAGUA!", "¡FRÍO FRÍO!", "¡QUÉ RICO!"]
         static let mechanic  = ["¡MECÁNICO!", "¡ARREGLAO!", "¡COMO NUEVA!"]
-        static let shove     = ["¡QUÍTATE!", "¡DALE PASO!", "¡MUÉVETE!"]
+        // "¡abre!" is what you actually shout at someone in your lane
+        static let shove     = ["¡QUÍTATE!", "¡ABRE!", "¡MUÉVETE!"]
         static let overCar   = ["¡POR ENCIMA!", "¡VOLANDO BAJITO!"]
         static let sealed    = ["¡TAPADO!", "¡ARREGLAO!"]
         static let overHole  = ["¡VOLANDO!", "¡NI LO TOCÓ!"]
-        static let rail      = ["¡AY BENDITO!", "¡CUIDAO!"]
+        static let rail      = ["¡AY BENDITO!", "¡CUIDAO!", "¡ACHO!"]
         static func one(_ pool: [String]) -> String { pool.randomElement() ?? pool[0] }
     }
 
@@ -3880,7 +3885,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     Haptics.shared.crash(intensity: 0.8)
                     popupAsync("¡A VOLAR!", .big)
                 } else {
-                    if jumpChain >= 3 { jumpChain = 0; popupAsync("FALTA NITRO", .hit) }
+                    if jumpChain >= 3 { jumpChain = 0; popupAsync("SIN NITRO", .hit) }
                     jumpVel = Self.jumpImpulse
                     sound.playJump()
                     Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
@@ -4161,7 +4166,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     sparkSystem.birthRate = 700
                     sparkT = 0.1
                     score += tc.isPolice ? 250 : 120
-                    damage(6, tc.isPolice ? "¡LA JARA!" : Shout.one(Shout.shove), tone: .big)
+                    damage(6, tc.isPolice ? "¡LA POLICÍA!" : Shout.one(Shout.shove), tone: .big)
                 } else {
                     traffic[ti].cool = 2
                     v = min(v, tc.v * 0.8)
