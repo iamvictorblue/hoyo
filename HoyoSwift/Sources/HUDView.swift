@@ -690,6 +690,52 @@ struct GhostButton: View {
 }
 
 /// Hairline rule under a screen title, in the accent of that screen.
+/// A number that ticks up to its value. `animatableData` lets SwiftUI drive the
+/// interpolation, so it stops cleanly with the view instead of leaving a timer
+/// running behind a dismissed screen.
+struct CountUp: View, Animatable {
+    var value: Double
+    var font: Font
+
+    var animatableData: Double {
+        get { value }
+        set { value = newValue }
+    }
+
+    var body: some View {
+        Text(Int(value.rounded()).formatted()).font(font)
+    }
+}
+
+/// Staggered entrance. Results land in reading order rather than all at once,
+/// which is most of what separates a results screen from a data dump.
+struct Appear: ViewModifier {
+    let delay: Double
+    let calm: Bool
+    @State private var on = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(on ? 1 : 0)
+            .offset(y: on || calm ? 0 : 12)
+            .onAppear {
+                // Reduce Motion still fades — the sequencing carries meaning here,
+                // it is only the travel that has to go.
+                if calm {
+                    withAnimation(.easeIn(duration: 0.25).delay(delay * 0.5)) { on = true }
+                } else {
+                    withAnimation(.easeOut(duration: 0.42).delay(delay)) { on = true }
+                }
+            }
+    }
+}
+
+extension View {
+    func appear(_ delay: Double, calm: Bool = false) -> some View {
+        modifier(Appear(delay: delay, calm: calm))
+    }
+}
+
 struct SignRule: View {
     var color: Color = .neonGold
     var width: CGFloat = 150
@@ -1078,17 +1124,19 @@ struct IntroOverlay: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            // Two scrims doing different jobs: a broad diagonal that keeps the
-            // escape legible top-right, and a tighter one anchoring the plinth so
-            // the type never sits on moving scenery.
+            // Two scrims doing different jobs: a broad diagonal that keeps the type
+            // legible bottom-left, and a tighter one anchoring the plinth so it
+            // never sits on moving scenery. Both were cut back when the backdrop
+            // went from a bright desert dusk to a night coastline — the old weights
+            // were fighting a sunset and just muddied the city lights.
             LinearGradient(colors: [.clear,
-                                    Color(red: 0.05, green: 0.02, blue: 0.11).opacity(0.42),
-                                    Color(red: 0.04, green: 0.01, blue: 0.09).opacity(0.86)],
+                                    Color(red: 0.04, green: 0.02, blue: 0.09).opacity(0.20),
+                                    Color(red: 0.03, green: 0.01, blue: 0.07).opacity(0.72)],
                            startPoint: .topTrailing, endPoint: .bottomLeading)
                 .ignoresSafeArea()
-            LinearGradient(colors: [Color.black.opacity(0.55), .clear],
+            LinearGradient(colors: [Color.black.opacity(0.62), .clear],
                            startPoint: .bottom, endPoint: .top)
-                .frame(height: 260)
+                .frame(height: 210)
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .ignoresSafeArea()
 
@@ -1293,6 +1341,12 @@ struct EndOverlay: View {
     let title: String
     let subtitle: String
 
+    @State private var shownScore: Double = 0
+    @State private var medalIn = false
+
+    private var calm: Bool { state.reduceMotion }
+    private var accent: Color { state.statFinished ? .neonTeal : .neonPink }
+
     private var medalColor: Color {
         switch state.statMedal {
         case .gold:   return .neonGold
@@ -1301,123 +1355,206 @@ struct EndOverlay: View {
         case .none:   return .clear
         }
     }
-    private var accent: Color { state.statFinished ? .neonTeal : .neonPink }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            LinearGradient(colors: [Color(red: 0.06, green: 0.02, blue: 0.12).opacity(0.78),
-                                    Color(red: 0.05, green: 0.02, blue: 0.10).opacity(0.95)],
-                           startPoint: .topTrailing, endPoint: .bottomLeading)
-                .ignoresSafeArea()
-
-            HStack(alignment: .bottom, spacing: 40) {
-                // left: outcome + the numbers, as a results slip
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
-                        .font(.display(52))
-                        .foregroundStyle(.white)
-                        .shadow(color: accent.opacity(0.5), radius: 18)
-                    SignRule(color: accent, width: 170)
-                        .padding(.top, 3)
-                    Text(subtitle)
-                        .font(.label(11)).tracking(3)
-                        .foregroundStyle(Color.creamText.opacity(0.85))
-                        .padding(.top, 8)
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        if state.mode == .endless {
-                            StatLine(label: "VUELTAS", value: "\(state.statLaps)")
-                        }
-                        StatLine(label: "TIEMPO", value: state.statTime)
-                        // Only when it paid — a "+0" every run teaches nothing and
-                        // reads as a penalty for finishing.
-                        if state.statTimeBonus > 0 {
-                            StatLine(label: "BONO",
-                                     value: "+\(state.statTimeBonus.formatted())",
-                                     accent: Color.neonGold)
-                        }
-                        StatLine(label: "PUNTOS", value: state.statScore.formatted())
-                        StatLine(label: "MÁXIMA", value: "\(state.statTopSpeed) km/h")
-                        StatLine(label: "HOYOS / ESQUIVES",
-                                 value: "\(state.statHolesHit) / \(state.statNearMisses)",
-                                 accent: Color.creamText)
-                    }
-                    .padding(.top, 14)
-
-                    HStack(spacing: 10) {
-                        SignButton("OTRA VEZ", color: accent) {
-                            state.requestReset = true
-                        }
-                        GhostButton("AL INICIO") {
-                            state.requestTitle = true
-                        }
-                    }
-                    .padding(.top, 18)
-                }
-
-                // right: route shield, medal stamp, and anything newly earned
-                VStack(alignment: .leading, spacing: 12) {
-                    RouteShield(route: state.loadedStage.route)
-
-                    if state.mode == .race,
-                       let up = Medal.next(after: state.statScore, on: state.loadedStage) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("PA' \(up.medal.label)")
-                                .font(.label(9)).tracking(3)
-                                .foregroundStyle(.white.opacity(0.4))
-                            Text("+\(up.needed.formatted())")
-                                .font(.data(15))
-                                .foregroundStyle(Color.creamText.opacity(0.9))
-                        }
-                    }
-
-                    if state.statMedal != .none {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("MEDALLA")
-                                .font(.label(9)).tracking(3)
-                                .foregroundStyle(.white.opacity(0.4))
-                            Text(state.statMedal.label)
-                                .font(.display(26)).tracking(1)
-                                .foregroundStyle(medalColor)
-                        }
-                    }
-
-                    if state.newRecordScore || state.newRecordTime {
-                        VStack(alignment: .leading, spacing: 1) {
-                            if state.newRecordScore {
-                                Text("RÉCORD DE PUNTOS")
-                                    .font(.system(size: 9, weight: .heavy)).tracking(2)
-                            }
-                            if state.newRecordTime {
-                                Text("MEJOR TIEMPO")
-                                    .font(.system(size: 9, weight: .heavy)).tracking(2)
-                            }
-                        }
-                        .foregroundStyle(Color.neonGold)
-                    }
-
-                    if let opened = state.unlockedStage {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("NUEVA RUTA")
-                                .font(.label(9)).tracking(3)
-                                .foregroundStyle(.white.opacity(0.4))
-                            HStack(spacing: 7) {
-                                RouteShield(route: opened.route, compact: true)
-                                Text(opened.name)
-                                    .font(.display(15))
-                                    .foregroundStyle(Color.neonTeal)
-                            }
-                        }
-                    }
-
-                    Text(verbatim: "PISTA #\(state.statSeed % 100000)")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.3))
-                }
-                .padding(.bottom, 4)
+            scrim
+            // Columns pinned to opposite edges rather than packed together. Packed,
+            // the stat column sat mid-frame — exactly where the results camera puts
+            // the craft — so the subject of the shot was always behind the text.
+            HStack(alignment: .bottom) {
+                leftColumn
+                Spacer(minLength: 30)
+                rightColumn
             }
             .padding(.leading, 34)
-            .padding(.bottom, 26)
+            .padding(.trailing, 30)
+            .padding(.bottom, 34)
+        }
+        .onAppear(perform: runIn)
+    }
+
+    private func runIn() {
+        let target = Double(state.statScore)
+        if calm {
+            shownScore = target
+            medalIn = true
+            return
+        }
+        withAnimation(.easeOut(duration: 1.15).delay(0.42)) { shownScore = target }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.55).delay(1.5)) {
+            medalIn = true
+        }
+    }
+
+    // MARK: - pieces
+
+    /// Darkest under the type, clearing toward the far corner so the results
+    /// camera's orbit stays visible behind it.
+    private var scrim: some View {
+        LinearGradient(colors: [Color(red: 0.05, green: 0.02, blue: 0.10).opacity(0.30),
+                                Color(red: 0.05, green: 0.02, blue: 0.10).opacity(0.72),
+                                Color(red: 0.03, green: 0.01, blue: 0.07).opacity(0.94)],
+                       startPoint: .topTrailing, endPoint: .bottomLeading)
+            .ignoresSafeArea()
+    }
+
+    private var leftColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.display(54))
+                .foregroundStyle(.white)
+                .shadow(color: accent.opacity(0.55), radius: 20)
+                .appear(0.05, calm: calm)
+            SignRule(color: accent, width: 190)
+                .padding(.top, 3)
+                .appear(0.14, calm: calm)
+            Text(subtitle)
+                .font(.label(11)).tracking(3)
+                .foregroundStyle(Color.creamText.opacity(0.85))
+                .padding(.top, 8)
+                .appear(0.2, calm: calm)
+
+            scoreBlock.padding(.top, 16)
+            statRows.padding(.top, 14)
+            buttons.padding(.top, 18)
+        }
+    }
+
+    /// The score is the outcome, so it gets the size. It used to be one row in a
+    /// list of five, indistinguishable from how many potholes you clipped.
+    private var scoreBlock: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            VStack(alignment: .leading, spacing: -4) {
+                Text("PUNTOS")
+                    .font(.label(10)).tracking(3)
+                    .foregroundStyle(.white.opacity(0.45))
+                CountUp(value: shownScore, font: .data(48))
+                    .foregroundStyle(.white)
+                    .shadow(color: accent.opacity(0.35), radius: 14)
+            }
+            if state.statTimeBonus > 0 {
+                Text("+\(state.statTimeBonus.formatted())")
+                    .font(.data(14))
+                    .foregroundStyle(Color.neonGold)
+                    .padding(.vertical, 3).padding(.horizontal, 8)
+                    .background(Color.neonGold.opacity(0.12), in: Capsule())
+                    .overlay(Capsule().stroke(Color.neonGold.opacity(0.5), lineWidth: 1))
+                    .appear(1.2, calm: calm)
+            }
+        }
+        .appear(0.3, calm: calm)
+    }
+
+    private var statRows: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if state.mode == .endless {
+                StatLine(label: "VUELTAS", value: "\(state.statLaps)")
+                    .appear(0.42, calm: calm)
+            }
+            StatLine(label: "TIEMPO", value: state.statTime)
+                .appear(0.48, calm: calm)
+            StatLine(label: "MÁXIMA", value: "\(state.statTopSpeed) km/h")
+                .appear(0.54, calm: calm)
+            StatLine(label: "HOYOS / ESQUIVES",
+                     value: "\(state.statHolesHit) / \(state.statNearMisses)",
+                     accent: Color.creamText)
+                .appear(0.6, calm: calm)
+        }
+    }
+
+    private var buttons: some View {
+        HStack(spacing: 10) {
+            SignButton("OTRA VEZ", color: accent) { state.requestReset = true }
+            GhostButton("AL INICIO") { state.requestTitle = true }
+        }
+        .appear(0.72, calm: calm)
+    }
+
+    private var rightColumn: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            RouteShield(route: state.loadedStage.route)
+                .appear(0.24, calm: calm)
+
+            if state.statMedal != .none {
+                medalStamp
+            }
+
+            if state.mode == .race,
+               let up = Medal.next(after: state.statScore, on: state.loadedStage) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("PA' \(up.medal.label)")
+                        .font(.label(9)).tracking(3)
+                        .foregroundStyle(.white.opacity(0.4))
+                    Text("+\(up.needed.formatted())")
+                        .font(.data(15))
+                        .foregroundStyle(Color.creamText.opacity(0.9))
+                }
+                .appear(1.35, calm: calm)
+            }
+
+            records
+            unlocked
+
+            Text(verbatim: "PISTA #\(state.statSeed % 100000)")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.3))
+                .appear(1.6, calm: calm)
+        }
+        .padding(.bottom, 4)
+    }
+
+    /// Lands late and hard. A medal that fades in with everything else is a label;
+    /// one that arrives after the score has finished counting is a verdict.
+    private var medalStamp: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text("MEDALLA")
+                .font(.label(9)).tracking(3)
+                .foregroundStyle(.white.opacity(0.4))
+            Text(state.statMedal.label)
+                .font(.display(30)).tracking(1)
+                .foregroundStyle(medalColor)
+                .shadow(color: medalColor.opacity(0.6), radius: 16)
+        }
+        .scaleEffect(medalIn || calm ? 1 : 1.9, anchor: .leading)
+        .opacity(medalIn ? 1 : 0)
+    }
+
+    private var records: some View {
+        Group {
+            if state.newRecordScore || state.newRecordTime {
+                VStack(alignment: .leading, spacing: 1) {
+                    if state.newRecordScore {
+                        Text("RÉCORD DE PUNTOS")
+                            .font(.system(size: 9, weight: .heavy)).tracking(2)
+                    }
+                    if state.newRecordTime {
+                        Text("MEJOR TIEMPO")
+                            .font(.system(size: 9, weight: .heavy)).tracking(2)
+                    }
+                }
+                .foregroundStyle(Color.neonGold)
+                .appear(1.45, calm: calm)
+            }
+        }
+    }
+
+    private var unlocked: some View {
+        Group {
+            if let opened = state.unlockedStage {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("NUEVA RUTA")
+                        .font(.label(9)).tracking(3)
+                        .foregroundStyle(.white.opacity(0.4))
+                    HStack(spacing: 7) {
+                        RouteShield(route: opened.route, compact: true)
+                        Text(opened.name)
+                            .font(.display(15))
+                            .foregroundStyle(Color.neonTeal)
+                    }
+                }
+                .appear(1.55, calm: calm)
+            }
         }
     }
 }

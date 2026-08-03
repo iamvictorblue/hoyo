@@ -398,6 +398,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var arrivalT: Float = 0
     private var introT: Float = 0
     private var cutsceneT: Float = 0
+    private var resultsT: Float = 0
     private var introSet = SCNNode()
     private let introUfo = SCNNode()
     private var introUfoRing = SCNNode()
@@ -3421,8 +3422,60 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
     }
 
+    /// A hero shot of the craft while the results read out. Freezing the chase
+    /// camera wherever the run happened to stop is the single biggest tell that a
+    /// results screen is a UI panel rather than the end of a run.
+    private func updateResultsCamera(_ dt: Float) {
+        resultsT += dt
+        let t = resultsT
+        // eases in from wherever the chase camera was, so the cut is not a jump
+        let settle: Float = Self.smoothStep(0, 1.6, t)
+        let (cp, ctan, crgt) = sample(s)
+        let focusY: Float = 1.5 + jumpY * 0.4
+        let focus: simd_float3 = cp + crgt * x + simd_float3(0, focusY, 0)
+
+        // slow orbit, drifting up and back — a finished run gets a rising crane,
+        // a wreck gets a lower, tighter, slightly sunken angle
+        let win: Bool = phase == .finished
+        // A full revolution swung the camera straight into the hillside the road is
+        // cut through, and out the far side of the finish banner. This sways within
+        // a bounded arc behind the craft instead, which keeps the course in shot and
+        // the camera out of the terrain.
+        let radius: Float = win ? Float(7.0 + Double(t) * 0.10) : Float(6.4 + Double(t) * 0.06)
+        let height: Float = win ? Float(2.2 + Double(t) * 0.10) : Float(1.6)
+        let swayRate: Float = win ? 0.24 : 0.18
+        let ang: Float = 3.35 + sinf(t * swayRate) * 0.55
+        let orbit = simd_float3(sinf(ang) * radius, height, cosf(ang) * radius)
+        // orbit in the road's own frame, so the craft stays against the course
+        let want: simd_float3 = focus + crgt * orbit.x
+            + simd_float3(0, orbit.y, 0) + ctan * orbit.z
+
+        let from: simd_float3 = cameraNode.simdPosition
+        let k: Float = settle * 0.06 + 0.01
+        cameraNode.simdPosition = simd_mix(from, want, simd_float3(repeating: k))
+        // Aim left of the craft so the craft reads right of centre, clear of the
+        // results text. Offsetting along the camera's own right vector keeps that
+        // true at every point in the orbit, which a world-space nudge would not.
+        let up = simd_float3(0, 1, 0)
+        let fwd: simd_float3 = simd_normalize(focus - cameraNode.simdPosition)
+        let camRight: simd_float3 = simd_normalize(simd_cross(fwd, up))
+        cameraNode.simdLook(at: focus - camRight * 1.4, up: up,
+                            localFront: simd_float3(0, 0, -1))
+        let fovNow: CGFloat = Self.baseFov - 8 + CGFloat(settle) * 2
+        cameraNode.camera?.fieldOfView = fovNow
+
+        // the hull keeps turning over, so the shot is never actually still
+        let spin: Float = win ? 0.22 : 0.05
+        chassisNode.eulerAngles.y += dt * spin
+        if win { ufoLightRing.eulerAngles.y += dt * 1.6 }
+    }
+
     private func endGame(dead: Bool) {
         phase = dead ? .dead : .finished
+        resultsT = 0
+        // The blink is driven per playing frame and stops here; dying mid-blink
+        // used to leave the craft frozen part-transparent through the results.
+        chassisNode.opacity = 1
         for f in flameNodes { f.isHidden = true }
         ghostNode.isHidden = true
         clearPursuit()
@@ -3619,6 +3672,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             return
         case .finished, .dead:
             updateSkids(dt)
+            updateResultsCamera(dt)
             return
         case .playing:
             break
