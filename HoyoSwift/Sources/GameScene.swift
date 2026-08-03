@@ -3167,11 +3167,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         ghostNode.isHidden = true
         guard mode == .race, Self.startOffset <= 40,
               let data = UserDefaults.standard.data(forKey: Self.currentStage.ghostKey),
-              data.count % MemoryLayout<SIMD3<Float>>.stride == 0
+              let trace = GhostTrace.decode(data)
         else { return }
-        ghostPlay = data.withUnsafeBytes { raw in
-            Array(raw.bindMemory(to: SIMD3<Float>.self))
-        }
+        ghostPlay = trace
     }
 
     /// One sample per `ghostStep`, indexed off race time rather than accumulated,
@@ -3614,8 +3612,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 defaults.set((playTime * 10).rounded() / 10, forKey: stage.bestTimeKey)
                 // The trace belongs to this run, so it is written with the time it
                 // describes and never separately.
-                let trace = ghostRec.withUnsafeBufferPointer { Data(buffer: $0) }
-                defaults.set(trace, forKey: stage.ghostKey)
+                defaults.set(GhostTrace.encode(ghostRec), forKey: stage.ghostKey)
                 defaults.set(Int(Int64(bitPattern: runSeed)), forKey: stage.ghostSeedKey)
             }
         }

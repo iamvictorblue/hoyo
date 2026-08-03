@@ -29,3 +29,26 @@ targets:
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+  HoyoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: Hoyo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_VERSION: "5.9"
+schemes:
+  Hoyo:
+    build:
+      targets:
+        Hoyo: all
+        HoyoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HoyoTests
