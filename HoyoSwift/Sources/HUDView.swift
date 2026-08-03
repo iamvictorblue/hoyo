@@ -717,6 +717,10 @@ struct Appear: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(on ? 1 : 0)
+            // An opacity-0 view still takes taps in SwiftUI, so OTRA VEZ was
+            // restartable ~700 ms before it appeared — before the score had even
+            // finished counting.
+            .allowsHitTesting(on)
             .offset(y: on || calm ? 0 : 12)
             .onAppear {
                 // Reduce Motion still fades — the sequencing carries meaning here,

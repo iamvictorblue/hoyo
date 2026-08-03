@@ -128,7 +128,12 @@ struct GameSceneView: UIViewRepresentable {
             } else if !state.sawIntro || args.contains("-intro") {
                 // First launch only: the escape explains why a saucer is racing
                 // potholes. `-intro` replays it for testing.
-                controller.startCutscene()
+                //
+                // Routed through the request flag rather than calling the controller
+                // directly: this closure runs on main after the renderer is already
+                // playing, and startCutscene poses the camera and swaps the scene
+                // background — all render-thread-owned state.
+                state.requestCutscene = true
             }
         }
         return view

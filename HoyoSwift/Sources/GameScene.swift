@@ -399,6 +399,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var introT: Float = 0
     private var cutsceneT: Float = 0
     private var resultsT: Float = 0
+    private var resultsArmed = false
     private var introSet = SCNNode()
     private let introUfo = SCNNode()
     private var introUfoRing = SCNNode()
@@ -407,6 +408,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var introFoam: SCNNode?
     private var cityBeacons: [SCNNode] = []
     private var lighthouse: SCNNode?
+    private var introMoon: SCNLight?
 
     private static let regionFog: [simd_float3] = [
         simd_float3(0.86, 0.58, 0.62),
@@ -630,14 +632,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // The intro set is a night coastline, so it sits under a night sky; the
         // stage's own sky swaps in when the race starts. Cordillera races under the
         // sunset, which is why it is built here rather than only in the switch.
-        introSky = Textures.skyCubemap(.night)
-        let sky = Textures.skyCubemap(.sunset)
-        // Every stage sets one, including cordillera: the scene now opens on the
-        // night intro sky, so a nil here would leave the race under it.
+        // The night sky belongs to the intro set, which is the same on every course,
+        // so it is built once for the process rather than per stage load. The sunset
+        // is only needed by cordillera — building it for the other two was six faces
+        // of the powf loop thrown away.
+        introSky = Self.nightSky
+        let sky: [UIImage]
         switch Self.currentStage {
-        case .yunque: raceSky = Textures.skyCubemap(.rainforest)
-        case .playa:  raceSky = Textures.skyCubemap(.tropical)
-        case .cordillera: raceSky = sky
+        case .yunque:
+            sky = Textures.skyCubemap(.rainforest); raceSky = sky
+        case .playa:
+            sky = Textures.skyCubemap(.tropical);   raceSky = sky
+        case .cordillera:
+            sky = Textures.skyCubemap(.sunset);     raceSky = sky
         }
 
         let ambient = SCNNode()
@@ -754,6 +761,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Set when the loaded stage wants a different sky from the intro's.
     private var raceSky: [UIImage]?
     private var introSky: [UIImage]?
+    /// Stage-independent, and the most expensive texture in the project, so it is
+    /// generated once per process instead of once per stage load.
+    private static let nightSky: [UIImage] = Textures.skyCubemap(.night)
 
     /// Everything a stage build appends to. Cleared before rebuilding, otherwise a
     /// second stage would stack its geometry and entities on top of the first.
@@ -766,10 +776,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         skidNodes.removeAll(); skidAge.removeAll()
         searchlights.removeAll()
         cityBeacons.removeAll()
-        introSea = nil; introFoam = nil; lighthouse = nil
+        introSea = nil; introFoam = nil; lighthouse = nil; introMoon = nil
         flameNodes.removeAll(); frontWheelNodes.removeAll(); spinWheelNodes.removeAll()
         // these nodes persist across stages, so their children must be shed
-        for n in [chassisNode, playerNode, dustNode, sparkNode, introUfo] {
+        for n in [chassisNode, playerNode, dustNode, sparkNode, introUfo, ghostNode] {
             n.childNodes.forEach { $0.removeFromParentNode() }
         }
         blobNode.geometry = nil
@@ -805,25 +815,35 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     }
 
     /// Main thread: install the finished world.
-    func attach(world: SCNNode, sky: [UIImage]) {
-        if Self.currentStage == .playa {
+    /// The stage's own air. Its own function because `nightAtmosphere()` runs every
+    /// frame of the title and cutscene and overwrites all four properties; without
+    /// somewhere to restore them from, every race after the first title screen ran
+    /// with the night's 900/4600 distances — which erased the Yunque canopy mist
+    /// and Isla Verde's sea haze entirely.
+    func applyStageFog() {
+        switch Self.currentStage {
+        case .playa:
             // clear tropical air with sea haze far out
             scene.fogStartDistance = 420
             scene.fogEndDistance = 3200
             scene.fogDensityExponent = 1.4
             scene.fogColor = UIColor(red: 0.80, green: 0.90, blue: 0.94, alpha: 1)
-        } else if Self.currentStage == .yunque {
+        case .yunque:
             // thick canopy mist: you can't see far in there
             scene.fogStartDistance = 40
             scene.fogEndDistance = 520
             scene.fogDensityExponent = 1.9
             scene.fogColor = UIColor(red: 0.42, green: 0.55, blue: 0.42, alpha: 1)
-        } else {
+        case .cordillera:
             scene.fogStartDistance = 280
             scene.fogEndDistance = 2400
             scene.fogDensityExponent = 1.6
             scene.fogColor = UIColor(red: 1.0, green: 0.67, blue: 0.47, alpha: 1)
         }
+    }
+
+    func attach(world: SCNNode, sky: [UIImage]) {
+        applyStageFog()
         // Starts on the intro set, so it opens under the night sky; `resetGame`
         // swaps in the race sky when a run begins.
         scene.background.contents = introSky ?? sky
@@ -1858,13 +1878,6 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             pursuers[i] = p
             positionPursuer(pursuers[i])
         }
-
-        // light bars, only while someone is actually chasing
-        if active > 0 {
-            let flash = sin(Float(playTime) * 11) > 0
-            policeRedMat.emission.intensity = flash ? 2.6 : 0.05
-            policeBlueMat.emission.intensity = flash ? 0.05 : 2.6
-        }
     }
 
     private func spawnPursuer() {
@@ -2376,10 +2389,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 if pc.s >= lo && pc.s <= hi && abs(pc.x - bx) < 2.6 {
                     pursuers[pi].live = false
                     pursuers[pi].node.isHidden = true
-                    score += Float(300 * max(1, combo))
+                    // Award computed before the bump and reused, or the popup reads
+                    // the raised combo and advertises a tier more than it paid.
+                    let bounty = 300 * max(1, combo)
+                    score += Float(bounty)
                     bumpCombo()
                     sound.playThunk()
-                    popupAsync("¡LA TUMBASTE! +\(300 * max(1, combo))", .big)
+                    popupAsync("¡LA TUMBASTE! +\(bounty)", .big)
                     Haptics.shared.crash(intensity: 0.7)
                     struck = true
                     break
@@ -2644,6 +2660,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     // ---- one-shot cutscene ----
     private static let cutsceneDur: Float = 12.4
+    /// One constant for the sea's normal tiling. It was set in two places with two
+    /// different values and the per-frame drift silently won.
+    private static let seaTile: Float = 300
     private static let touchSea: Float = 7.6     // levels off just above the water
 
     private static func samplePath(_ keys: [IntroKey], _ t: Float) -> simd_float3 {
@@ -2678,7 +2697,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         seaMat.normal.contents = Textures.waterNormal()
         seaMat.normal.wrapS = .repeat
         seaMat.normal.wrapT = .repeat
-        seaMat.normal.contentsTransform = SCNMatrix4MakeScale(620, 620, 1)
+        seaMat.normal.contentsTransform = SCNMatrix4MakeScale(Self.seaTile, Self.seaTile, 1)
         seaMat.normal.intensity = 1.6
         let sea = SCNNode(geometry: SCNPlane(width: 5200, height: 5200))
         sea.geometry!.materials = [seaMat]
@@ -2864,6 +2883,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         moon.castsShadow = false
         let moonNode = SCNNode()
         moonNode.light = moon
+        introMoon = moon
         // aimed along the moon direction baked into the night cubemap
         moonNode.simdLook(at: simd_float3(0.45, -0.30, 0.84), up: simd_float3(0, 1, 0),
                           localFront: simd_float3(0, 0, -1))
@@ -3006,7 +3026,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if let n = introSea?.geometry?.firstMaterial?.normal {
             let f = (t * 0.006).truncatingRemainder(dividingBy: 1)
             n.contentsTransform = SCNMatrix4Mult(SCNMatrix4MakeTranslation(f, f * 0.4, 0),
-                                                 SCNMatrix4MakeScale(220, 220, 1))
+                                                 SCNMatrix4MakeScale(Self.seaTile,
+                                                                     Self.seaTile, 1))
         }
     }
 
@@ -3015,6 +3036,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// must place it in the same step or the opening frame renders black.
     private func placeCutsceneCamera(_ t: Float, ufoLocal: simd_float3) {
         let o = Self.introOrigin
+        // Reduce Motion holds the final, closest setup for the whole run instead of
+        // cutting between four of them and diving 430 m. The arrival still plays —
+        // the craft still flies its path — but the camera stops moving under it.
+        if state.reduceMotion {
+            let shot = Self.shots[Self.shots.count - 1]
+            cameraNode.simdPosition = o + shot.to
+            let look = simd_mix(shot.lookTo, ufoLocal, simd_float3(repeating: 0.85))
+            cameraNode.simdLook(at: o + look, up: simd_float3(0, 1, 0),
+                                localFront: simd_float3(0, 0, -1))
+            cameraNode.camera?.fieldOfView = shot.fov
+            return
+        }
         let shot = Self.shots.last { t >= $0.t0 } ?? Self.shots[0]
         let u = simd_clamp((t - shot.t0) / (shot.t1 - shot.t0), 0, 1)
         let e = u * u * (3 - 2 * u)                     // ease within the shot
@@ -3031,7 +3064,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Arms the arrival from the top. Safe to call from the title at any time.
     func startCutscene() {
         cutsceneT = 0
+        // Marked on entry, not on completion: force-quitting partway through used to
+        // leave the flag unset, so the cutscene replayed on every launch forever.
+        DispatchQueue.main.async { self.state.markIntroSeen() }
         introSet.isHidden = false
+        introMoon?.intensity = 300
         if let sky = introSky {
             scene.background.contents = sky
             scene.lightingEnvironment.contents = sky
@@ -3328,10 +3365,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // the base is 6 km away and fully fogged, but there's no reason to keep
         // paying for it once the race starts
         introSet.isHidden = true
+        // Not just hidden: a directional light in a hidden subtree may still light
+        // the scene, which would put a blue fill over the sunset course.
+        introMoon?.intensity = 0
         if let rs = raceSky {
             scene.background.contents = rs
             scene.lightingEnvironment.contents = rs
         }
+        applyStageFog()
 
         // fresh course every race
         runSeed = UInt64.random(in: 1..<2147483646)
@@ -3373,6 +3414,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         introT = 0
         lastRegion = nil
         introSet.isHidden = false
+        introMoon?.intensity = 300
         if let sky = introSky {
             scene.background.contents = sky
             scene.lightingEnvironment.contents = sky
@@ -3404,6 +3446,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         v = min(v, 34)                       // carry momentum, but not all of it
         jumpY = 0; jumpVel = 0; jumpChain = 0; jumpChainT = 0; floatT = 0
         x = 0; xd = 0
+        // The wrap moves you back to the start, so a live cruiser's gap becomes
+        // hugely negative and `gap > 150` can never retire it: it would sit out its
+        // full life invisible at the far end while the HUD showed JARA x1.
+        clearPursuit()
         hp = min(100, hp + 12)               // surviving a lap is worth a little back
         invuln = 1.2                         // don't die to the first hole of a lap
         clearSkids()
@@ -3426,6 +3472,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// camera wherever the run happened to stop is the single biggest tell that a
     /// results screen is a UI panel rather than the end of a run.
     private func updateResultsCamera(_ dt: Float) {
+        if !resultsArmed { armResults() }
         resultsT += dt
         let t = resultsT
         // eases in from wherever the chase camera was, so the cut is not a jump
@@ -3441,10 +3488,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // cut through, and out the far side of the finish banner. This sways within
         // a bounded arc behind the craft instead, which keeps the course in shot and
         // the camera out of the terrain.
-        let radius: Float = win ? Float(7.0 + Double(t) * 0.10) : Float(6.4 + Double(t) * 0.06)
-        let height: Float = win ? Float(2.2 + Double(t) * 0.10) : Float(1.6)
-        let swayRate: Float = win ? 0.24 : 0.18
-        let ang: Float = 3.35 + sinf(t * swayRate) * 0.55
+        // Capped: the screen has no timeout, and an uncapped drift left the craft an
+        // unreadable smudge for anyone who sat on their results.
+        let drift: Double = state.reduceMotion ? 0 : min(Double(t), 12)
+        let radius: Float = win ? Float(7.0 + drift * 0.10) : Float(6.4 + drift * 0.06)
+        let height: Float = win ? Float(2.2 + drift * 0.10) : Float(1.6)
+        // The results screen has no skip, so an unavoidable moving camera is worse
+        // here than anywhere else in the game. Reduce Motion gets a near-still shot.
+        let calm: Bool = state.reduceMotion
+        let swayRate: Float = calm ? 0.06 : (win ? 0.24 : 0.18)
+        let swayAmp: Float = calm ? 0.12 : 0.55
+        let ang: Float = 3.35 + sinf(t * swayRate) * swayAmp
         let orbit = simd_float3(sinf(ang) * radius, height, cosf(ang) * radius)
         // orbit in the road's own frame, so the craft stays against the course
         let want: simd_float3 = focus + crgt * orbit.x
@@ -3465,17 +3519,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cameraNode.camera?.fieldOfView = fovNow
 
         // the hull keeps turning over, so the shot is never actually still
-        let spin: Float = win ? 0.22 : 0.05
+        let spin: Float = state.reduceMotion ? 0 : (win ? 0.22 : 0.05)
         chassisNode.eulerAngles.y += dt * spin
-        if win { ufoLightRing.eulerAngles.y += dt * 1.6 }
+        if win && !state.reduceMotion { ufoLightRing.eulerAngles.y += dt * 1.6 }
     }
 
     private func endGame(dead: Bool) {
+        // Neither call site returns from the frame, so without this a fatal hit in
+        // the last 8 m ran endGame(dead: true) and then endGame(dead: false) in the
+        // same frame — awarding the finish bonus, the best time, the ghost trace and
+        // the next stage unlock for a run that killed you. Two damage sources in one
+        // frame could also double-fire and erase the record badge.
+        guard phase == .playing else { return }
         phase = dead ? .dead : .finished
         resultsT = 0
-        // The blink is driven per playing frame and stops here; dying mid-blink
-        // used to leave the craft frozen part-transparent through the results.
-        chassisNode.opacity = 1
+        resultsArmed = false
         for f in flameNodes { f.isHidden = true }
         ghostNode.isHidden = true
         clearPursuit()
@@ -3540,10 +3598,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.refreshRecordLine()
             self.state.phase = dead ? .dead : .finished
         }
-        // the invuln blink only runs in `.playing`, so restore it here or the craft
-        // sits half-transparent on the end screen
-        chassisNode.opacity = 1
         if !dead { sound.playCoqui() } else { sound.playThunk() }
+    }
+
+    /// Runs on the first `.finished`/`.dead` frame rather than inside `endGame`.
+    /// endGame is called from the middle of a playing frame and that frame then runs
+    /// to completion, so anything silenced there was immediately re-armed: the
+    /// engine kept droning, wind streaks kept emitting, a dust plume from the fatal
+    /// pothole sat where the results camera orbits, and the invulnerability blink
+    /// re-froze the hull part-transparent for the whole hero shot.
+    private func armResults() {
+        resultsArmed = true
+        chassisNode.opacity = 1
         sound.engineLevel = 0; sound.windLevel = 0; sound.skidLevel = 0
         sound.nitroLevel = 0; sound.rumbleLevel = 0
         sound.forestLevel = 0; sound.surfLevel = 0
@@ -3551,6 +3617,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         smokeSystem.birthRate = 0
         sparkSystem.birthRate = 0
         dustSystem.birthRate = 0
+        dustT = 0
+        clearBeam()
     }
 
     /// Collision damage. `grace` hits are ignored while the post-hit invulnerable

@@ -284,9 +284,7 @@ final class GameState: ObservableObject {
     /// The escape plays itself on a first launch and is opt-in after that.
     var sawIntro: Bool { UserDefaults.standard.bool(forKey: "hoyo_sawIntro") }
     func markIntroSeen() { UserDefaults.standard.set(true, forKey: "hoyo_sawIntro") }
-    /// Set by a tap during the cutscene, and by the title's replay button.
-    @Published var skipCutscene = false
-    @Published var requestCutscene = false
+
 
     /// Which course the player has picked, and which one is actually loaded.
     @Published var mode: GameMode = GameMode(
@@ -369,9 +367,17 @@ final class GameState: ObservableObject {
     var loadStageHandler: ((Stage, @escaping () -> Void) -> Void)?
 
     /// Set by HUD buttons; the game controller polls these.
+    ///
+    /// Deliberately not `@Published`. The render loop clears them, and publishing
+    /// from off the main thread fires `objectWillChange` where SwiftUI forbids it.
+    /// `skipCutscene`/`requestCutscene` were `@Published` and cleared from
+    /// `renderer(_:updateAtTime:)`, which is that exact violation.
     var requestStart = false
     var requestReset = false
     var requestTitle = false
+    /// Set by a tap during the cutscene, and by the title's replay button.
+    var skipCutscene = false
+    var requestCutscene = false
 
     func popup(_ text: String, _ tone: PopupTone = .praise) {
         popupText = text
