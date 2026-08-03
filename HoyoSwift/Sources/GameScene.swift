@@ -876,6 +876,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     var pointOfView: SCNNode { cameraNode }
 
+    /// The colour grade currently installed. Swapped when the look changes — on
+    /// stage load, and when the night set gives way to a race — never per frame,
+    /// since building an SCNTechnique allocates a render pipeline.
+    private var postLook: PostFX.Look?
+
+    /// Set by `GameSceneView`; the view owns `SCNView.technique`, which is main
+    /// thread only, so the swap is dispatched rather than applied here.
+    var applyTechnique: ((SCNTechnique) -> Void)?
+
+    private func updatePostFX() {
+        let want: PostFX.Look = (phase == .cutscene || phase == .intro)
+            ? .night : PostFX.Look.racing(Self.currentStage)
+        guard want != postLook else { return }
+        postLook = want
+        guard let tech = PostFX.technique(for: want), let apply = applyTechnique else { return }
+        DispatchQueue.main.async { apply(tech) }
+    }
+
     private func buildCameraObject() {
         let cam = SCNCamera()
         cam.zNear = 0.1
@@ -3726,6 +3744,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             state.requestCutscene = false
             startCutscene()
         }
+
+        updatePostFX()
 
         if let n = oceanNormal {
             let fx = Float(time * 0.015).truncatingRemainder(dividingBy: 1)

@@ -88,6 +88,12 @@ struct GameSceneView: UIViewRepresentable {
         // Starts parked. Nothing may render until a world is installed — see below.
         view.isPlaying = false
         UIApplication.shared.isIdleTimerDisabled = true   // no screen sleep mid-run
+        // Colour grade. The controller only calls this when it has a technique, so a
+        // build failure in PostFX simply leaves the view rendering ungraded rather
+        // than rendering nothing.
+        controller.applyTechnique = { [weak view] tech in
+            view?.technique = tech
+        }
 
         // The world build — 400k sky-cubemap pixels, the terrain meshes, hundreds of
         // trees — used to run synchronously in init and froze the launch for ~5 s.

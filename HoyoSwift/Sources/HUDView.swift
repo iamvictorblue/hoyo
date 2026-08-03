@@ -1134,13 +1134,13 @@ struct IntroOverlay: View {
             // went from a bright desert dusk to a night coastline — the old weights
             // were fighting a sunset and just muddied the city lights.
             LinearGradient(colors: [.clear,
-                                    Color(red: 0.04, green: 0.02, blue: 0.09).opacity(0.20),
-                                    Color(red: 0.03, green: 0.01, blue: 0.07).opacity(0.72)],
+                                    Color(red: 0.04, green: 0.02, blue: 0.09).opacity(0.34),
+                                    Color(red: 0.03, green: 0.01, blue: 0.07).opacity(0.86)],
                            startPoint: .topTrailing, endPoint: .bottomLeading)
                 .ignoresSafeArea()
-            LinearGradient(colors: [Color.black.opacity(0.62), .clear],
+            LinearGradient(colors: [Color.black.opacity(0.70), .clear],
                            startPoint: .bottom, endPoint: .top)
-                .frame(height: 210)
+                .frame(height: 250)
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .ignoresSafeArea()
 
