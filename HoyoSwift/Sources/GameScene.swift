@@ -225,8 +225,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// 0…100. Rises while you hold a combo, so the better the run goes the more
     /// attention it draws. Full spawns a cruiser and spends most of itself.
     private var heat: Float = 0
-    private static let heatPerSpawn: Float = 70
+    /// Minimum seconds between spawns. Without it a kill frees a slot while heat is
+    /// still pinned at 100, so the replacement arrived on the very next frame.
+    private var spawnCool: Float = 0
+    private static let spawnGap: Float = 9
     private static let pursuerLife: Float = 20
+    /// Flat, and it does not touch the combo. Paying `300 * combo` for a kill that
+    /// also called `bumpCombo()` made the chase self-sustaining: a bigger combo
+    /// raised heat gain, which spawned the next cruiser sooner, which paid more.
+    private static let pursuerBounty = 260
 
     // MARK: - Yunque quarry
 
@@ -1825,18 +1832,25 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// combo is what draws them, so the mechanic that had no downside now has one.
     private func updatePursuit(_ dt: Float) {
         let active = pursuers.reduce(0) { $0 + ($1.live ? 1 : 0) }
+        if spawnCool > 0 { spawnCool = max(0, spawnCool - dt) }
 
-        // Heat only builds while you are actually stringing things together, and
-        // bleeds off fast once you stop, so a careful run is left alone.
-        if combo >= 2 {
-            heat += dt * (4 + Float(combo) * 2.6)
+        // Heat builds while you are stringing things together and bleeds off when
+        // you stop. Gain is deliberately shallow: on a course where near-misses fire
+        // constantly the old rate held combo at the cap and heat pinned at 100 for
+        // the entire run, so the chase was a permanent state rather than a
+        // consequence of a hot streak.
+        if combo >= 3 {
+            heat += dt * (2.5 + Float(combo) * 1.5)
         } else {
-            heat -= dt * 11
+            heat -= dt * 14
         }
         heat = simd_clamp(heat, 0, 100)
 
-        if heat >= 100, active < pursuers.count {
-            heat -= Self.heatPerSpawn
+        // Spends the whole meter, and a floor between spawns. Subtracting a fixed
+        // amount left it near the threshold and refilled almost immediately.
+        if heat >= 100, spawnCool <= 0, active < pursuers.count {
+            heat = 0
+            spawnCool = Self.spawnGap
             spawnPursuer()
         }
 
@@ -1906,6 +1920,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     private func clearPursuit() {
         heat = 0
+        spawnCool = 0
         for i in 0..<pursuers.count {
             pursuers[i].live = false
             pursuers[i].node.isHidden = true
@@ -2383,7 +2398,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             var struck = false
 
             // Cruisers first: they are the thing actively hurting you, so a shot
-            // that could hit either should always take the pursuer.
+            // that could hit either should always take the pursuer. The payout is
+            // flat and does not build combo — shaking a tail is meant to be relief,
+            // not the most profitable thing you can do with a beam charge.
             for pi in 0..<pursuers.count where pursuers[pi].live {
                 let pc = pursuers[pi]
                 if pc.s >= lo && pc.s <= hi && abs(pc.x - bx) < 2.6 {
@@ -2391,11 +2408,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     pursuers[pi].node.isHidden = true
                     // Award computed before the bump and reused, or the popup reads
                     // the raised combo and advertises a tier more than it paid.
-                    let bounty = 300 * max(1, combo)
-                    score += Float(bounty)
-                    bumpCombo()
+                    score += Float(Self.pursuerBounty)
                     sound.playThunk()
-                    popupAsync("¡LA TUMBASTE! +\(bounty)", .big)
+                    popupAsync("¡LA TUMBASTE! +\(Self.pursuerBounty)", .big)
                     Haptics.shared.crash(intensity: 0.7)
                     struck = true
                     break
@@ -3374,8 +3389,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         applyStageFog()
 
-        // fresh course every race
-        runSeed = UInt64.random(in: 1..<2147483646)
+        // A ghost is a rematch, so it has to be the same course. Once a stage has a
+        // best time, its layout is the one that time was set on; without a ghost the
+        // course is fresh every race. `PISTA #` on the end screen shows which.
+        let d = UserDefaults.standard
+        let savedSeed = UInt64(bitPattern: Int64(d.integer(forKey: Self.currentStage.ghostSeedKey)))
+        let haveGhost = d.data(forKey: Self.currentStage.ghostKey) != nil
+        if mode == .race, Self.startOffset <= 40, haveGhost, savedSeed != 0 {
+            runSeed = savedSeed
+        } else {
+            runSeed = UInt64.random(in: 1..<2147483646)
+        }
         runRng = Lcg(runSeed)
         layoutHazards()
 
@@ -3574,6 +3598,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 // describes and never separately.
                 let trace = ghostRec.withUnsafeBufferPointer { Data(buffer: $0) }
                 defaults.set(trace, forKey: stage.ghostKey)
+                defaults.set(Int(Int64(bitPattern: runSeed)), forKey: stage.ghostSeedKey)
             }
         }
         // finishing a stage opens the next one

@@ -90,6 +90,11 @@ enum Stage: Int, CaseIterable {
     /// Position trace of the fastest run, replayed as the ghost. Written only when
     /// bestTimeKey is, so the two never disagree about which run they describe.
     var ghostKey: String { "hoyo_ghost_\(rawValue)" }
+    /// The course layout the ghost was set on. A ghost recorded against a different
+    /// pothole field is worse than no ghost: its racing line swerves around holes
+    /// that aren't there and drives straight through ones that are, so copying it —
+    /// the only thing a ghost is for — puts you in a hole.
+    var ghostSeedKey: String { "hoyo_ghostSeed_\(rawValue)" }
     var endlessScoreKey: String { "hoyo_endlessScore_\(rawValue)" }
     var endlessLapKey: String { "hoyo_endlessLaps_\(rawValue)" }
 
@@ -104,37 +109,43 @@ enum Stage: Int, CaseIterable {
         }
     }
 
-    /// Score needed for each medal. These are anchored on measurement, not on a
-    /// model of the courses — an earlier model reasoned from near-miss geometry,
-    /// concluded Yunque should score highest, and set its thresholds 18% above
-    /// Guajataca's. Real play says the opposite.
+    /// Score needed for each medal, derived from a measured ceiling rather than a
+    /// model of the courses. Two earlier attempts both reasoned from content counts
+    /// and both got it wrong; this one is anchored on what a run can actually bank.
     ///
-    /// Every course is 3,600 m and pays the same skill-independent floor: 4,320
-    /// for distance (score is `v * dt * 1.2`, which integrates to 1.2 x distance
-    /// regardless of speed) plus 26 piraguas and 14 toolboxes, so 7,620 in all.
+    /// Method: the autoplay bot was made invulnerable and driven to the finish on
+    /// each course, giving the most a run can score with no crashes and no combo
+    /// ever broken. Thresholds are a fixed fraction of that ceiling — gold 85%,
+    /// silver 60%, bronze 35% — so all three move together if the economy changes
+    /// again, and the numbers are reproducible rather than picked.
     ///
-    /// Instrumented spawn counts for what differs:
+    ///                 ceiling   near-misses   bronze   silver    gold
+    ///   Guajataca      31,440        36       11,000   19,000   26,500
+    ///   El Yunque      22,456        55        8,000   13,500   19,000
+    ///   Isla Verde     12,824        32        4,500    7,500   11,000
     ///
-    ///                 holes   cars          critters      road half-width
-    ///   Guajataca      127    pool of 9       —                6.8
-    ///   El Yunque      107    none          70 / 5,820 pts      4.6
-    ///   Isla Verde     111    none          62 / 5,480 pts      7.6
+    /// What the previous numbers got wrong: Isla Verde's gold was 23,000 against a
+    /// 12,824 ceiling, and its silver 15,500 — both unreachable at any skill level,
+    /// so only bronze existed there. El Yunque's gold sat at 96% of its ceiling,
+    /// which is a flawless run or nothing.
     ///
-    /// - Guajataca is the only course with traffic, and a car pays 150 x combo to
-    ///   clear (750 at cap) or 120–250 to ram. That single term outweighs the
-    ///   near-miss geometry the old model was built on, and it is why Guajataca
-    ///   has the richest economy despite the widest tolerances.
-    /// - Yunque and Isla Verde are within 4% of each other on every income term.
-    ///   Their thresholds should differ only by how hard each is to survive, and
-    ///   the Yunque trail is a third the width of Isla Verde's sand with the same
-    ///   number of holes in it — so it gets the lower bar, not the higher one.
+    /// The cause was a comment claiming Yunque and Isla Verde are "within 4% of
+    /// each other on every income term". They are not: near-miss income is the
+    /// largest skill term and it scales with how much of the road your line covers.
+    /// The Yunque trail is 4.6 m half-width against Isla Verde's 7.6, and the
+    /// measured near-miss counts are 55 against 32 for a near-identical number of
+    /// holes. Wide sand spreads the holes out of your line.
     ///
-    /// Gold sits slightly above a strong run on each course, so it stays a chase.
+    /// Distance income is worth less than it looks. `0.55 + 1.45 * payNorm` per
+    /// metre only beats the old flat 1.2 above roughly 127 km/h average, and the
+    /// measured runs averaged 132, so it contributes a few hundred points, not
+    /// thousands. The inflation that made gold trivial was the pursuit bounty loop,
+    /// not this.
     var medalThresholds: (bronze: Int, silver: Int, gold: Int) {
         switch self {
-        case .cordillera: return (9_000, 18_000, 27_000)
-        case .yunque:     return (7_500, 14_500, 21_500)
-        case .playa:      return (8_000, 15_500, 23_000)
+        case .cordillera: return (11_000, 19_000, 26_500)
+        case .yunque:     return (8_000, 13_500, 19_000)
+        case .playa:      return (4_500, 7_500, 11_000)
         }
     }
 }
@@ -284,6 +295,20 @@ final class GameState: ObservableObject {
     /// The escape plays itself on a first launch and is opt-in after that.
     var sawIntro: Bool { UserDefaults.standard.bool(forKey: "hoyo_sawIntro") }
     func markIntroSeen() { UserDefaults.standard.set(true, forKey: "hoyo_sawIntro") }
+
+    /// Drops the ghost for a stage so the next run draws a fresh course. Locking the
+    /// layout to the ghost is what makes the rematch fair, but without this the
+    /// course would never change again once a time was set.
+    func rerollCourse(_ stage: Stage) {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: stage.ghostKey)
+        d.removeObject(forKey: stage.ghostSeedKey)
+        objectWillChange.send()
+    }
+
+    var hasGhost: Bool {
+        UserDefaults.standard.data(forKey: selectedStage.ghostKey) != nil
+    }
 
 
     /// Which course the player has picked, and which one is actually loaded.

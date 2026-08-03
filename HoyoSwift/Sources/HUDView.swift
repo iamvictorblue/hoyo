@@ -1245,12 +1245,25 @@ struct IntroOverlay: View {
                         // Quiet on purpose: the title was deliberately kept simple,
                         // so replaying the escape is a muted line, not a button
                         // competing with ARRANCAR.
-                        Button { state.requestCutscene = true } label: {
-                            Text("VER LA FUGA")
-                                .font(.label(10)).tracking(2)
-                                .foregroundStyle(.white.opacity(0.38))
+                        HStack(spacing: 16) {
+                            Button { state.requestCutscene = true } label: {
+                                Text("VER LA LLEGADA")
+                                    .font(.label(10)).tracking(2)
+                                    .foregroundStyle(.white.opacity(0.55))
+                            }
+                            .buttonStyle(.plain)
+                            // Only when there is a course to drop. The layout is
+                            // pinned to your ghost so the rematch is fair; this is
+                            // how you get a different one.
+                            if state.hasGhost {
+                                Button { state.rerollCourse(state.selectedStage) } label: {
+                                    Text("PISTA NUEVA")
+                                        .font(.label(10)).tracking(2)
+                                        .foregroundStyle(.white.opacity(0.55))
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .buttonStyle(.plain)
                         .padding(.top, 12)
                     } else {
                         LoadingLabel().padding(.top, 24)
