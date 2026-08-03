@@ -45,47 +45,87 @@ extension Font {
 /// The brand: the two O's in HOYO are literally potholes — dark core, warm gritty
 /// rim, the same read as the ones in the road. A game named after a hole should
 /// have holes in its name.
+/// The brand: the two O's in HOYO are holes punched through the sign.
+///
+/// Deliberately plain. A first attempt gave these a thick pale lip, radiating
+/// cracks and a teal catchlight, and at wordmark size the result read as two eyes
+/// staring out of the word — the detail became noise and fought the letterforms.
+/// (The cracks never even drew: `Canvas` clips to its frame, so everything past
+/// the lip was cut off.)
+///
+/// What actually makes a hole read as a hole at this size is a thin dark lip, a
+/// near-black interior, and the interior sitting slightly low so the top shows
+/// more wall than the bottom.
 struct PotholeO: View {
     let cap: CGFloat
 
     var body: some View {
         ZStack {
+            // Dark asphalt lip. Two earlier passes had this pale, which made the
+            // O's the loudest thing in the word — a hole should be the quiet part
+            // and the letters should carry the colour.
             Ellipse()
                 .fill(LinearGradient(
-                    colors: [Color(red: 0.74, green: 0.69, blue: 0.60),
-                             Color(red: 0.48, green: 0.43, blue: 0.37)],
+                    colors: [Color(red: 0.34, green: 0.30, blue: 0.26),
+                             Color(red: 0.14, green: 0.12, blue: 0.11)],
                     startPoint: .top, endPoint: .bottom))
+
+            // the hole. Offset down so the far wall shows at the top.
             Ellipse()
                 .fill(RadialGradient(
-                    colors: [Color(red: 0.02, green: 0.02, blue: 0.03),
-                             Color(red: 0.10, green: 0.09, blue: 0.11)],
-                    center: .init(x: 0.5, y: 0.42), startRadius: 0, endRadius: cap * 0.42))
-                .padding(cap * 0.13)
+                    colors: [Color(red: 0.02, green: 0.02, blue: 0.025),
+                             Color(red: 0.06, green: 0.055, blue: 0.07)],
+                    center: .init(x: 0.5, y: 0.66), startRadius: 0, endRadius: cap * 0.34))
+                .padding(.horizontal, cap * 0.085)
+                .padding(.top, cap * 0.075)
+                .padding(.bottom, cap * 0.125)
+
         }
-        .frame(width: cap * 0.66, height: cap)
-        .shadow(color: .black.opacity(0.55), radius: 3, y: 2)
+        .frame(width: cap * 0.62, height: cap)
     }
 }
 
 struct Wordmark: View {
     var size: CGFloat = 74
 
-    /// SF's cap height is about 0.72 em.
+    /// Helvetica Neue's cap height is about 0.72 em.
     private var cap: CGFloat { size * 0.715 }
+    private var ink: Color { Color(red: 0.10, green: 0.07, blue: 0.11) }
 
     var body: some View {
-        HStack(alignment: .lastTextBaseline, spacing: size * 0.012) {
-            Text("¡H").font(.display(size))
+        ZStack {
+            // Ink edge, drawn as eight offset copies. SwiftUI has no text stroke,
+            // and the mark has to survive over city lights and a sunset sky without
+            // depending on the scrim behind it.
+            ForEach(Self.edge, id: \.0) { dx, dy in
+                letters
+                    .foregroundStyle(ink)
+                    .offset(x: cap * dx, y: cap * dy)
+            }
+            letters
+                .foregroundStyle(LinearGradient(
+                    colors: [.neonGold, .sunsetOrange, .neonPink],
+                    startPoint: .topLeading, endPoint: .bottomTrailing))
+        }
+        // Hard offset, no blur: a painted plate sitting above the road, rather than
+        // the diffuse glow this used to have.
+        .shadow(color: ink.opacity(0.9), radius: 0, x: cap * 0.055, y: cap * 0.055)
+        .shadow(color: .black.opacity(0.45), radius: cap * 0.20, y: cap * 0.06)
+    }
+
+    private static let edge: [(CGFloat, CGFloat)] = [
+        (-0.035, 0), (0.035, 0), (0, -0.035), (0, 0.035),
+        (-0.025, -0.025), (0.025, -0.025), (-0.025, 0.025), (0.025, 0.025)
+    ]
+
+    private var letters: some View {
+        HStack(alignment: .lastTextBaseline, spacing: size * 0.004) {
+            Text("¡H").font(.display(size)).tracking(-size * 0.02)
             hole
-            Text("Y").font(.display(size))
+            Text("Y").font(.display(size)).tracking(-size * 0.02)
             hole
             Text("!").font(.display(size))
         }
-        .foregroundStyle(LinearGradient(
-            colors: [.neonPink, .sunsetOrange, .neonGold],
-            startPoint: .leading, endPoint: .trailing))
-        .shadow(color: .black.opacity(0.8), radius: 9, y: 3)
-        .shadow(color: .neonPink.opacity(0.4), radius: 24)
     }
 
     private var hole: some View {
