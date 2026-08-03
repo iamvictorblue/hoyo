@@ -11,16 +11,23 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Assets.xcassets
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.9"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: ¡HOYO!
-        UILaunchScreen: {}
+        # Named colour rather than an empty dict: the default launch surface is
+        # white, which flashes hard before the night coastline appears.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
         UIStatusBarHidden: true
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
