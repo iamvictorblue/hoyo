@@ -349,9 +349,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
     private var invuln: Float = 0
     // jump
-    private var jumpY: Float = 0        // height above the road
-    private var jumpVel: Float = 0
-    private var jumpCool: Float = 0
+    /// The craft's vertical state. Lives in `JumpState` so the chain/float rules
+    /// can be tested; the accessors below keep the old names for the many read
+    /// sites elsewhere in this file.
+    private var jump = JumpState()
+    private var jumpY: Float {           // height above the road
+        get { jump.y } set { jump.y = newValue }
+    }
+    private var jumpVel: Float { get { jump.vel } set { jump.vel = newValue } }
+    private var jumpCool: Float { get { jump.cool } set { jump.cool = newValue } }
     // ghost — the fastest run played back alongside this one
     /// One sample per `ghostStep` of race time: course distance, lateral offset,
     /// height. Indexed rather than time-stamped, so `ghostPlay[i]` is exactly
@@ -370,21 +376,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var patchCursor = 0
     private static let boltSpeed: Float = 115
     private static let shotCost: Float = 46
-    private var airborne: Bool { jumpY > 0.02 }
-    private static let gravity: Float = 24
-    private static let jumpImpulse: Float = 10.6
+    private var airborne: Bool { jump.airborne }
+    private static let gravity = JumpState.gravity
 
     // Chain three hops and the craft remembers what it is. Window is generous
     // enough to be repeatable but tight enough to be a deliberate rhythm: a hop
     // lasts ~0.88 s, so you have roughly a second on the ground to go again.
-    private static let jumpChainWindow: Float = 2.0
-    private static let floatDuration: Float = 10
-    private static let floatHeight: Float = 12
-    private static let floatCost: Float = 50
-    private var jumpChain = 0
-    private var jumpChainT: Float = 0
-    private var floatT: Float = 0
-    private var floating: Bool { floatT > 0 }
+    private static let floatDuration = JumpState.floatDuration
+    private static let floatHeight = JumpState.floatHeight
+    private var jumpChain: Int { get { jump.chain } set { jump.chain = newValue } }
+    private var floatT: Float { get { jump.floatT } set { jump.floatT = newValue } }
+    private var floating: Bool { jump.floating }
     private var dustT: Float = 0
     private var sparkT: Float = 0
     private var rumbleHapticT: Float = 0
@@ -2407,7 +2409,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let prevS = bolts[i].s
             bolts[i].s += Self.boltSpeed * dt
             let bs = bolts[i].s, bx = bolts[i].x
-            let lo = prevS - 1.4, hi = bs + 1.4
+            let sweep = Sweep(from: prevS, to: bs, x: bx, pad: 1.4)
 
             if bs - s > 95 || bs > Self.total {
                 bolts[i].live = false; bolts[i].node.isHidden = true; continue
@@ -2421,7 +2423,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // not the most profitable thing you can do with a beam charge.
             for pi in 0..<pursuers.count where pursuers[pi].live {
                 let pc = pursuers[pi]
-                if pc.s >= lo && pc.s <= hi && abs(pc.x - bx) < 2.6 {
+                if sweep.hits(s: pc.s, x: pc.x, tolerance: 2.6) {
                     pursuers[pi].live = false
                     pursuers[pi].node.isHidden = true
                     // Award computed before the bump and reused, or the popup reads
@@ -2440,7 +2442,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             for ti in 0..<traffic.count {
                 let tc = traffic[ti]
                 guard tc.s < Self.total, tc.s > s - 4 else { continue }
-                if tc.s >= lo && tc.s <= hi && abs(tc.x - bx) < 2.6 {
+                if sweep.hits(s: tc.s, x: tc.x, tolerance: 2.6) {
                     traffic[ti].vx = (tc.x >= bx ? 1 : -1) * 13
                     traffic[ti].spin = 1.1
                     traffic[ti].v *= 0.62
@@ -2462,7 +2464,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     let cs = critters[ci].s
                     guard cs > s - 2 else { continue }
                     let tol = 1.1 + critters[ci].kind.displayScale * 0.38
-                    if cs >= lo && cs <= hi && abs(critters[ci].x - bx) < tol {
+                    if sweep.hits(s: cs, x: critters[ci].x, tolerance: tol) {
                         killCritter(ci, at: cs, bx)
                         struck = true
                         break
@@ -2475,7 +2477,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 for hIdx in 0..<holes.count {
                     let h = holes[hIdx]
                     guard !h.zapped, !h.hit, h.s > s else { continue }
-                    if h.s >= lo && h.s <= hi && abs(h.x - bx) < h.r + 1.8 {
+                    if sweep.hits(s: h.s, x: h.x, tolerance: h.r + 1.8) {
                         holes[hIdx].zapped = true
                         layPatch(over: h)
                         score += 70
@@ -3377,8 +3379,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         lap = 1; lapFlash = 0; lapWrapPending = false
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
-        jumpY = 0; jumpVel = 0; jumpCool = 0
-        jumpChain = 0; jumpChainT = 0; floatT = 0
+        jump.reset()
         chassisNode.opacity = 1
         driftYaw = 0; leanRoll = 0; pitchAng = 0
         loadGhost()
@@ -3484,7 +3485,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         lap += 1
         s = Self.startOffset
         v = min(v, 34)                       // carry momentum, but not all of it
-        jumpY = 0; jumpVel = 0; jumpChain = 0; jumpChainT = 0; floatT = 0
+        jump.reset()
         x = 0; xd = 0
         // The wrap moves you back to the start, so a live cruiser's gap becomes
         // hugely negative and `gap > 150` can never retire it: it would sit out its
@@ -3880,33 +3881,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         playGhost()
 
         // ----- jump -----
-        if jumpCool > 0 { jumpCool = max(0, jumpCool - dt) }
-        if jumpChainT > 0 {
-            jumpChainT -= dt
-            if jumpChainT <= 0 { jumpChain = 0 }
-        }
+        // Timers first, request second, motion last — see JumpState.advanceTimers.
+        jump.advanceTimers(dt: dt)
         if state.input.jumpRequested {
             state.input.jumpRequested = false
-            if !airborne && jumpCool <= 0 && v > 6 && !floating {
-                jumpChain += 1
-                jumpChainT = Self.jumpChainWindow
-                jumpCool = 0.35
-                if jumpChain >= 3 && nitro >= Self.floatCost {
-                    // third hop in the rhythm: go up and stay up
-                    jumpChain = 0
-                    jumpChainT = 0
-                    floatT = Self.floatDuration
-                    nitro -= Self.floatCost
-                    jumpVel = 0
-                    sound.playFloat()
-                    Haptics.shared.crash(intensity: 0.8)
-                    popupAsync("¡A VOLAR!", .big)
-                } else {
-                    if jumpChain >= 3 { jumpChain = 0; popupAsync("SIN NITRO", .hit) }
-                    jumpVel = Self.jumpImpulse
-                    sound.playJump()
-                    Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
-                }
+            switch jump.requestJump(speed: v, nitro: &nitro) {
+            case .refused:
+                break
+            case .hop:
+                sound.playJump()
+                Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
+            case .float:
+                sound.playFloat()
+                Haptics.shared.crash(intensity: 0.8)
+                popupAsync("¡A VOLAR!", .big)
+            case .floatDenied:
+                popupAsync("SIN NITRO", .hit)
+                sound.playJump()
+                Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
             }
         }
         if Self.autoplay && !airborne && jumpCool <= 0 && v > 20 && !floating {
@@ -3917,34 +3909,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 state.input.jumpRequested = true
             }
         }
-        if floating {
-            floatT -= dt
-            // ease up to altitude and hold there
-            jumpY += (Self.floatHeight - jumpY) * min(1, 2.4 * dt)
-            jumpVel = 0
-            if floatT <= 0 {
-                floatT = 0
-                jumpVel = -1          // nudge into the fall
-            }
-        } else if airborne || jumpVel > 0 {
-            jumpVel -= Self.gravity * dt
-            jumpY += jumpVel * dt
-            if jumpY <= 0 {
-                // landing — a drop from float altitude hits far harder than a hop
-                let impact = simd_clamp(-jumpVel / 24, 0.25, 1)
-                jumpY = 0; jumpVel = 0
-                // Recovery is charged here, not at take-off: a take-off cooldown
-                // shorter than the airtime can never bind, which is what let you
-                // stay airborne ~92% of a run by holding the button.
-                jumpCool = 0.42 + 0.25 * impact
-                shake = max(shake, 0.4 + impact * 0.75)
-                sound.playThunk()
-                Haptics.shared.crash(intensity: 0.4 + impact * 0.5)
-                let (lp, _, lr) = sample(s)
-                dustNode.simdPosition = lp + lr * x + simd_float3(0, 0.25, 0)
-                dustSystem.birthRate = 220 + 420 * CGFloat(impact)
-                dustT = 0.16 + 0.14 * impact
-            }
+        if let landing = jump.advanceMotion(dt: dt) {
+            // a drop from float altitude hits far harder than a hop
+            let impact = landing.impact
+            shake = max(shake, 0.4 + impact * 0.75)
+            sound.playThunk()
+            Haptics.shared.crash(intensity: 0.4 + impact * 0.5)
+            let (lp, _, lr) = sample(s)
+            dustNode.simdPosition = lp + lr * x + simd_float3(0, 0.25, 0)
+            dustSystem.birthRate = 220 + 420 * CGFloat(impact)
+            dustT = 0.16 + 0.14 * impact
         }
 
         // steering authority drops off the ground — you commit to a line mid-air
