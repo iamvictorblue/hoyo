@@ -615,10 +615,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return geo
     }
 
-    private func lambert(_ color: UIColor) -> SCNMaterial {
+    /// Scenery surface. Physically based rather than lambert so everything in the
+    /// frame answers to the same light — the road, the terrain and the craft are all
+    /// PBR now, and lambert geometry beside them ignores specular entirely, which is
+    /// what made the casitas and palms read as pasted on rather than lit.
+    ///
+    /// Kept matte by default. This is a stylised game and the flat-colour scenery is
+    /// part of its look; the point is not to make it glossy but to have it sit in the
+    /// same lighting as its surroundings.
+    private func lambert(_ color: UIColor, roughness: CGFloat = 0.86) -> SCNMaterial {
         let m = SCNMaterial()
-        m.lightingModel = .lambert
+        m.lightingModel = .physicallyBased
         m.diffuse.contents = color
+        m.metalness.contents = 0.0
+        m.roughness.contents = roughness
         return m
     }
 
