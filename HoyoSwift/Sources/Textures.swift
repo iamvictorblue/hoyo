@@ -239,43 +239,58 @@ enum Textures {
     /// because a wet surface is smooth and its read comes from gloss, not bumps.
     static func normalMap(from image: UIImage, strength: Float) -> UIImage? {
         guard let cg = image.cgImage else { return nil }
-        let w = cg.width, h = cg.height
-        var lum = [Float](repeating: 0, count: w * h)
-        var src = [UInt8](repeating: 0, count: w * h * 4)
-        guard let ctx = CGContext(data: &src, width: w, height: h, bitsPerComponent: 8,
-                                 bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+        // Derived at 256 regardless of source size. A tiled detail normal is
+        // indistinguishable at half resolution and this is four times less work —
+        // the first version ran the Sobel at the source's full 512 and pushed stage
+        // load from 2.8s to 14.8s.
+        let n = 256
+        var src = [UInt8](repeating: 0, count: n * n * 4)
+        guard let ctx = CGContext(data: &src, width: n, height: n, bitsPerComponent: 8,
+                                 bytesPerRow: n * 4, space: CGColorSpaceCreateDeviceRGB(),
                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        for i in 0..<(w * h) {
-            let r = Float(src[i * 4]), g = Float(src[i * 4 + 1]), b = Float(src[i * 4 + 2])
-            lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: n, height: n))
+
+        var lum = [Float](repeating: 0, count: n * n)
+        for i in 0..<(n * n) {
+            lum[i] = (0.2126 * Float(src[i * 4]) + 0.7152 * Float(src[i * 4 + 1])
+                      + 0.0722 * Float(src[i * 4 + 2])) / 255
         }
 
-        var out = [UInt8](repeating: 255, count: w * h * 4)
-        // Wrapping indices, because the road tiles: a seam in the normal map shows
-        // up as a hard line running across the asphalt every tile.
-        func at(_ x: Int, _ y: Int) -> Float {
-            lum[((y + h) % h) * w + ((x + w) % w)]
-        }
-        for y in 0..<h {
-            for x in 0..<w {
-                let dx = (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1))
-                       - (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1))
-                let dy = (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1))
-                       - (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1))
-                var n = simd_float3(dx * strength, dy * strength, 1)
-                n = simd_normalize(n)
-                let i = (y * w + x) * 4
-                out[i]     = UInt8(max(0, min(255, (n.x * 0.5 + 0.5) * 255)))
-                out[i + 1] = UInt8(max(0, min(255, (n.y * 0.5 + 0.5) * 255)))
-                out[i + 2] = UInt8(max(0, min(255, (n.z * 0.5 + 0.5) * 255)))
-                out[i + 3] = 255
+        var out = [UInt8](repeating: 255, count: n * n * 4)
+        // Row indices resolved once per row instead of a modulo on every one of the
+        // eight neighbour reads per pixel — that closure was most of the cost.
+        // Wrapping matters: the road and the ground both tile, and a non-wrapping
+        // normal draws a hard seam at every tile boundary.
+        lum.withUnsafeBufferPointer { L in
+            out.withUnsafeMutableBufferPointer { O in
+                for y in 0..<n {
+                    let y0 = ((y - 1 + n) % n) * n
+                    let y1 = y * n
+                    let y2 = ((y + 1) % n) * n
+                    for x in 0..<n {
+                        let x0 = (x - 1 + n) % n
+                        let x2 = (x + 1) % n
+                        let tl = L[y0 + x0], tc = L[y0 + x], tr = L[y0 + x2]
+                        let ml = L[y1 + x0],                mr = L[y1 + x2]
+                        let bl = L[y2 + x0], bc = L[y2 + x], br = L[y2 + x2]
+                        let dx = (tl + 2 * ml + bl) - (tr + 2 * mr + br)
+                        let dy = (tl + 2 * tc + tr) - (bl + 2 * bc + br)
+                        var v = simd_float3(dx * strength, dy * strength, 1)
+                        v = simd_normalize(v)
+                        let i = (y1 + x) * 4
+                        O[i]     = UInt8(max(0, min(255, (v.x * 0.5 + 0.5) * 255)))
+                        O[i + 1] = UInt8(max(0, min(255, (v.y * 0.5 + 0.5) * 255)))
+                        O[i + 2] = UInt8(max(0, min(255, (v.z * 0.5 + 0.5) * 255)))
+                        O[i + 3] = 255
+                    }
+                }
             }
         }
         return out.withUnsafeMutableBytes { buf -> UIImage? in
-            guard let c = CGContext(data: buf.baseAddress, width: w, height: h,
-                                   bitsPerComponent: 8, bytesPerRow: w * 4,
+            guard let c = CGContext(data: buf.baseAddress, width: n, height: n,
+                                   bitsPerComponent: 8, bytesPerRow: n * 4,
                                    space: CGColorSpaceCreateDeviceRGB(),
                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
                   let img = c.makeImage() else { return nil }
@@ -454,34 +469,73 @@ enum Textures {
 
     /// Near-white clumpy noise, multiplied over the terrain's vertex colours so
     /// the hillsides read as vegetation rather than smooth gradients.
+    /// Terrain detail. Multiplies against the per-vertex colours that carry hue
+    /// (grass, rock, sand), so this stays luminance-only and centred near 1.0 —
+    /// pushing it darker would drag every biome toward grey.
+    ///
+    /// Rewritten at 512² with actual structure. The previous version was soft
+    /// ellipses and speckle at 256², which looked acceptable as flat grain but had
+    /// nothing a normal map could grip: deriving relief from it produced uniform
+    /// mush. Grass runs in clumped directional strands and the pebbles carry a
+    /// light/dark pair, so a Sobel pass over it finds real slopes.
     static func groundDetail() -> UIImage {
-        let dim: CGFloat = 256
+        let dim: CGFloat = 512
         return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
             let g = ctx.cgContext
             UIColor(white: 0.97, alpha: 1).setFill()
             g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
-            // darker clumps
-            for _ in 0..<900 {
-                let v = CGFloat.random(in: 0.74...0.94)
-                UIColor(white: v, alpha: .random(in: 0.25...0.7)).setFill()
-                let r = CGFloat.random(in: 3...16)
-                g.fillEllipse(in: CGRect(x: .random(in: -10...dim), y: .random(in: -10...dim),
-                                         width: r, height: r * .random(in: 0.6...1.4)))
+
+            // Broad soft mottling — patches of thicker and thinner growth. Low
+            // contrast so the tile does not announce itself across a hillside.
+            for _ in 0..<30 {
+                let v = CGFloat.random(in: 0.86...1.0)
+                UIColor(white: v, alpha: .random(in: 0.25...0.5)).setFill()
+                let r = CGFloat.random(in: 90...260)
+                g.fillEllipse(in: CGRect(x: .random(in: -60...dim), y: .random(in: -60...dim),
+                                         width: r, height: r * .random(in: 0.6...1.3)))
             }
-            // fine speckle for close-up grain
-            for _ in 0..<3000 {
-                let v = CGFloat.random(in: 0.7...1.0)
-                UIColor(white: v, alpha: .random(in: 0.15...0.45)).setFill()
-                let s = CGFloat.random(in: 1...2.4)
-                g.fill(CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim), width: s, height: s))
+
+            // Grass in clumps rather than evenly scattered: real ground grows in
+            // tufts, and clumping is what reads as vegetation instead of noise.
+            g.setLineCap(.round)
+            for _ in 0..<230 {
+                let cx = CGFloat.random(in: 0...dim), cy = CGFloat.random(in: 0...dim)
+                let lean = CGFloat.random(in: -0.5...0.5)      // tuft-wide bias
+                for _ in 0..<Int.random(in: 5...14) {
+                    let x = cx + .random(in: -11...11), y = cy + .random(in: -11...11)
+                    let h = CGFloat.random(in: 4...11)
+                    let v = CGFloat.random(in: 0.66...0.90)
+                    g.setStrokeColor(UIColor(white: v, alpha: .random(in: 0.3...0.7)).cgColor)
+                    g.setLineWidth(.random(in: 0.7...1.5))
+                    g.move(to: CGPoint(x: x, y: y))
+                    g.addLine(to: CGPoint(x: x + lean * h + .random(in: -1.5...1.5), y: y - h))
+                    g.strokePath()
+                }
+            }
+
+            // Pebbles, each a dark base with a lighter cap offset up-left. That pair
+            // is what the Sobel reads as a raised edge — a flat disc gives it nothing.
+            for _ in 0..<420 {
+                let r = CGFloat.random(in: 2.5...7)
+                let x = CGFloat.random(in: 0...dim), y = CGFloat.random(in: 0...dim)
+                UIColor(white: .random(in: 0.58...0.72), alpha: 0.55).setFill()
+                g.fillEllipse(in: CGRect(x: x, y: y, width: r, height: r * 0.82))
+                UIColor(white: .random(in: 0.92...1.0), alpha: 0.5).setFill()
+                g.fillEllipse(in: CGRect(x: x - r * 0.16, y: y - r * 0.18,
+                                         width: r * 0.72, height: r * 0.6))
+            }
+
+            // fine grain for the near field
+            for _ in 0..<5000 {
+                let v = CGFloat.random(in: 0.74...1.0)
+                UIColor(white: v, alpha: .random(in: 0.12...0.38)).setFill()
+                let sz = CGFloat.random(in: 1...2.2)
+                g.fill(CGRect(x: .random(in: 0...dim), y: .random(in: 0...dim),
+                              width: sz, height: sz))
             }
         }
     }
 
-    /// Concave-looking pothole interior: near-black at the centre, lifting a
-    /// little toward the lip. A real recess can't be used — the road is a flat
-    /// surface with no hole cut in it, so anything below the road plane gets
-    /// occluded by the road itself.
     static func holeDepth() -> UIImage {
         let dim: CGFloat = 128
         return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in

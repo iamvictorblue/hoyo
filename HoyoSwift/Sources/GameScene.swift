@@ -1011,13 +1011,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         mat.lightingModel = .physicallyBased
         mat.metalness.contents = 0.0
 
-        let diffuse: UIImage
         let roughness: CGFloat
         let relief: Float
         switch Self.currentStage {
         case .yunque:
             // dry packed dirt: rough, and the most relief of the three
-            diffuse = Textures.dirtTrail(); roughness = 0.90; relief = 5.0
+            roughness = 0.90; relief = 5.0
         case .playa:
             // Wet sand. Glossy at a grazing angle, and that sheen is most of the
             // read — a previous version set it and then had it overwritten two lines
@@ -1025,14 +1024,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // 0.26 was too glossy: the specular blew out the middle distance and
             // erased the sand grain entirely under the bright tropical sky. Still
             // clearly the wettest of the three surfaces.
-            diffuse = Textures.wetSand();  roughness = 0.44; relief = 1.6
+            roughness = 0.44; relief = 1.6
         case .cordillera:
-            diffuse = Textures.asphalt();  roughness = 0.72; relief = 4.2
+            roughness = 0.72; relief = 4.2
         }
 
-        mat.diffuse.contents = diffuse
+        let surface = Self.roadSurface(Self.currentStage, relief: relief)
+        mat.diffuse.contents = surface.diffuse
         mat.roughness.contents = roughness
-        if let n = Textures.normalMap(from: diffuse, strength: relief) {
+        if let n = surface.normal {
             mat.normal.contents = n
             mat.normal.wrapS = .repeat
             mat.normal.wrapT = .repeat
@@ -1138,6 +1138,28 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// Built once and shared by both terrain sides.
     private static let groundTexture = Textures.groundDetail()
+    /// Derived once per process. The terrain mesh is rebuilt on every stage load, so
+    /// deriving this alongside it would repeat a 512² Sobel for no reason.
+    private static let groundNormal = Textures.normalMap(from: groundTexture, strength: 3.4)
+
+    /// Road surfaces, built once per stage and kept. The road and terrain meshes are
+    /// rebuilt on every stage load, and regenerating an identical texture plus its
+    /// Sobel each time is what took stage load from 2.8s to 14.8s.
+    private static var roadSurfaceCache: [Stage: (diffuse: UIImage, normal: UIImage?)] = [:]
+
+    private static func roadSurface(_ stage: Stage, relief: Float)
+        -> (diffuse: UIImage, normal: UIImage?) {
+        if let hit = roadSurfaceCache[stage] { return hit }
+        let diffuse: UIImage
+        switch stage {
+        case .yunque: diffuse = Textures.dirtTrail()
+        case .playa:  diffuse = Textures.wetSand()
+        case .cordillera: diffuse = Textures.asphalt()
+        }
+        let made = (diffuse, Textures.normalMap(from: diffuse, strength: relief))
+        roadSurfaceCache[stage] = made
+        return made
+    }
     /// Rebuilt pothole meshes reuse this rather than regenerating it every race.
     private static let holeTexture = Textures.holeDepth()
 
@@ -1197,13 +1219,27 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     }
                 }
             }
+            // The hills fill more of the frame than the road does and were the
+            // largest surface still on lambert — the flattest model available, so a
+            // hillside lit only by vertex colour and flat grain. PBR with the same
+            // derived-relief trick as the road gives the grass and pebbles something
+            // to catch the low sun with.
             let mat = SCNMaterial()
-            mat.lightingModel = .lambert
+            mat.lightingModel = .physicallyBased
+            mat.metalness.contents = 0.0
+            // ground is not shiny; a low value here made the hillsides look wet
+            mat.roughness.contents = 0.92
             // detail texture multiplies against the per-vertex colours, which keep
             // driving hue (grass / rock / sand); the texture only adds grain
             mat.diffuse.contents = Self.groundTexture
             mat.diffuse.wrapS = .repeat
             mat.diffuse.wrapT = .repeat
+            if let n = Self.groundNormal {
+                mat.normal.contents = n
+                mat.normal.wrapS = .repeat
+                mat.normal.wrapT = .repeat
+                mat.normal.intensity = 0.75
+            }
             let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
                                                       uvs: uvs, colors: cols, material: mat))
             node.castsShadow = false
