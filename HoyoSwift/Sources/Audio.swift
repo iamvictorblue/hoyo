@@ -63,13 +63,45 @@ final class SoundEngine: ObservableObject {
         musicPlayer.play()
     }
 
+    /// A call, an alarm or Siri deactivates the session. Without this the engine
+    /// stays silent for the rest of the run — the game keeps playing, mute.
+    private func observeInterruptions() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            switch type {
+            case .began:
+                self.engine.pause()
+            case .ended:
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                    try self.engine.start()
+                } catch {}
+            @unknown default:
+                break
+            }
+        }
+    }
+
     func start() {
         guard !started else { return }
         started = true
+        // `.playback`, not `.ambient`. Under `.ambient` the hardware mute switch
+        // silences everything, and this game's entire soundscape — engine, wind,
+        // surf, the music phrases — is synthesised at runtime rather than being
+        // incidental decoration. A player who flips the switch by habit was getting
+        // a silent game with no way to tell why.
+        //
+        // The trade is that it now interrupts whatever else was playing, which is
+        // the normal bargain for a game with real audio.
         do {
-            try AVAudioSession.sharedInstance().setCategory(.ambient, options: .mixWithOthers)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {}
+        observeInterruptions()
 
         sampleRate = 44100
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)

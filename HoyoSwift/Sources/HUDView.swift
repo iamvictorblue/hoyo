@@ -372,8 +372,9 @@ struct HUDView: View {
             HStack {
                 Spacer()
                 HStack(spacing: 8) {
-                    IconButton("pause.fill") { state.paused = true }
-                    IconButton(state.musicOn ? "speaker.wave.2.fill" : "speaker.slash.fill") {
+                    IconButton("pause.fill", label: "Pausa") { state.paused = true }
+                    IconButton(state.musicOn ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                               label: state.musicOn ? "Silenciar música" : "Activar música") {
                         state.musicOn.toggle()
                         sound.setMusic(on: state.musicOn)
                     }
@@ -401,6 +402,9 @@ struct HUDView: View {
                     }
                     .allowsHitTesting(false)
                     .padding(.leading, 6)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Velocidad")
+                    .accessibilityValue("\(state.hud.speedKmh) kilómetros por hora")
 
                     if state.steerMode == .drag {
                         SteerPad { state.input.steer = $0 }
@@ -416,16 +420,28 @@ struct HUDView: View {
                 // corner where it's easiest to reach.
                 VStack(spacing: 11) {
                     HStack(spacing: 11) {
-                        TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold, caption: "SALTA") {
+                        TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold,
+                                  caption: "SALTA", voiceLabel: "Salta",
+                                  voiceHint: "Brinca los hoyos y los carros. Tres veces seguidas y flotas.") {
                             state.input.jumpRequested = true
                         }
-                        TapButton(symbol: "bolt.fill", tint: .neonTeal, caption: "RAYO") {
+                        TapButton(symbol: "bolt.fill", tint: .neonTeal,
+                                  caption: "RAYO", voiceLabel: "Rayo",
+                                  voiceHint: "Tapa los hoyos y tumba carros.") {
                             state.input.fireRequested = true
                         }
                     }
                     HStack(spacing: 11) {
-                        HoldButton(symbol: "octagon.fill", tint: .red, caption: "FRENO") { state.input.brake = $0 }
-                        HoldButton(symbol: "flame.fill", tint: .neonTeal, caption: "NITRO") { state.input.nitro = $0 }
+                        HoldButton(symbol: "octagon.fill", tint: .red,
+                                   caption: "FRENO", voiceLabel: "Freno",
+                                   voiceHint: "Mantén presionado. Con guía a la vez, patinas.") {
+                            state.input.brake = $0
+                        }
+                        HoldButton(symbol: "flame.fill", tint: .neonTeal,
+                                   caption: "NITRO", voiceLabel: "Nitro",
+                                   voiceHint: "Mantén presionado pa' correr más.") {
+                            state.input.nitro = $0
+                        }
                     }
                 }
             }
@@ -439,10 +455,12 @@ struct HUDView: View {
 
 struct IconButton: View {
     let symbol: String
+    let label: String
     let action: () -> Void
 
-    init(_ symbol: String, action: @escaping () -> Void) {
+    init(_ symbol: String, label: String, action: @escaping () -> Void) {
         self.symbol = symbol
+        self.label = label
         self.action = action
     }
 
@@ -455,6 +473,7 @@ struct IconButton: View {
                 .background(.black.opacity(0.35), in: Circle())
                 .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
         }
+        .accessibilityLabel(label)
     }
 }
 
@@ -493,6 +512,11 @@ struct BarView: View {
             }
             .frame(height: 9)
         }
+        // One element with a spoken value, rather than a label and a rectangle that
+        // read as two unrelated things. Length and hue are both visual-only.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue("\(Int(value * 100)) por ciento")
     }
 }
 
@@ -552,6 +576,29 @@ struct SteerPad: View {
                     onSteer(0)
                 }
         )
+        // Exposed as adjustable so VoiceOver has some purchase on steering. This is
+        // the honest limit of the effort: a continuous analog control in a real-time
+        // racer cannot be driven well by discrete swipe gestures, and pretending
+        // otherwise would be worse than saying so.
+        .accessibilityElement()
+        .accessibilityLabel("Guía")
+        .accessibilityValue(steerDescription)
+        .accessibilityHint("Desliza pa' virar")
+        .accessibilityAdjustableAction { direction in
+            let step: Float = 0.25
+            switch direction {
+            case .increment: value = min(1, value + step)
+            case .decrement: value = max(-1, value - step)
+            default: break
+            }
+            onSteer(value)
+        }
+    }
+
+    private var steerDescription: String {
+        if value < -0.1 { return "izquierda \(Int(-value * 100)) por ciento" }
+        if value > 0.1 { return "derecha \(Int(value * 100)) por ciento" }
+        return "centro"
     }
 }
 
@@ -809,6 +856,12 @@ struct TapButton: View {
     let symbol: String
     var tint: Color = .white
     var caption: String? = nil
+    /// Spoken description and what it does. These are built on a raw DragGesture
+    /// rather than a Button — a Button adds tap latency this game cannot afford —
+    /// which means VoiceOver saw a decorative image with no action, so the label,
+    /// the trait and the action all have to be supplied by hand.
+    var voiceLabel: String = ""
+    var voiceHint: String = ""
     let onTap: () -> Void
     @State private var pressed = false
 
@@ -820,6 +873,11 @@ struct TapButton: View {
                     .foregroundStyle(.white.opacity(0.5))
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(voiceLabel.isEmpty ? (caption ?? "") : voiceLabel)
+        .accessibilityHint(voiceHint)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onTap() }
     }
 
     private var glyph: some View {
@@ -846,6 +904,8 @@ struct HoldButton: View {
     let symbol: String
     var tint: Color = .white
     var caption: String? = nil
+    var voiceLabel: String = ""
+    var voiceHint: String = ""
     let onPress: (Bool) -> Void
     @State private var pressed = false
 
@@ -857,6 +917,13 @@ struct HoldButton: View {
                     .foregroundStyle(.white.opacity(0.5))
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(voiceLabel.isEmpty ? (caption ?? "") : voiceLabel)
+        .accessibilityHint(voiceHint)
+        .accessibilityAddTraits(.isButton)
+        // Sustained, not momentary. Activating through VoiceOver applies one pulse,
+        // which is all a discrete gesture can express — the hint says it is held.
+        .accessibilityAction { onPress(true); onPress(false) }
     }
 
     private var glyph: some View {

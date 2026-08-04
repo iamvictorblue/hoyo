@@ -77,6 +77,9 @@ struct GameSceneView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> SCNView {
+        // Before anything reads a record. Scores set under an older economy are not
+        // comparable to the current one — see SaveSchema.
+        SaveSchema.migrateIfNeeded()
         let quality = Quality.detect()
         let view = SCNView()
         let controller = context.coordinator
