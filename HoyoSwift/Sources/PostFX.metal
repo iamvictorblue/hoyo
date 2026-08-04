@@ -60,7 +60,21 @@ static inline half4 pfxGrade(float2 uv,
                              texture2d<float, access::sample> src,
                              float3 lift, float3 gain,
                              float saturation, float contrast,
-                             float vignette, float grain, float t) {
+                             float vignette, float grain, float t,
+                             float shimmer = 0.0) {
+    // Heat rising off hot tarmac. Only worth it where the air is actually hot, so
+    // it is a per-stage argument rather than something every grade pays for.
+    //
+    // Two sines at different rates and scales, because a single one reads as a
+    // regular ripple rather than convection. Masked to a band around the horizon:
+    // shimmer belongs where the sightline grazes the surface over distance, and
+    // applying it to the whole frame would just look like a wobbling screen.
+    if (shimmer > 0.0) {
+        float band = exp(-pow((uv.y - 0.52) * 7.0, 2.0));
+        float w = sin(uv.y * 130.0 + t * 3.1) * 0.6
+                + sin(uv.y * 61.0 - t * 1.9 + uv.x * 8.0) * 0.4;
+        uv.x += w * shimmer * band;
+    }
     float3 col = src.sample(pfxSampler, uv).rgb;
     float  r = length(uv - float2(0.5, 0.5));
 
@@ -90,7 +104,9 @@ fragment half4 hoyoGradeCordillera(PFXVertexOut vert [[stage_in]],
                                    constant SCNSceneBuffer& scn_frame [[buffer(0)]]) {
     return pfxGrade(vert.uv, colorSampler,
                     float3(0.030, 0.008, 0.045), float3(1.06, 0.99, 0.94),
-                    1.12, 1.06, 0.24, 0.022, scn_frame.time);
+                    1.12, 1.06, 0.24, 0.022, scn_frame.time,
+                    // the only stage with sun-baked asphalt to rise off
+                    0.0016);
 }
 
 // Under canopy. Deliberately close to neutral: this stage's fog is already green
