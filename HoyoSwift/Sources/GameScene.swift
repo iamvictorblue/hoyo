@@ -1002,24 +1002,44 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 idx.append(contentsOf: [a, a + 1, a + 2, a + 1, a + 3, a + 2])
             }
         }
+        // The road is the largest surface in every frame and was the only major one
+        // still on a legacy lighting model — blinn, one flat specular colour, and no
+        // surface relief whatsoever, while the craft and the sea were already PBR.
+        // Physically based with a derived normal map is what lets the aggregate
+        // actually catch the low sun instead of being painted-on grain.
         let mat = SCNMaterial()
-        // blinn + a low warm specular gives the asphalt a grazing sheen under the
-        // low sun; pure lambert read as dead grey
-        mat.lightingModel = .blinn
+        mat.lightingModel = .physicallyBased
+        mat.metalness.contents = 0.0
+
+        let diffuse: UIImage
+        let roughness: CGFloat
+        let relief: Float
         switch Self.currentStage {
-        case .yunque: mat.diffuse.contents = Textures.dirtTrail()
-        case .playa:  mat.diffuse.contents = Textures.wetSand()
-        case .cordillera: mat.diffuse.contents = Textures.asphalt()
+        case .yunque:
+            // dry packed dirt: rough, and the most relief of the three
+            diffuse = Textures.dirtTrail(); roughness = 0.90; relief = 5.0
+        case .playa:
+            // Wet sand. Glossy at a grazing angle, and that sheen is most of the
+            // read — a previous version set it and then had it overwritten two lines
+            // later by an unconditional specular, so it never once rendered.
+            // 0.26 was too glossy: the specular blew out the middle distance and
+            // erased the sand grain entirely under the bright tropical sky. Still
+            // clearly the wettest of the three surfaces.
+            diffuse = Textures.wetSand();  roughness = 0.44; relief = 1.6
+        case .cordillera:
+            diffuse = Textures.asphalt();  roughness = 0.72; relief = 4.2
         }
-        if Self.currentStage == .playa {
-            // wet sand is glossy at a grazing angle — that sheen is most of the read
-            mat.specular.contents = UIColor(red: 0.85, green: 0.90, blue: 0.92, alpha: 1)
-            mat.shininess = 0.42
+
+        mat.diffuse.contents = diffuse
+        mat.roughness.contents = roughness
+        if let n = Textures.normalMap(from: diffuse, strength: relief) {
+            mat.normal.contents = n
+            mat.normal.wrapS = .repeat
+            mat.normal.wrapT = .repeat
+            mat.normal.intensity = 0.9
         }
         mat.diffuse.wrapS = .repeat
         mat.diffuse.wrapT = .repeat
-        mat.specular.contents = UIColor(red: 0.42, green: 0.30, blue: 0.22, alpha: 1)
-        mat.shininess = 0.16
         let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx, uvs: uvs, material: mat))
         node.castsShadow = false
         parent.addChildNode(node)

@@ -226,6 +226,63 @@ enum Textures {
     /// Asphalt: patchy resurfacing, two grades of aggregate, tar seams and
     /// hairline cracks. 512² — the road fills most of the screen, so it carries
     /// more of the look than anything else in the scene.
+    /// Surface relief derived from a diffuse map's own luminance, by Sobel.
+    ///
+    /// The asphalt map already contains 13,000 aggregate specks, pale stone flecks,
+    /// tar seams and hairline cracks — and until now every bit of it was flat, since
+    /// the road had no normal map at all. Deriving the normal from that same image
+    /// rather than generating fresh noise means the relief lines up exactly with the
+    /// grain you can see, which is both cheaper and more correct: a speck that looks
+    /// like a stone now lights like one.
+    ///
+    /// `strength` scales the slope. Asphalt wants a lot; wet sand wants very little,
+    /// because a wet surface is smooth and its read comes from gloss, not bumps.
+    static func normalMap(from image: UIImage, strength: Float) -> UIImage? {
+        guard let cg = image.cgImage else { return nil }
+        let w = cg.width, h = cg.height
+        var lum = [Float](repeating: 0, count: w * h)
+        var src = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &src, width: w, height: h, bitsPerComponent: 8,
+                                 bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        for i in 0..<(w * h) {
+            let r = Float(src[i * 4]), g = Float(src[i * 4 + 1]), b = Float(src[i * 4 + 2])
+            lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        }
+
+        var out = [UInt8](repeating: 255, count: w * h * 4)
+        // Wrapping indices, because the road tiles: a seam in the normal map shows
+        // up as a hard line running across the asphalt every tile.
+        func at(_ x: Int, _ y: Int) -> Float {
+            lum[((y + h) % h) * w + ((x + w) % w)]
+        }
+        for y in 0..<h {
+            for x in 0..<w {
+                let dx = (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1))
+                       - (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1))
+                let dy = (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1))
+                       - (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1))
+                var n = simd_float3(dx * strength, dy * strength, 1)
+                n = simd_normalize(n)
+                let i = (y * w + x) * 4
+                out[i]     = UInt8(max(0, min(255, (n.x * 0.5 + 0.5) * 255)))
+                out[i + 1] = UInt8(max(0, min(255, (n.y * 0.5 + 0.5) * 255)))
+                out[i + 2] = UInt8(max(0, min(255, (n.z * 0.5 + 0.5) * 255)))
+                out[i + 3] = 255
+            }
+        }
+        return out.withUnsafeMutableBytes { buf -> UIImage? in
+            guard let c = CGContext(data: buf.baseAddress, width: w, height: h,
+                                   bitsPerComponent: 8, bytesPerRow: w * 4,
+                                   space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let img = c.makeImage() else { return nil }
+            return UIImage(cgImage: img)
+        }
+    }
+
     static func asphalt() -> UIImage {
         let dim: CGFloat = 512
         let size = CGSize(width: dim, height: dim)
