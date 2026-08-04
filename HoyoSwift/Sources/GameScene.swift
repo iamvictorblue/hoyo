@@ -2595,11 +2595,31 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         hullMat.metalness.contents = 0.58
         hullMat.roughness.contents = 0.34
 
+        // Fresnel rim light. The craft sits centre-frame against the road for the
+        // whole run and had no edge definition at all — a brushed grey hull over
+        // grey asphalt, separated only by the underglow beneath it. This adds a
+        // teal edge that falls off toward the middle of the hull, so the silhouette
+        // reads at any speed and against any of the three surfaces.
+        //
+        // `_surface.view` and `_surface.normal` are both in view space here, so the
+        // dot product is the facing ratio directly, no extra transform needed.
+        let rimLight = """
+            float facing = saturate(dot(normalize(_surface.normal),
+                                        normalize(_surface.view)));
+            // Tighter falloff and about half the gain of the first attempt: the hull
+            // is already a bright PBR surface, so 1.15 pushed it to blown-out white
+            // and lost the brushed metal underneath.
+            float rim = pow(1.0 - facing, 4.2);
+            _output.color.rgb += float3(0.08, 0.72, 0.62) * rim * 0.62;
+            """
+        hullMat.shaderModifiers = [.fragment: rimLight]
+
         let underMat = SCNMaterial()
         underMat.lightingModel = .physicallyBased
         underMat.diffuse.contents = UIColor(white: 0.26, alpha: 1)
         underMat.metalness.contents = 0.85
         underMat.roughness.contents = 0.38
+        underMat.shaderModifiers = [.fragment: rimLight]
 
         // upper and lower shells, squashed spheres
         let top = SCNNode(geometry: SCNSphere(radius: 1.25))
