@@ -162,6 +162,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var flameNodes: [SCNNode] = []
     private var brakeLightMaterial = SCNMaterial()
     private var glowMaterial = SCNMaterial()
+
+    /// Hover-field opacity, and the amount the render loop pulses it either side.
+    ///
+    /// Both numbers live here because the field is set in two places and only one of
+    /// them wins. Setting `glowMaterial.transparency` where the craft is built looks
+    /// like it controls the field, but the render loop reassigns it every frame — so
+    /// a build-time value is overwritten before the first frame is drawn. That is
+    /// not hypothetical: dimming the field at build time to stop it blowing out
+    /// under bloom was dead on arrival, and the bloom radius had already been given
+    /// back on the strength of it.
+    ///
+    /// The field is additive, always on, and 4.2 m across, and the three nitro cones
+    /// are additive too and land on the same pixels. That pair is what tips the road
+    /// under the craft past the bloom threshold. Paying for it here rather than with
+    /// a smaller global bloom radius is what keeps the distant lamps, beacons and
+    /// police flashers glowing — they exist as bloom and nothing else.
+    private static let hoverFieldOpacity: CGFloat = 0.30
+    private static let hoverFieldPulse: Float = 0.10
     private var smokeSystem = SCNParticleSystem()
     private var dustSystem = SCNParticleSystem()
     private let dustNode = SCNNode()
@@ -901,9 +919,41 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let want: PostFX.Look = (phase == .cutscene || phase == .intro)
             ? .night : PostFX.Look.racing(Self.currentStage)
         guard want != postLook else { return }
+
+        guard let tech = PostFX.technique(for: want) else {
+            // SceneKit rejected the technique, or the Metal function is missing
+            // from the default library. Latch anyway: `PostFX` memoises rejections,
+            // so retrying can only ever fail again.
+            //
+            // The fallback matters more than it used to. While the camera carried
+            // its own saturation, contrast and vignette, losing the grade cost the
+            // per-stage look and nothing else. Neutralising the camera — correct,
+            // since the two were double-applying — made the grade the only thing
+            // deciding the look, so the same failure now renders a completely flat
+            // frame with no way back. This puts an approximation of the old camera
+            // grade on instead, so the worst case degrades to the pre-grade look
+            // rather than to no look at all.
+            postLook = want
+            installFallbackGrade()
+            return
+        }
+        // Not latched on this path: `applyTechnique` is wired by the view before
+        // the world attaches, so this should be unreachable, but retrying next
+        // frame is free and beats latching a look that never got applied.
+        guard let apply = applyTechnique else { return }
         postLook = want
-        guard let tech = PostFX.technique(for: want), let apply = applyTechnique else { return }
         DispatchQueue.main.async { apply(tech) }
+    }
+
+    /// Only for the case where the colour grade could not be built at all. Restores
+    /// roughly what `buildCameraObject` used to set before `PostFX` took the look
+    /// over; see the call site for why this exists.
+    private func installFallbackGrade() {
+        guard let cam = cameraNode.camera else { return }
+        cam.saturation = 1.14
+        cam.contrast = 0.10
+        cam.vignettingPower = 0.55
+        cam.vignettingIntensity = 0.45
     }
 
     private func buildCameraObject() {
@@ -914,15 +964,42 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cam.wantsHDR = true
         cam.wantsExposureAdaptation = false
         // Bloom was set so low (threshold 0.85) that the headlights smeared into
-        // a white blob directly over the car. Raised, dimmed, and widened.
+        // a white blob directly over the car. Raised and dimmed — but the 18-point
+        // radius that came with that fix re-created the blob from the other side:
+        // the hover field and the nitro thrusters are both additive and both sit
+        // under the craft, so they saturate the same pixels and bloom pooled them
+        // into a white hole over the road, right where the next pothole has to be
+        // read.
+        //
+        // Cutting the radius to 9 did clear it, and was the wrong instrument. A
+        // halo's footprint goes with the square of the radius, so 18 → 9 leaves a
+        // quarter of the glow area — and it charges that to every emissive in the
+        // scene, including the far-field ones that exist *only* as bloom: the
+        // pueblo street lamps, the rooftop beacons in the cutscene, the lighthouse,
+        // the police flashers. A near-field problem with two known sources should
+        // be paid for by those two sources, so the dimming moved to the hover field
+        // itself (see `glowMaterial`) and the radius came most of the way back.
         cam.bloomThreshold = 0.98
-        cam.bloomIntensity = 0.62
-        cam.bloomBlurRadius = 18
+        cam.bloomIntensity = 0.52
+        cam.bloomBlurRadius = 14
         cam.motionBlurIntensity = quality.motionBlur
-        cam.vignettingPower = 0.55
-        cam.vignettingIntensity = 0.45
-        cam.saturation = 1.14
-        cam.contrast = 0.10
+        // Saturation, contrast and the vignette all belong to the grade in
+        // PostFX.metal. They used to be set here too, and the technique was added on
+        // top without clearing them, so every one of the three ran twice: saturation
+        // came out at 1.14 * 1.12 = 1.2768 — the two compose as a clean product
+        // because mix(luma, col, s) preserves luma — and two vignettes stacked into
+        // a hard tunnel. The camera is the neutral HDR source now; the grade is the
+        // only place the look is decided, and it is the only one that can vary by
+        // stage, which is why the duplication was resolved in this direction.
+        //
+        // Note this does *not* explain the plum cast on the asphalt, which an
+        // earlier version of this comment claimed. That comes from `lift` in
+        // PostFX.metal, applied as lift * (1 - col) so it bites hardest on the
+        // darkest surface in frame, and cordillera's lift is magenta. Saturation
+        // amplified it; it did not cause it, and the lift is untouched here.
+        cam.saturation = 1.0
+        cam.contrast = 0.0
+        cam.vignettingIntensity = 0.0
         // Contact darkening. Without it every object floated — the craft, the trees
         // and the guardrail posts all met the ground with no shading at all.
         if quality != .low {
@@ -1261,56 +1338,298 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     // MARK: - vegetation
 
-    private func palmCanopyGeometry() -> SCNGeometry {
+    /// Stable jitter for the scenery props — palms, flamboyán crowns, boulders and
+    /// the boulder placement tilt. Prop templates are built once and cloned, so
+    /// they must not draw from `worldRng`: the count of draws taken from it is part
+    /// of the fixed world's contract, and one extra would shift every later draw
+    /// and move the rest of the scenery.
+    ///
+    /// Beware when checking values out of this by hand. The `* 43758` blows the gap
+    /// between `Float` and `Double` wide open, so the same expression evaluated in
+    /// float64 answers a different question — verify in Swift, not in a scratch
+    /// script.
+    private static func propHash(_ a: Int, _ b: Int) -> Float {
+        let s = sinf(Float(a) * 12.9898 + Float(b) * 78.233) * 43758.5453
+        return s - floorf(s)
+    }
+
+    /// A boulder: an irregular faceted lump, flat-shaded.
+    ///
+    /// These were `SCNSphere(isGeodesic: true, segmentCount: 6)` in one flat grey —
+    /// a regular icosphere, so every rock on the mountain was the same evenly
+    /// rounded shape in the same tone, and they read as brown hexagons pasted onto
+    /// the hillside. What makes a boulder legible is that its faces are flat and
+    /// each catches the light differently, so this pushes an icosahedron's twelve
+    /// vertices in and out along their own radii, squashes the result, and emits
+    /// every triangle with its own three vertices.
+    ///
+    /// The duplication is the whole point. `makeGeometry` averages normals across
+    /// shared vertices, so sharing them here would smooth the facets straight back
+    /// into the sphere this is replacing. 20 faces, 60 vertices — cheaper than
+    /// keeping it round, and more subdivision would only undo the angularity.
+    private func boulderGeometry(variant: Int, material: SCNMaterial) -> SCNGeometry {
+        let t: Float = 1.618034
+        var base: [simd_float3] = [
+            [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+            [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+            [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]
+        ].map { simd_normalize(simd_float3($0[0], $0[1], $0[2])) }
+
+        // Boulders sit — they are wider than they are tall. Both numbers below were
+        // measured rather than eyeballed, because the first attempt at this did the
+        // opposite of what it says: at a y-squash of 0.78–1.04 against x/z of
+        // 0.86–1.16, the per-vertex jitter of ±29% simply swamped an 8% bias, and
+        // two of the four variants came out *taller* than wide (ratios 0.69, 1.02,
+        // 0.73, 1.01). Deepening the squash and taming the jitter to ±16% gives
+        // 0.55, 0.72, 0.55, 0.72 — all sitting, still irregular. The placement loop
+        // then applies its own y-squash on top, so these stay mild.
+        let squash = simd_float3(0.92 + Self.propHash(variant, 21) * 0.24,
+                                 0.60 + Self.propHash(variant, 22) * 0.18,
+                                 0.92 + Self.propHash(variant, 23) * 0.24)
+        for i in 0..<base.count {
+            base[i] *= 0.82 + Self.propHash(variant &* 53 &+ i, 29) * 0.32
+            base[i] *= squash
+        }
+
+        let faces: [[Int]] = [
+            [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+            [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+            [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+            [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+        ]
         var verts: [simd_float3] = []
+        var cols: [simd_float3] = []
         var idx: [Int32] = []
-        let fronds = 9
+        let stone = simd_float3(0.47, 0.44, 0.37)
+        for (f, tri) in faces.enumerated() {
+            let a = base[tri[0]], b = base[tri[1]], c = base[tri[2]]
+            let n = simd_normalize(simd_cross(b - a, c - a))
+            // Sun-bleached and lichened where the face points up, damp and dark
+            // where it points into the hillside.
+            let up = n.y * 0.5 + 0.5
+            let tone = simd_clamp(0.30 + up * 0.62
+                                  + (Self.propHash(variant, f &+ 41) - 0.5) * 0.16, 0, 1)
+            let col = simd_mix(stone * 0.52, stone * 1.28, simd_float3(repeating: tone))
+            let o = Int32(verts.count)
+            verts.append(a); verts.append(b); verts.append(c)
+            cols.append(col); cols.append(col); cols.append(col)
+            idx.append(contentsOf: [o, o + 1, o + 2])
+        }
+        return makeGeometry(verts: verts, indices: idx, colors: cols, material: material)
+    }
+
+    /// Flamboyán crown: a lumpy mass of bloom, not a ball and not a parasol.
+    ///
+    /// Two wrong answers preceded this one. It started as an `SCNSphere` squashed to
+    /// 0.55, which read as a red lollipop on a stick — a perfect ellipse is the one
+    /// silhouette no tree has. Replacing that with a wide smooth dome swapped one
+    /// giveaway for a worse one: at 2.5 radius against a 1.1 rise, with a clean rim
+    /// and a single flat red, it was a beach umbrella.
+    ///
+    /// What actually reads as a poinciana is the surface, not the outline. A tree in
+    /// bloom is thousands of small flowers over dark foliage, so it is bumpy and its
+    /// shading runs from near-black in the hollows to bright scarlet on the sunlit
+    /// caps. Both come from per-vertex jitter here: radius and height are pushed
+    /// around by a hash, and the colour is driven off the resulting height, so the
+    /// lumps shade themselves. Taller and narrower than the umbrella version, too.
+    ///
+    /// Colour rides the vertex stream so all five shades share one white material.
+    /// That is about the shading, not batching — the grove is added unflattened, so
+    /// the draw count is the same either way (see the call site).
+    private func flamboyanCrownGeometry(seed: Int, tint: simd_float3,
+                                        material: SCNMaterial) -> SCNGeometry {
+        // rimY is the normalising floor for the shading below, so it has to be the
+        // geometry's actual lowest point, not an estimate of it. It was -0.34 while
+        // the real minimum across the five seeds runs -0.63 to -0.69, which clamped
+        // all 16 rim vertices of every crown to lit == 0 — the rim came out one flat
+        // tone, losing exactly the jitter-driven shading this is all for.
+        let apexY: Float = 1.45, rimY: Float = -0.70
+        var verts: [simd_float3] = [simd_float3(0, apexY, 0)]
+        var cols: [simd_float3] = [tint]
+        var idx: [Int32] = []
+        let rings = 5, sides = 16
+        // three boughs of unequal weight — this is what scallops the outline
+        let l1 = 0.20 + Self.propHash(seed, 11) * 0.10
+        let l2 = 0.12 + Self.propHash(seed, 12) * 0.10
+        let ph1 = Self.propHash(seed, 13) * 6.28, ph2 = Self.propHash(seed, 14) * 6.28
+        for r in 1...rings {
+            let t = Float(r) / Float(rings)
+            for s in 0..<sides {
+                let a = Float(s) / Float(sides) * 2 * .pi
+                let n = Self.propHash(seed &* 97 &+ s &* 13, r &* 7 &+ 3)
+                let lump = 1 + l1 * sinf(a * 3 + ph1) + l2 * sinf(a * 5 - ph2)
+                let rad = 2.15 * sinf(t * .pi * 0.5) * lump * (0.86 + n * 0.28)
+                let dome = apexY * cosf(t * .pi * 0.55) - 0.30 * t * t
+                let y = dome + (n - 0.5) * 0.34
+                verts.append(simd_float3(cos(a) * rad, y, sin(a) * rad))
+                // Sunlit caps keep the tint; hollows and the underside drop to about
+                // a third of it. Driving this off the jittered height is what makes
+                // the bumps legible instead of a flat silhouette. The floor is 0.12
+                // rather than 0.30 because the mix bottoms out at tint * (0.22 +
+                // 0.78 * floor) — at 0.30 the darkest part of a crown was still
+                // tint * 0.45, a mid red, and the shading barely read.
+                let lit = simd_clamp((y - rimY) / (apexY - rimY), 0, 1)
+                cols.append(simd_mix(tint * 0.22, tint,
+                                     simd_float3(repeating: 0.12 + lit * 0.88)))
+            }
+        }
+        // Apex fan wound so the face normal comes out +y. With the apex on the y
+        // axis the y-component of cross(B-A, C-A) reduces to
+        // R_b * R_c * sin(theta_s+1 - theta_s), which is positive regardless of the
+        // heights involved — so this ordering holds even where ring-1 jitter pushes
+        // a vertex above the apex, which it does for up to 6 of 16 per seed.
+        for s in 0..<sides {
+            idx.append(contentsOf: [0, Int32(1 + (s + 1) % sides), Int32(1 + s)])
+        }
+        for r in 0..<(rings - 1) {
+            for s in 0..<sides {
+                let a = Int32(1 + r * sides + s)
+                let b = Int32(1 + r * sides + (s + 1) % sides)
+                let c = Int32(1 + (r + 1) * sides + s)
+                let d = Int32(1 + (r + 1) * sides + (s + 1) % sides)
+                idx.append(contentsOf: [a, b, c, b, d, c])
+            }
+        }
+        return makeGeometry(verts: verts, indices: idx, colors: cols, material: material)
+    }
+
+    /// A whole palm — curved tapering trunk and crown — as a two-part template.
+    ///
+    /// The previous version was an `SCNCylinder` trunk with nine identical ribbons
+    /// in one flat green, and it read as a cardboard cutout from any distance. Two
+    /// reasons, both fixed here: a palm's silhouette *is* the curve and taper of its
+    /// trunk, and a real crown is never one colour — it runs dark at the crown to
+    /// bright at the tips, with a couple of dead brown fronds hanging under it.
+    ///
+    /// Colour is carried in the vertex stream rather than in extra materials,
+    /// because the whole container is flattened and `flattenedClone()` quietly
+    /// returns nothing once a node accumulates too many distinct materials — the bug
+    /// that kept the flamboyanes and the casitas off screen entirely.
+    ///
+    /// Trunk and fronds are separate nodes on purpose, and it is only two materials,
+    /// which is what the original palm had and flattened fine. Merging them into one
+    /// geometry forced one material over both, and the fronds need `isDoubleSided`
+    /// — which then also uncalled backface culling on the trunk, a closed tube whose
+    /// backfaces are never visible. That is half the palm's triangles rasterised
+    /// twice for nothing, 300 palms deep on Yunque.
+    private func palmTemplate(variant: Int, trunkMaterial: SCNMaterial,
+                              frondMaterial: SCNMaterial) -> SCNNode {
+        var verts: [simd_float3] = []
+        var cols: [simd_float3] = []
+        var idx: [Int32] = []
+
+        let rings = 9, sides = 7
+        let height: Float = 7
+        let leanDir = Self.propHash(variant, 1) * 6.28
+        let lean: Float = 0.9 + Self.propHash(variant, 2) * 1.1
+        let ldx = cos(leanDir), ldz = sin(leanDir)
+
+        // Bend grows with the square of height: a palm curves up near the crown and
+        // stands near-vertical at the root, which is what a straight cylinder missed.
+        func trunkCentre(_ t: Float) -> simd_float3 {
+            simd_float3(ldx * lean * t * t, height * t, ldz * lean * t * t)
+        }
+
+        for r in 0..<rings {
+            let t = Float(r) / Float(rings - 1)
+            let c = trunkCentre(t)
+            // Stacked leaf scars, not a smooth pole — the ripple catches the low sun.
+            let rad = 0.27 * (1 - 0.50 * t) * (0.90 + 0.10 * (sinf(t * 30) * 0.5 + 0.5))
+            let shade = 0.60 + 0.26 * t          // sun-bleached toward the crown
+            for s in 0..<sides {
+                let a = Float(s) / Float(sides) * 2 * .pi
+                verts.append(c + simd_float3(cos(a) * rad, 0, sin(a) * rad))
+                cols.append(simd_float3(shade * 0.64, shade * 0.52, shade * 0.37))
+            }
+        }
+        for r in 0..<(rings - 1) {
+            for s in 0..<sides {
+                let a = Int32(r * sides + s)
+                let b = Int32(r * sides + (s + 1) % sides)
+                let c = Int32((r + 1) * sides + s)
+                let d = Int32((r + 1) * sides + (s + 1) % sides)
+                idx.append(contentsOf: [a, c, b, b, c, d])
+            }
+        }
+
+        let trunkGeo = makeGeometry(verts: verts, indices: idx, colors: cols,
+                                    material: trunkMaterial)
+        verts.removeAll(); cols.removeAll(); idx.removeAll()
+
+        // Crown seated on the trunk tip, so the lean carries all the way through.
+        let crown = trunkCentre(1)
+        let fronds = 10 + Int(Self.propHash(variant, 3) * 3)
         let segs = 5
+        let deadLo = simd_float3(0.38, 0.29, 0.15), deadHi = simd_float3(0.54, 0.43, 0.23)
+        let liveLo = simd_float3(0.07, 0.31, 0.13), liveHi = simd_float3(0.44, 0.76, 0.27)
         for f in 0..<fronds {
-            let a = Float(f) / Float(fronds) * 2 * .pi + 0.3
+            let a = Float(f) / Float(fronds) * 2 * .pi + Self.propHash(variant, 4) * 3
             let dx = cos(a), dz = sin(a)
-            // each frond droops along its length and tapers to a point
-            var prevL = simd_float3(0, 0.18, 0)
+            // Old fronds hang, new ones near the spear stand up. Mixing the two is
+            // most of what separates a palm from a green umbrella.
+            let age = Self.propHash(variant &* 31 &+ f, 7)
+            let reachMax: Float = 2.6 + age * 1.6
+            let dropMax: Float = -0.4 - age * 2.8
+            // One or two brown fronds per crown. Measured by running this hash in
+            // Swift, which matters: `sinf(...) * 43758` amplifies the gap between
+            // Float and Double so far that a float64 check of the same expression
+            // reports entirely different crowns. At 0.87 the three variants give
+            // 3/10, 2/12 and 2/11 — a third of the lead variant brown, and with
+            // `placed % 3` cycling that lands in every grove. 0.92 gives 2/10,
+            // 2/12, 1/11.
+            let dead = age > 0.92
+            func frondColor(_ t: Float) -> simd_float3 {
+                simd_mix(dead ? deadLo : liveLo, dead ? deadHi : liveHi,
+                         simd_float3(repeating: t))
+            }
+            var prevL = crown + simd_float3(0, 0.18, 0)
             var prevR = prevL
+            var prevC = frondColor(0)
             for k in 1...segs {
                 let t = Float(k) / Float(segs)
-                let reach = t * 3.4
-                let drop = -1.9 * t * t                       // gravity along the frond
-                let halfWidth = 0.46 * sin(t * .pi) * (1 - t * 0.35)
-                let spine = simd_float3(dx * reach, 0.18 + drop, dz * reach)
+                let reach = t * reachMax
+                let drop = dropMax * t * t                    // gravity along the frond
+                let halfWidth = 0.44 * sinf(t * .pi) * (1 - t * 0.3)
+                let spine = crown + simd_float3(dx * reach, 0.18 + drop, dz * reach)
                 let side = simd_float3(-dz * halfWidth, 0, dx * halfWidth)
                 let l = spine + side, r = spine - side
+                let c = frondColor(t)
                 let base = Int32(verts.count)
                 verts.append(prevL); verts.append(prevR)
                 verts.append(l);     verts.append(r)
+                cols.append(prevC);  cols.append(prevC)
+                cols.append(c);      cols.append(c)
                 idx.append(contentsOf: [base, base + 2, base + 1,
                                         base + 1, base + 2, base + 3])
-                prevL = l; prevR = r
+                prevL = l; prevR = r; prevC = c
             }
         }
-        let mat = lambert(UIColor(red: 0.18, green: 0.61, blue: 0.32, alpha: 1))
-        mat.isDoubleSided = true
-        return makeGeometry(verts: verts, indices: idx, material: mat)
-    }
 
-    private func palmTemplate() -> SCNNode {
         let palm = SCNNode()
-        let trunkGeo = SCNCylinder(radius: 0.18, height: 7)
-        trunkGeo.radialSegmentCount = 10
-        let trunk = SCNNode(geometry: trunkGeo)
-        trunk.geometry!.materials = [lambert(UIColor(red: 0.54, green: 0.42, blue: 0.27, alpha: 1))]
-        trunk.position.y = 3.5
-        palm.addChildNode(trunk)
-        let canopy = SCNNode(geometry: palmCanopyGeometry())
-        canopy.position.y = 7
-        palm.addChildNode(canopy)
+        palm.addChildNode(SCNNode(geometry: trunkGeo))
+        palm.addChildNode(SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
+                                                         colors: cols,
+                                                         material: frondMaterial)))
         return palm
     }
 
     private func vegetation(_ parent: SCNNode) {
         var guard_ = 0
         let palmContainer = SCNNode()
-        let template = palmTemplate()
+        // Three silhouettes, one shared material. Instance scale and yaw alone left
+        // every palm on the coast an obvious copy of its neighbour; varying the
+        // trunk's lean direction and curve is what breaks up a row of them. The
+        // single material is deliberate — see palmGeometry on the flattening limit.
+        // Two materials, both white with the hue in the vertex stream. Only the
+        // fronds are double-sided; the trunk is a closed tube and culling its
+        // backfaces is free.
+        let palmTrunkMat = lambert(.white)
+        let palmFrondMat = lambert(.white)
+        palmFrondMat.isDoubleSided = true
+        let palmTemplates = (0..<3).map {
+            palmTemplate(variant: $0, trunkMaterial: palmTrunkMat,
+                         frondMaterial: palmFrondMat)
+        }
         var placed = 0
         let treeTarget = Self.currentStage == .yunque ? 300
                        : (Self.currentStage == .playa ? 240 : 130)
@@ -1325,7 +1644,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let gy = groundY(pi, lat)
             if gy < -1 { continue }
             let p = pts[pi], r = rights[pi]
-            let clone = template.clone()
+            // Variant off the placement counter, not worldRng. Drawing here would
+            // shift every later draw in this function and move the flamboyanes,
+            // casitas and rocks — worldRng is the fixed world's seed, and the count
+            // of draws taken from it is part of that contract.
+            let clone = palmTemplates[placed % 3].clone()
             clone.position = SCNVector3(p.x + r.x * lat, gy - 0.3, p.z + r.z * lat)
             let sc = Self.currentStage == .yunque
                 ? 1.3 + worldRng.next() * 1.1        // rainforest canopy is tall
@@ -1348,13 +1671,25 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // materials, and flattenedClone() silently returns nothing once a
         // container has that many — which is why the flamboyanes and the casitas
         // never appeared on screen at all.
-        let flamTrunkGeo = SCNCylinder(radius: 0.27, height: 2.6)
+        // Flared base — a poinciana's trunk widens sharply where it meets the ground.
+        let flamTrunkGeo = SCNCone(topRadius: 0.21, bottomRadius: 0.40, height: 2.6)
         flamTrunkGeo.materials = [lambert(UIColor(red: 0.43, green: 0.32, blue: 0.22, alpha: 1))]
+        // One white material for all five shades — the tint rides the vertex stream.
+        // Note this does *not* reduce draw calls: `flamGroups` are added unflattened
+        // below, so the grove stays one node per trunk and crown either way. The
+        // reason to share is that the tint has to live in the vertices for the
+        // self-shading to work at all, and once it does, five materials would be
+        // five copies of the same white.
+        let flamMat = lambert(.white)
+        flamMat.isDoubleSided = true      // the rim dips below the eye line downhill
         let canopyGeos: [SCNGeometry] = (0..<5).map { k in
-            let g = SCNSphere(radius: 2.4)
-            g.materials = [lambert(UIColor(hue: CGFloat(0.02 + Double(k) * 0.011),
-                                           saturation: 0.92, brightness: 0.85, alpha: 1))]
-            return g
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            UIColor(hue: CGFloat(0.02 + Double(k) * 0.011),
+                    saturation: 0.92, brightness: 0.85, alpha: 1)
+                .getRed(&r, green: &g, blue: &b, alpha: &a)
+            return flamboyanCrownGeometry(seed: k,
+                                          tint: simd_float3(Float(r), Float(g), Float(b)),
+                                          material: flamMat)
         }
         placed = 0; guard_ = 0
         // flamboyanes are an inland tree; the shoreline gets palms instead
@@ -1373,8 +1708,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             tree.addChildNode(trunk)
             let shade = Int(worldRng.next() * 5) % 5
             let can = SCNNode(geometry: canopyGeos[shade])
-            can.scale = SCNVector3(1, 0.55, 1)
-            can.position.y = 2.9
+            // No y-squash any more: the crown geometry is already an umbrella, and
+            // scaling it flat on top of that collapsed the droop the shape is for.
+            can.position.y = 2.6
             tree.addChildNode(can)
             let fsc = 0.8 + worldRng.next() * 0.9
             tree.scale = SCNVector3(fsc, fsc, fsc)
@@ -1399,27 +1735,41 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             UIColor(red: 1, green: 0.7, blue: 0.28, alpha: 1),
             UIColor(red: 0.76, green: 0.96, blue: 0.52, alpha: 1)
         ]
-        // one shared geometry per palette colour, for the same flattening reason
-        let baseGeos: [SCNGeometry] = palette.map { c in
-            let g = SCNBox(width: 4.2, height: 3, length: 5, chamferRadius: 0)
-            g.materials = [lambert(c)]
-            return g
-        }
-        let roofGeos: [SCNGeometry] = palette.map { c in
-            var rr: CGFloat = 0, gg: CGFloat = 0, bb: CGFloat = 0, aa: CGFloat = 0
-            c.getRed(&rr, green: &gg, blue: &bb, alpha: &aa)
-            let g = SCNPyramid(width: 5.2, height: 1.7, length: 6)
-            g.materials = [lambert(UIColor(red: rr * 0.55, green: gg * 0.55,
-                                           blue: bb * 0.55, alpha: 1))]
-            return g
-        }
-        let houseGroups = (0..<palette.count).map { _ in SCNNode() }
-        placed = 0; guard_ = 0
         // 54 casitas, heavily clustered in the pueblo and pulled in tight to the road
         // there so it actually reads as driving through a town. Guajataca only —
         // `Region.pueblo` is just a fraction of the path, so without this gate the
         // houses were also appearing along the Yunque trail and on the beach.
+        //
+        // Resolved before the geometry rather than beside the placement loop, so the
+        // other two stages skip building the facades entirely. Each one rasterises
+        // 2,600 specks into a screen-scale context; eight of them is ~14 MB and a
+        // visible slice of stage load, and on Yunque and the beach every byte of it
+        // was thrown away unused. The loop itself takes no `worldRng` draws when the
+        // target is zero, so gating the work above it leaves the world untouched.
         let houseTarget = Self.currentStage == .cordillera ? 54 : 0
+
+        // one shared geometry per palette colour, for the same flattening reason
+        let baseGeos: [SCNGeometry] = houseTarget == 0 ? [] : palette.map { c in
+            let g = SCNBox(width: 4.2, height: 3, length: 5, chamferRadius: 0)
+            let m = lambert(.white)
+            m.diffuse.contents = Textures.casitaFacade(wall: c)
+            g.materials = [m]
+            return g
+        }
+        // Zinc, not a darkened wall. Roofs here were the base colour at 0.55, which
+        // made every house a two-tone block of one hue — the one thing real casitas
+        // never are, since the roof is corrugated metal and the walls are painted.
+        // Rust-red and weathered galvanised, alternating down the palette.
+        let roofGeos: [SCNGeometry] = houseTarget == 0 ? [] : palette.enumerated().map { k, _ in
+            let zinc = k % 2 == 0
+                ? UIColor(red: 0.54, green: 0.25, blue: 0.17, alpha: 1)   // rusted red
+                : UIColor(red: 0.60, green: 0.62, blue: 0.60, alpha: 1)   // galvanised
+            let g = SCNPyramid(width: 5.2, height: 1.7, length: 6)
+            g.materials = [lambert(zinc, roughness: 0.62)]
+            return g
+        }
+        let houseGroups = (0..<palette.count).map { _ in SCNNode() }
+        placed = 0; guard_ = 0
         while placed < houseTarget && guard_ < 3000 {
             guard_ += 1
             let hr_ = pickRegion(&worldRng, simd_float3(0.13, 0.74, 0.13))
@@ -1459,22 +1809,25 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // boundary, which is the whole point of the stage.
         let wantRail = Self.currentStage != .playa
         let rockContainer = SCNNode()
-        let rockGeo = SCNSphere(radius: 1)
-        rockGeo.isGeodesic = true
-        rockGeo.segmentCount = 6
-        rockGeo.materials = [lambert(UIColor(red: 0.47, green: 0.44, blue: 0.37, alpha: 1))]
+        let rockMat = lambert(.white)
+        let rockGeos = (0..<4).map { boulderGeometry(variant: $0, material: rockMat) }
         // Landslide country: the mountain road and the forest trail, never the sand.
         // This loop was ungated, so boulders were turning up on the beach too.
         let rockTarget = Self.currentStage == .playa ? 0 : 64
-        for _ in 0..<rockTarget {
+        for k in 0..<rockTarget {
             let ri = indexIn(pickRegion(&worldRng, simd_float3(0.68, 0.22, 0.10)), &worldRng)
             let rlat = -(Self.barrier + 0.8 + worldRng.next() * 40)
             let rp = pts[ri], rr2 = rights[ri]
-            let rock = SCNNode(geometry: rockGeo)
+            let rock = SCNNode(geometry: rockGeos[k % 4])
             rock.position = SCNVector3(rp.x + rr2.x * rlat, groundY(ri, rlat), rp.z + rr2.z * rlat)
             let rs = 0.5 + worldRng.next() * 1.6
             rock.scale = SCNVector3(rs, rs * (0.7 + worldRng.next() * 0.5), rs)
             rock.eulerAngles.y = worldRng.next() * 3
+            // Deterministic tilt off the counter, so boulders sit at angles instead
+            // of all standing on the same axis. Not from worldRng — the draw count
+            // in this loop is part of the fixed world's contract.
+            rock.eulerAngles.x = (Self.propHash(k, 61) - 0.5) * 0.5
+            rock.eulerAngles.z = (Self.propHash(k, 67) - 0.5) * 0.5
             rockContainer.addChildNode(rock)
         }
         parent.addChildNode(rockContainer.flattenedClone())
@@ -3372,7 +3725,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         glowMaterial.multiply.contents = UIColor(red: 0.24, green: 0.96, blue: 0.72, alpha: 1)
         glowMaterial.blendMode = .add
         glowMaterial.writesToDepthBuffer = false
-        glowMaterial.transparency = 0.5
+        glowMaterial.transparency = Self.hoverFieldOpacity
         let glow = SCNNode(geometry: SCNPlane(width: 4.2, height: 4.2))
         glow.geometry!.materials = [glowMaterial]
         glow.eulerAngles.x = -.pi / 2
@@ -4323,7 +4676,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let flash = sin(tNow * 9) > 0
         policeRedMat.emission.intensity = flash ? 2.2 : 0.05
         policeBlueMat.emission.intensity = flash ? 0.05 : 2.2
-        glowMaterial.transparency = CGFloat(0.42 + 0.14 * sin(tNow * 9))
+        glowMaterial.transparency = Self.hoverFieldOpacity
+            + CGFloat(Self.hoverFieldPulse * sin(tNow * 9))
 
         // shadow stays on the road and shrinks as the car climbs, which is what
         // actually communicates height

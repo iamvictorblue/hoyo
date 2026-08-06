@@ -115,18 +115,29 @@ fragment half4 hoyoGradeCordillera(PFXVertexOut vert [[stage_in]],
 fragment half4 hoyoGradeYunque(PFXVertexOut vert [[stage_in]],
                                texture2d<float, access::sample> colorSampler [[texture(0)]],
                                constant SCNSceneBuffer& scn_frame [[buffer(0)]]) {
+    // 0.96, not 0.86. These grades were all authored while SCNCamera was applying
+    // its own saturation of 1.14 on top, so the number that was actually being
+    // looked at here was 0.86 * 1.14 = 0.98 — which is what "close to neutral"
+    // above describes. Removing the camera's copy as a double-apply was correct,
+    // but it silently turned this stage's real saturation down to 0.86 and made the
+    // comment false. Restored to roughly the composite it was tuned against.
     return pfxGrade(vert.uv, colorSampler,
                     float3(0.014, 0.024, 0.022), float3(0.99, 1.02, 1.00),
-                    0.86, 1.02, 0.26, 0.026, scn_frame.time);
+                    0.96, 1.02, 0.26, 0.026, scn_frame.time);
 }
 
 // Glare off wet sand: cool, bright, slightly bleached.
 fragment half4 hoyoGradePlaya(PFXVertexOut vert [[stage_in]],
                               texture2d<float, access::sample> colorSampler [[texture(0)]],
                               constant SCNSceneBuffer& scn_frame [[buffer(0)]]) {
+    // Vignette 0.26, up from 0.16. The camera used to add its own 0.45 on top of
+    // every grade; that has been removed as a double-apply, which left this stage
+    // — the brightest of the four, pale sand under a high sun — with the weakest
+    // vignette of the four holding down its frame edges. This is the compensation,
+    // not a new look.
     return pfxGrade(vert.uv, colorSampler,
                     float3(0.010, 0.020, 0.038), float3(1.02, 1.03, 1.08),
-                    1.04, 0.97, 0.16, 0.014, scn_frame.time);
+                    1.04, 0.97, 0.26, 0.014, scn_frame.time);
 }
 
 // Night over the water, used by the cutscene and the title. Contrast is *below* 1
@@ -136,7 +147,11 @@ fragment half4 hoyoGradePlaya(PFXVertexOut vert [[stage_in]],
 fragment half4 hoyoGradeNight(PFXVertexOut vert [[stage_in]],
                               texture2d<float, access::sample> colorSampler [[texture(0)]],
                               constant SCNSceneBuffer& scn_frame [[buffer(0)]]) {
+    // Vignette 0.34, up from 0.20 — same compensation as the beach. A night frame
+    // leans on its vignette harder than a daylit one, since the falloff into the
+    // corners is most of what keeps the eye on the craft, and this is the grade the
+    // title and the Area 51 cutscene run under.
     return pfxGrade(vert.uv, colorSampler,
                     float3(0.022, 0.030, 0.058), float3(1.02, 1.04, 1.14),
-                    1.10, 0.96, 0.20, 0.018, scn_frame.time);
+                    1.10, 0.96, 0.34, 0.018, scn_frame.time);
 }

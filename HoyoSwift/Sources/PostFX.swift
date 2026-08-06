@@ -44,12 +44,31 @@ enum PostFX {
     /// pipeline, so this must never happen per frame.
     private static var cache: [String: SCNTechnique] = [:]
 
+    /// Entry points SceneKit has already rejected. `updatePostFX` runs once per
+    /// frame, so a caller that retries after a failure would allocate a render
+    /// pipeline every frame forever. Negative results have to be cached too.
+    ///
+    /// Neither this nor `cache` is synchronised, which is safe only because
+    /// `technique(for:)` has exactly one call site — `GameScene.updatePostFX`,
+    /// reached solely from `renderer(_:updateAtTime:)` on SceneKit's serial render
+    /// thread. A second caller from any other thread needs a lock first. (Swift 6
+    /// language mode will reject these outright; the target is on 5.9 today.)
+    private static var rejected: Set<String> = []
+
     /// Returns nil if SceneKit rejects the dictionary or the Metal function is
-    /// missing, so a failure costs the grade and nothing else: the caller leaves
-    /// `view.technique` alone and the game renders exactly as it always did.
+    /// missing.
+    ///
+    /// This used to promise that a failure "costs the grade and nothing else",
+    /// which was true only while `SCNCamera` still carried its own saturation,
+    /// contrast and vignette. Those were double-applying against this grade and
+    /// have been zeroed, so the grade is now the only thing deciding the look and
+    /// losing it renders a flat frame. `GameScene.updatePostFX` handles that by
+    /// installing a fallback grade back onto the camera — a nil from here is no
+    /// longer free, and a caller that ignores it will look broken.
     static func technique(for look: Look) -> SCNTechnique? {
         let fn = look.fragmentFunction
         if let hit = cache[fn] { return hit }
+        if rejected.contains(fn) { return nil }
         let pass: [String: Any] = [
             "draw": "DRAW_QUAD",
             // required by SceneKit even though it is unused on the Metal path
@@ -63,7 +82,7 @@ enum PostFX {
             "passes": ["hoyoGrade": pass],
             "sequence": ["hoyoGrade"]
         ]
-        guard let t = SCNTechnique(dictionary: dict) else { return nil }
+        guard let t = SCNTechnique(dictionary: dict) else { rejected.insert(fn); return nil }
         cache[fn] = t
         return t
     }

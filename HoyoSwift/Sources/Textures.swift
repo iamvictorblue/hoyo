@@ -580,6 +580,89 @@ enum Textures {
         }
     }
 
+    /// A casita facade: stucco wall, two barred windows, a door and a plinth.
+    ///
+    /// The houses were untextured `SCNBox`es in eight flat pastels. A box with no
+    /// openings does not read as a building at any distance — it reads as a box.
+    /// The windows and the door are what make it a house; the rejas over the
+    /// windows are what make it a Puerto Rican one.
+    ///
+    /// One texture per palette colour. That is affordable here specifically because
+    /// the casitas are the one prop group that is *not* flattened — GameScene adds
+    /// them as plain nodes — so extra materials cost draw calls rather than making
+    /// the whole group silently vanish.
+    ///
+    /// Cut 5:3 to match the face the player actually sees. The box is 4.2 wide by 5
+    /// long, and GameScene turns each house to the road tangent, which puts the
+    /// 5-long side toward the road — so a texture cut for the 4.2 face showed up
+    /// stretched 20% horizontally on the only side anyone looks at.
+    ///
+    /// A single material means all four walls carry the door and windows, so a
+    /// casita has four front doors. That is deliberate: giving `SCNBox` per-face
+    /// materials splits it into six draw calls, and at 54 unflattened houses that
+    /// trades 108 draws for 378 to fix something no one can see at 150 km/h.
+    static func casitaFacade(wall: UIColor) -> UIImage {
+        let w: CGFloat = 256, h: CGFloat = 154
+        // Pinned to scale 1. `UIGraphicsImageRenderer(size:)` with no format takes
+        // the preferred format, which is the main screen's scale — so on a 3x phone
+        // this 256x154 atlas silently rasterised at 768x462, eight times over, for
+        // 11 MB instead of 1.2. A texture's resolution has nothing to do with the
+        // display's; the mip chain absorbs the difference either way. It also stops
+        // the renderer reading `UITraitCollection.current`, a main-thread API, from
+        // the background queue `buildWorld` runs on.
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 1
+        fmt.opaque = true
+        return UIGraphicsImageRenderer(size: CGSize(width: w, height: h),
+                                       format: fmt).image { ctx in
+            let g = ctx.cgContext
+            wall.setFill()
+            g.fill(CGRect(x: 0, y: 0, width: w, height: h))
+
+            // stucco grain, light and dark in equal measure so the wall keeps its hue
+            for _ in 0..<2600 {
+                UIColor(white: Bool.random() ? 1 : 0, alpha: .random(in: 0.02...0.07)).setFill()
+                let s = CGFloat.random(in: 1...2.4)
+                g.fill(CGRect(x: .random(in: 0...w), y: .random(in: 0...h), width: s, height: s))
+            }
+
+            // concrete plinth — almost every casita sits on one
+            UIColor(white: 0.52, alpha: 0.5).setFill()
+            g.fill(CGRect(x: 0, y: h - 15, width: w, height: 15))
+
+            func window(_ x: CGFloat, _ y: CGFloat, _ ww: CGFloat, _ hh: CGFloat) {
+                UIColor(white: 0.97, alpha: 0.95).setFill()
+                g.fill(CGRect(x: x - 4, y: y - 4, width: ww + 8, height: hh + 8))
+                UIColor(red: 0.13, green: 0.16, blue: 0.21, alpha: 1).setFill()
+                g.fill(CGRect(x: x, y: y, width: ww, height: hh))
+                // sky caught in the top of the glass, so it isn't a dead black hole
+                UIColor(red: 0.55, green: 0.72, blue: 0.86, alpha: 0.5).setFill()
+                g.fill(CGRect(x: x, y: y, width: ww, height: hh * 0.36))
+                g.setStrokeColor(UIColor(white: 0.93, alpha: 0.8).cgColor)
+                g.setLineWidth(2)
+                var bx = x + ww / 4
+                while bx < x + ww - 1 {
+                    g.move(to: CGPoint(x: bx, y: y))
+                    g.addLine(to: CGPoint(x: bx, y: y + hh))
+                    bx += ww / 4
+                }
+                g.move(to: CGPoint(x: x, y: y + hh / 2))
+                g.addLine(to: CGPoint(x: x + ww, y: y + hh / 2))
+                g.strokePath()
+            }
+            window(30, 34, 52, 48)
+            window(174, 34, 52, 48)
+
+            // door, standing on the plinth
+            UIColor(white: 0.97, alpha: 0.95).setFill()
+            g.fill(CGRect(x: 104, y: 54, width: 48, height: 85))
+            UIColor(red: 0.29, green: 0.19, blue: 0.14, alpha: 1).setFill()
+            g.fill(CGRect(x: 108, y: 58, width: 40, height: 81))
+            UIColor(white: 1, alpha: 0.55).setFill()
+            g.fillEllipse(in: CGRect(x: 140, y: 100, width: 5, height: 5))
+        }
+    }
+
     /// Banner with big italic text for the SALIDA / META arches.
     static func banner(text: String, background: UIColor) -> UIImage {
         let size = CGSize(width: 512, height: 84)
