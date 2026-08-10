@@ -458,12 +458,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// holds it there, so a small one can actually be looked at. Understands
     /// `piragua`, `toolbox`, `traffic` and `iguana`. Use it with `-autoplay`.
     ///
-    /// This exists because verifying small props by screenshot does not work, and the
-    /// reason is structural rather than bad luck: the self-driving controller holds
-    /// the centre of the road, the pickups sit off-lane, and at roughly half a metre
-    /// across they are a handful of pixels on the rare frame they appear at all.
-    /// Sampling a recorded run at 4 fps — 221 frames — produced no usable close-up of
-    /// either pickup. Anything smaller than a casita needs the camera taken to it.
+    /// This exists because verifying the pickups by screenshot did not work, and the
+    /// reason it did not work is structural rather than bad luck: the self-driving
+    /// controller holds the centre of the road, the pickups sit off-lane, and at
+    /// roughly half a metre across they are a handful of pixels on the rare frame
+    /// they appear at all. Sampling a recorded run at 4 fps — 221 frames — produced
+    /// no usable close-up of either pickup. Anything smaller than a casita needs the
+    /// camera taken to it.
     static let inspectTarget: String? = {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-inspect"), i + 1 < args.count { return args[i + 1] }
@@ -1369,6 +1370,108 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return s - floorf(s)
     }
 
+    /// The mound of shaved ice on a piragua: a peak, not a ball.
+    ///
+    /// This was an `SCNSphere` parked on the cone, which reads as a scoop of ice
+    /// cream. A piragua is shaved ice packed into a peak with syrup poured over the
+    /// top, so the colour belongs in a gradient running down the mound — saturated
+    /// at the crown where the syrup pools, clean ice near the paper — rather than
+    /// flat across a globe. That gradient is the whole tell, and it costs nothing
+    /// but the vertex stream.
+    ///
+    /// Apex-first with rings widening downward, which is the same arrangement as
+    /// `flamboyanCrownGeometry` — so the winding below is that function's, which was
+    /// checked for outward normals rather than guessed at.
+    private func piraguaIceGeometry(flavor: simd_float3,
+                                    material: SCNMaterial) -> SCNGeometry {
+        let rings = 6, sides = 12
+        // Squat and full, not tall and pointed. At 0.46 high against a 0.30 base with
+        // a 0.65 falloff this came to a peak that read as a candle flame — shaved ice
+        // is heaped, and it slumps. Wider than the cup it sits on, too, so it
+        // overhangs the paper the way a real one does.
+        let height: Float = 0.33, baseR: Float = 0.32
+        // A pale tint of the flavour, not white. Running the gradient down to near
+        // white washed the whole mound out to cream once the emission was added on
+        // top, and a piragua's colour is the thing you recognise it by from three
+        // hundred metres back. Syrup soaks all the way through shaved ice; it is
+        // only *denser* at the crown.
+        let ice = simd_mix(flavor, simd_float3(repeating: 1), simd_float3(repeating: 0.50))
+        var verts: [simd_float3] = [simd_float3(0, height, 0)]
+        var cols: [simd_float3] = [flavor]
+        var idx: [Int32] = []
+        for r in 1...rings {
+            let t = Float(r) / Float(rings)
+            // 0.5 rather than 0.65: rounder shoulders, so it heaps instead of tapering
+            let rad = baseR * powf(t, 0.50)
+            let y = height * (1 - t)
+            let c = simd_mix(flavor, ice, simd_float3(repeating: powf(t, 0.85)))
+            for s in 0..<sides {
+                let a = Float(s) / Float(sides) * 2 * .pi
+                verts.append(simd_float3(cosf(a) * rad, y, sinf(a) * rad))
+                cols.append(c)
+            }
+        }
+        for s in 0..<sides {
+            idx.append(contentsOf: [0, Int32(1 + (s + 1) % sides), Int32(1 + s)])
+        }
+        for r in 0..<(rings - 1) {
+            for s in 0..<sides {
+                let a = Int32(1 + r * sides + s)
+                let b = Int32(1 + r * sides + (s + 1) % sides)
+                let c = Int32(1 + (r + 1) * sides + s)
+                let d = Int32(1 + (r + 1) * sides + (s + 1) % sides)
+                idx.append(contentsOf: [a, b, c, b, d, c])
+            }
+        }
+        return makeGeometry(verts: verts, indices: idx, colors: cols, material: material)
+    }
+
+    /// A guardrail post: tapered, weathered at the foot, wider across the road than
+    /// through it.
+    ///
+    /// These were world-axis-aligned `SCNBox`es in flat 0.91 white, and two things
+    /// gave them away. Nothing rotated them to the road, so on every curve each post
+    /// sat skew to the rail it carries and the line read as tics scattered along the
+    /// verge. And near-white against the terrain made them glow — a galvanised post
+    /// is mid-grey, dirty at the foot where the road throws grit up it, and bright
+    /// only along the top edge. Both of those are free: the tone runs in the vertex
+    /// stream, and orienting is one assignment at the call site.
+    private func guardrailPostGeometry(timber: Bool, material: SCNMaterial) -> SCNGeometry {
+        // half-width across the road, half-depth through it, height, tone
+        let rings: [(Float, Float, Float, Float)] = [
+            (0.10, 0.06, 0.00, 0.00),
+            (0.095, 0.057, 0.22, 0.45),
+            (0.088, 0.053, 0.55, 0.90),
+            (0.082, 0.050, 0.85, 1.00)
+        ]
+        let low  = timber ? simd_float3(0.20, 0.14, 0.09) : simd_float3(0.28, 0.27, 0.24)
+        let high = timber ? simd_float3(0.47, 0.34, 0.21) : simd_float3(0.78, 0.79, 0.78)
+
+        var verts: [simd_float3] = []
+        var cols: [simd_float3] = []
+        var idx: [Int32] = []
+        for (hw, hd, y, tone) in rings {
+            let c = simd_mix(low, high, simd_float3(repeating: tone))
+            for (sx, sz) in [(Float(-1), Float(-1)), (1, -1), (1, 1), (-1, 1)] {
+                verts.append(simd_float3(sx * hw, y, sz * hd))
+                cols.append(c)
+            }
+        }
+        for r in 0..<(rings.count - 1) {
+            for s in 0..<4 {
+                let a = Int32(r * 4 + s)
+                let b = Int32(r * 4 + (s + 1) % 4)
+                let c = Int32((r + 1) * 4 + s)
+                let d = Int32((r + 1) * 4 + (s + 1) % 4)
+                idx.append(contentsOf: [a, c, b, b, c, d])
+            }
+        }
+        // cap, so the top isn't an open hole seen from the camera's height
+        let top = Int32((rings.count - 1) * 4)
+        idx.append(contentsOf: [top, top + 1, top + 2, top, top + 2, top + 3])
+        return makeGeometry(verts: verts, indices: idx, colors: cols, material: material)
+    }
+
     /// A boulder: an irregular faceted lump, flat-shaded.
     ///
     /// These were `SCNSphere(isGeodesic: true, segmentCount: 6)` in one flat grey —
@@ -1849,10 +1952,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         parent.addChildNode(rockContainer.flattenedClone())
 
         let postContainer = SCNNode()
-        let postGeo = SCNBox(width: 0.16, height: 0.85, length: 0.16, chamferRadius: 0)
-        postGeo.materials = [lambert(Self.currentStage == .yunque
-            ? UIColor(red: 0.36, green: 0.25, blue: 0.16, alpha: 1)
-            : UIColor(white: 0.91, alpha: 1))]
+        let postGeo = guardrailPostGeometry(timber: Self.currentStage == .yunque,
+                                            material: lambert(.white))
         // Both sides now, and sitting on `barrier` — previously there was a single
         // line of posts at 5.1 and the actual death boundary was an invisible
         // cliff out at 8.6, so the rail you could see meant nothing.
@@ -1862,9 +1963,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             for side in [Float(-1), Float(1)] where wantRail {
                 let lat = side * Self.barrier
                 let post = SCNNode(geometry: postGeo)
+                // Sits on the ground rather than centred on it: the geometry runs
+                // from y = 0 up, where the box it replaced was centre-origin.
                 post.position = SCNVector3(gp.x + gr.x * lat,
-                                           groundY(gi, lat) + 0.42,
+                                           groundY(gi, lat),
                                            gp.z + gr.z * lat)
+                // Square to the road. Without this the posts stayed world-aligned
+                // while the rail followed the curve, so every bend showed them skew
+                // to the thing they hold up.
+                post.eulerAngles.y = atan2(tans[gi].x, -tans[gi].z)
                 postContainer.addChildNode(post)
             }
             gi += 4
@@ -1881,9 +1988,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             railMat.diffuse.contents = UIColor(red: 0.40, green: 0.28, blue: 0.18, alpha: 1)
         } else {
             railMat.lightingModel = .physicallyBased
-            railMat.diffuse.contents = UIColor(white: 0.74, alpha: 1)
-            railMat.metalness.contents = 0.85
-            railMat.roughness.contents = 0.34
+            // Weathered galvanised, not chrome. At metalness 0.85 / roughness 0.34
+            // this was mirror enough that it took its colour almost entirely from
+            // the sunset cubemap and ran the length of the course as a salmon-pink
+            // ribbon. Zinc coating is dull and the sea air here does not leave it
+            // polished; pulling the metalness down and the roughness up lets its own
+            // grey come through with only a warm cast on top.
+            // Metalness is the whole story here. At 0.85 the beam took its colour
+            // from the sunset cubemap and ran the length of the course as a salmon
+            // ribbon; 0.42 barely moved it. The posts beside it, at metalness 0,
+            // read correctly as pale grey under the same light — so the beam goes
+            // nearly diffuse too, with a cool cast in the albedo to sit against the
+            // warm key rather than soak it up. Zinc coating is matte and the sea air
+            // here does not leave it polished.
+            railMat.diffuse.contents = UIColor(red: 0.63, green: 0.65, blue: 0.67, alpha: 1)
+            railMat.metalness.contents = 0.18
+            railMat.roughness.contents = 0.72
         }
         railMat.isDoubleSided = true
         for side in [Float(-1), Float(1)] where wantRail {
@@ -2167,19 +2287,43 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             UIColor(red: 1, green: 0.82, blue: 0.25, alpha: 1),
             UIColor(red: 0.76, green: 0.23, blue: 1, alpha: 1)
         ]
+        // One cup geometry and one ice geometry per flavour, built up front and
+        // shared. The old loop created a fresh SCNMaterial per piragua — 26 of them
+        // for 5 distinct colours.
+        //
+        // A blunt tip rather than a true point: a paper cone sits in a holder, and a
+        // needle-sharp cone reads as a party hat. Shorter and narrower than the ice
+        // above it — at 0.30 x 0.40 the paper was as big as the mound, and on a real
+        // piragua the ice is the object and the cup is what you hold it by.
+        let cupGeo = SCNCone(topRadius: 0.26, bottomRadius: 0.05, height: 0.30)
+        cupGeo.materials = [lambert(UIColor(red: 0.96, green: 0.94, blue: 0.90, alpha: 1))]
+        let iceGeos: [SCNGeometry] = flavors.map { c in
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            c.getRed(&r, green: &g, blue: &b, alpha: &a)
+            // Emission stays on the flavour and stays bright: these are pickups on a
+            // 3.6 km course and have to be spottable from a long way back. It is the
+            // diffuse, carrying the vertex gradient, that does the describing.
+            let m = SCNMaterial()
+            m.lightingModel = .lambert
+            m.diffuse.contents = UIColor.white
+            m.emission.contents = c
+            // 0.42, down from 1.5. Emission is flat across a mesh, so every point of
+            // it flattens the vertex gradient underneath — at 0.95 the mound was one
+            // uniform slab of colour and the syrup gradient was invisible, which the
+            // `-inspect` camera showed immediately and no amount of screenshotting a
+            // run ever would have. The lost distance-visibility is bought back in the
+            // albedo instead: the ice tint sits at 0.50 toward white rather than
+            // 0.62, so the whole mound is more saturated to begin with.
+            m.emission.intensity = 0.42
+            return piraguaIceGeometry(flavor: simd_float3(Float(r), Float(g), Float(b)),
+                                      material: m)
+        }
         for i in 0..<26 {
             let grp = SCNNode()
-            let cup = SCNNode(geometry: SCNCone(topRadius: 0.26, bottomRadius: 0, height: 0.4))
-            cup.geometry!.materials = [lambert(UIColor(red: 0.96, green: 0.94, blue: 0.9, alpha: 1))]
+            let cup = SCNNode(geometry: cupGeo)
             grp.addChildNode(cup)
-            let ice = SCNNode(geometry: SCNSphere(radius: 0.27))
-            let im = SCNMaterial()
-            im.lightingModel = .lambert
-            im.diffuse.contents = flavors[i % flavors.count]
-            im.emission.contents = flavors[i % flavors.count]
-            im.emission.intensity = 1.5
-            ice.geometry!.materials = [im]
-            ice.position.y = 0.24
+            let ice = SCNNode(geometry: iceGeos[i % iceGeos.count])
+            ice.position.y = 0.10          // sunk just below the rim, so it sits *in* the cup
             grp.addChildNode(ice)
             parent.addChildNode(grp)
             piraguas.append(Pickup(node: grp))
@@ -2193,6 +2337,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         boxMat.emission.contents = UIColor(red: 0.85, green: 0.21, blue: 0.18, alpha: 1)
         boxMat.emission.intensity = 0.5
         let bandMat = lambert(UIColor(white: 0.95, alpha: 1))
+        // The handle is what turns a red box into a toolbox. Everything else about
+        // this prop already read — the colour, the lid seam — but the silhouette was
+        // a chamfered cube, and at speed a silhouette is most of what a player gets.
+        // Steel rather than the body's red, so it separates against it.
+        let handleMat = lambert(UIColor(white: 0.62, alpha: 1), roughness: 0.55)
+        let uprightGeo = SCNBox(width: 0.035, height: 0.075, length: 0.035, chamferRadius: 0.01)
+        uprightGeo.materials = [handleMat]
+        let barGeo = SCNBox(width: 0.30, height: 0.035, length: 0.055, chamferRadius: 0.015)
+        barGeo.materials = [handleMat]
         // 14, up from 10 — with the damage rebalance the mechanic is the main
         // way a long run stays alive
         for _ in 0..<14 {
@@ -2203,6 +2356,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let band = SCNNode(geometry: SCNBox(width: 0.54, height: 0.1, length: 0.4, chamferRadius: 0.02))
             band.geometry!.materials = [bandMat]
             grp.addChildNode(band)
+            for xo in [Float(-0.12), 0.12] {
+                let up = SCNNode(geometry: uprightGeo)
+                up.position = SCNVector3(xo, 0.205, 0)
+                grp.addChildNode(up)
+            }
+            let bar = SCNNode(geometry: barGeo)
+            bar.position = SCNVector3(0, 0.253, 0)
+            grp.addChildNode(bar)
             parent.addChildNode(grp)
             toolboxes.append(Pickup(node: grp))
         }
@@ -2256,10 +2417,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             right.position = SCNVector3(0.26, 1.3, 0.2)
             grp.addChildNode(right)
         }
+        // Car paint, physically based like everything else in the frame. This was
+        // the last `.blinn` surface in the scene — the pass that moved the scenery
+        // to PBR "so the whole frame answers to one light" missed the traffic, so
+        // nine cars sat in the middle of the road lit by different rules than the
+        // road under them. Low metalness with a tight roughness is clearcoat-ish
+        // without going chrome.
         let bodyMat = SCNMaterial()
-        bodyMat.lightingModel = .blinn
+        bodyMat.lightingModel = .physicallyBased
         bodyMat.diffuse.contents = color
-        bodyMat.specular.contents = UIColor.white
+        bodyMat.metalness.contents = 0.12
+        bodyMat.roughness.contents = 0.32
         let body = SCNNode(geometry: SCNBox(width: 1.7, height: 0.5, length: 3.6, chamferRadius: 0.08))
         body.geometry!.materials = [bodyMat]; body.position.y = 0.5
         grp.addChildNode(body)
@@ -2276,8 +2444,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             w.position = o
             grp.addChildNode(w)
         }
+        // Tail lights carry emission now, not just a flat constant colour. You spend
+        // the whole race closing on the backs of these, and at sunset an unlit red
+        // rectangle reads as a sticker — this is the one part of a car ahead that
+        // should pick up the bloom. Kept under the brake lights' 1.6 because these
+        // are always on rather than a moment of braking.
+        let tlMat = constant(UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1))
+        tlMat.emission.contents = UIColor(red: 1, green: 0.16, blue: 0.12, alpha: 1)
+        tlMat.emission.intensity = 1.1
         let tl = SCNNode(geometry: SCNBox(width: 1.5, height: 0.12, length: 0.06, chamferRadius: 0))
-        tl.geometry!.materials = [constant(UIColor(red: 1, green: 0.13, blue: 0.13, alpha: 1))]
+        tl.geometry!.materials = [tlMat]
         tl.position = SCNVector3(0, 0.62, 1.84)
         grp.addChildNode(tl)
         return grp
@@ -4906,7 +5082,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         guard let node = target else { return }
         let p = node.simdWorldPosition
         // Close and slightly above, off to one side so the silhouette reads against
-        // the road rather than head-on.
+        // the road rather than head-on. A 0.5 m prop needs a long lens this close or
+        // perspective distortion does the describing instead of the geometry.
         cameraNode.simdPosition = p + simd_float3(1.25, 0.55, 1.85)
         cameraNode.simdLook(at: p, up: simd_float3(0, 1, 0),
                             localFront: simd_float3(0, 0, -1))
