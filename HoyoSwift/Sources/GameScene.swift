@@ -454,6 +454,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// screen can be inspected without a touch.
     static let showPause = ProcessInfo.processInfo.arguments.contains("-showpause")
 
+    /// `-inspect <prop>`: parks the camera on the first live instance of a prop and
+    /// holds it there, so a small one can actually be looked at. Understands
+    /// `piragua`, `toolbox`, `traffic` and `iguana`. Use it with `-autoplay`.
+    ///
+    /// This exists because verifying small props by screenshot does not work, and the
+    /// reason is structural rather than bad luck: the self-driving controller holds
+    /// the centre of the road, the pickups sit off-lane, and at roughly half a metre
+    /// across they are a handful of pixels on the rare frame they appear at all.
+    /// Sampling a recorded run at 4 fps — 221 frames — produced no usable close-up of
+    /// either pickup. Anything smaller than a casita needs the camera taken to it.
+    static let inspectTarget: String? = {
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-inspect"), i + 1 < args.count { return args[i + 1] }
+        return nil
+    }()
+
     /// `-startAt <metres>`: drop in partway down the course. Handy for looking at
     /// the pueblo or the costa without surviving the whole descent first.
     static let startOffset: Float = {
@@ -4866,6 +4882,36 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.timeText = String(format: "%d:%04.1f", mm, ss)
             DispatchQueue.main.async { self.state.hud = snap }
         }
+
+        // Last thing in the frame, so every camera path above has already run and
+        // this simply wins. See `inspectTarget`.
+        if let want = Self.inspectTarget { holdInspectCamera(want) }
+    }
+
+    /// Parks the camera on the first instance of a prop, for `-inspect`.
+    ///
+    /// Deliberately at the end of the frame rather than as an early return: the prop
+    /// arrays are only populated and positioned once the world has built and a run
+    /// has laid the hazards out, so the game has to be allowed to do all of that.
+    /// Pair it with `-autoplay`; the craft drives off and the camera stays here.
+    private func holdInspectCamera(_ want: String) {
+        let target: SCNNode?
+        switch want {
+        case "piragua": target = piraguas.first(where: { !$0.node.isHidden })?.node
+        case "toolbox": target = toolboxes.first(where: { !$0.node.isHidden })?.node
+        case "traffic": target = traffic.first?.node
+        case "iguana":  target = iguanas.first?.node
+        default:        target = nil
+        }
+        guard let node = target else { return }
+        let p = node.simdWorldPosition
+        // Close and slightly above, off to one side so the silhouette reads against
+        // the road rather than head-on.
+        cameraNode.simdPosition = p + simd_float3(1.25, 0.55, 1.85)
+        cameraNode.simdLook(at: p, up: simd_float3(0, 1, 0),
+                            localFront: simd_float3(0, 0, -1))
+        cameraNode.camera?.fieldOfView = 46
+        cameraNode.camera?.motionBlurIntensity = 0
     }
 }
 
