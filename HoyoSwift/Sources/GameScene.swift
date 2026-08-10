@@ -883,11 +883,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             scene.fogDensityExponent = 1.4
             scene.fogColor = UIColor(red: 0.80, green: 0.90, blue: 0.94, alpha: 1)
         case .yunque:
-            // thick canopy mist: you can't see far in there
+            // Thick canopy mist: you can't see far in there. But the density curve
+            // matters more than the distances, and at exponent 1.9 this was doing
+            // the opposite of mist. ((d-40)/480)^1.9 is 2% at 100 m and 13% at
+            // 200 m, then 59% at 400 m — so the near and middle ground got no haze
+            // separating them at all and everything past ~300 m washed out over a
+            // short stretch. Measured on frame: near hill, middle hill and far hill
+            // came out at luminance 98, 99 and 95 — a rainforest with no depth in it,
+            // and a visible band where the wash began.
+            //
+            // Close to linear instead, so haze accumulates evenly and distance reads
+            // continuously. The colour is also lifted well clear of the foliage it
+            // sits in front of: mist is scattered light and has to be brighter than
+            // the leaves, or there is nothing for depth to be legible against.
             scene.fogStartDistance = 40
-            scene.fogEndDistance = 520
-            scene.fogDensityExponent = 1.9
-            scene.fogColor = UIColor(red: 0.42, green: 0.55, blue: 0.42, alpha: 1)
+            scene.fogEndDistance = 560
+            scene.fogDensityExponent = 1.15
+            scene.fogColor = UIColor(red: 0.52, green: 0.63, blue: 0.51, alpha: 1)
         case .cordillera:
             scene.fogStartDistance = 280
             scene.fogEndDistance = 2400
@@ -1625,14 +1637,24 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// returns nothing once a node accumulates too many distinct materials — the bug
     /// that kept the flamboyanes and the casitas off screen entirely.
     ///
-    /// Trunk and fronds are separate nodes on purpose, and it is only two materials,
-    /// which is what the original palm had and flattened fine. Merging them into one
-    /// geometry forced one material over both, and the fronds need `isDoubleSided`
-    /// — which then also uncalled backface culling on the trunk, a closed tube whose
-    /// backfaces are never visible. That is half the palm's triangles rasterised
-    /// twice for nothing, 300 palms deep on Yunque.
-    private func palmTemplate(variant: Int, trunkMaterial: SCNMaterial,
-                              frondMaterial: SCNMaterial) -> SCNNode {
+    /// Returns the two halves separately, and the caller must keep them in separate
+    /// containers. That is not a style preference, it is the only arrangement that
+    /// renders.
+    ///
+    /// The trunk and the fronds want different materials: the fronds are flat ribbons
+    /// and need `isDoubleSided`, while the trunk is a closed tube whose backfaces are
+    /// never visible, and one shared double-sided material rasterises half the palm's
+    /// triangles twice for nothing — 300 palms deep on Yunque. But putting both into
+    /// one node and flattening the container of those nodes returns a geometry with
+    /// **zero elements**: `flattenedClone()` gave back `elems=0 verts=nil mats=0` and
+    /// every palm on every stage silently vanished. Measured, not guessed — the
+    /// symptom is invisible props and a perfectly healthy-looking scene graph.
+    ///
+    /// So each material gets its own container and each container is flattened on its
+    /// own. One material in, one draw call out, twice.
+    private func palmGeometries(variant: Int, trunkMaterial: SCNMaterial,
+                                frondMaterial: SCNMaterial)
+                                -> (trunk: SCNGeometry, fronds: SCNGeometry) {
         var verts: [simd_float3] = []
         var cols: [simd_float3] = []
         var idx: [Int32] = []
@@ -1724,12 +1746,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
         }
 
-        let palm = SCNNode()
-        palm.addChildNode(SCNNode(geometry: trunkGeo))
-        palm.addChildNode(SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
-                                                         colors: cols,
-                                                         material: frondMaterial)))
-        return palm
+        return (trunk: trunkGeo,
+                fronds: makeGeometry(verts: verts, indices: idx, colors: cols,
+                                     material: frondMaterial))
     }
 
     private func vegetation(_ parent: SCNNode) {
@@ -1742,13 +1761,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // Two materials, both white with the hue in the vertex stream. Only the
         // fronds are double-sided; the trunk is a closed tube and culling its
         // backfaces is free.
+        //
+        // One container each, because a container holding both materials flattens to
+        // an empty geometry and the whole grove disappears — see `palmGeometries`.
         let palmTrunkMat = lambert(.white)
         let palmFrondMat = lambert(.white)
         palmFrondMat.isDoubleSided = true
-        let palmTemplates = (0..<3).map {
-            palmTemplate(variant: $0, trunkMaterial: palmTrunkMat,
-                         frondMaterial: palmFrondMat)
+        let palmGeos = (0..<3).map {
+            palmGeometries(variant: $0, trunkMaterial: palmTrunkMat,
+                           frondMaterial: palmFrondMat)
         }
+        let frondContainer = SCNNode()
         var placed = 0
         let treeTarget = Self.currentStage == .yunque ? 300
                        : (Self.currentStage == .playa ? 240 : 130)
@@ -1767,21 +1790,29 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // shift every later draw in this function and move the flamboyanes,
             // casitas and rocks — worldRng is the fixed world's seed, and the count
             // of draws taken from it is part of that contract.
-            let clone = palmTemplates[placed % 3].clone()
-            clone.position = SCNVector3(p.x + r.x * lat, gy - 0.3, p.z + r.z * lat)
+            let geo = palmGeos[placed % 3]
+            let pos = SCNVector3(p.x + r.x * lat, gy - 0.3, p.z + r.z * lat)
             let sc = Self.currentStage == .yunque
                 ? 1.3 + worldRng.next() * 1.1        // rainforest canopy is tall
                 : 0.8 + worldRng.next() * 0.7
-            clone.scale = SCNVector3(sc, sc, sc)
-            clone.eulerAngles = SCNVector3((worldRng.next() - 0.5) * 0.2,
-                                           worldRng.next() * 6.28,
-                                           (worldRng.next() - 0.5) * 0.2)
-            palmContainer.addChildNode(clone)
+            let rot = SCNVector3((worldRng.next() - 0.5) * 0.2,
+                                 worldRng.next() * 6.28,
+                                 (worldRng.next() - 0.5) * 0.2)
+            // Same transform on both halves, different containers.
+            for (container, g) in [(palmContainer, geo.trunk), (frondContainer, geo.fronds)] {
+                let n = SCNNode(geometry: g)
+                n.position = pos
+                n.scale = SCNVector3(sc, sc, sc)
+                n.eulerAngles = rot
+                container.addChildNode(n)
+            }
             placed += 1
         }
-        let flatPalms = palmContainer.flattenedClone()
-        flatPalms.castsShadow = true
-        parent.addChildNode(flatPalms)
+        for container in [palmContainer, frondContainer] {
+            let flat = container.flattenedClone()
+            flat.castsShadow = true
+            parent.addChildNode(flat)
+        }
 
         // flamboyanes
         let flamGroups = (0..<5).map { _ in SCNNode() }
