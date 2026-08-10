@@ -777,6 +777,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         clouds(world)
         ocean(world)
         road(world)
+        verge(world)
         terrain(world)
         vegetation(world)
         props(world)
@@ -1097,6 +1098,82 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let node = SCNNode(geometry: plane)
         node.eulerAngles.x = -.pi / 2
         node.position = SCNVector3(0, Self.seaLevel, -1600)
+        node.castsShadow = false
+        parent.addChildNode(node)
+    }
+
+    /// The shoulder, drawn.
+    ///
+    /// `shoulderWidth` has always been a gameplay zone — "slow and scrapey, but
+    /// recoverable" — with no geometry of its own. The road mesh stopped at
+    /// `roadHalf` and the terrain took over from there, so the surface you can
+    /// legitimately scrape along was invisible, and the boundary between them was a
+    /// hard line where two unrelated colours met. Worst on the Yunque trail, where
+    /// packed dirt runs straight into wet jungle grass with nothing in between.
+    ///
+    /// Same argument the guardrail posts settled: the limit you can hit should be the
+    /// limit you can see. This runs from the surface edge out to `barrier`, which is
+    /// exactly where the posts stand, so the strip and the rail describe the same
+    /// boundary.
+    ///
+    /// It fades from the surface's own tone to `terrainColor` sampled at its outer
+    /// edge, which is what makes the seam disappear: the strip meets the ground in
+    /// the ground's colour, whatever the biome and region happen to be doing there.
+    /// A per-vertex hash roughens it so it is grit rather than an airbrush.
+    ///
+    /// Smoothstep rather than a straight ramp, and that is the whole trick. Weighting
+    /// the blend toward the surface with `t * t` — the first attempt — held three of
+    /// the four rows at dirt tone and then jumped to terrain in the last one, which
+    /// just moved the hard line from the road edge out to the shoulder edge and made
+    /// it look like a painted brown stripe. Smoothstep is flat at *both* ends, so the
+    /// strip leaves the surface and arrives at the terrain with no step at either
+    /// boundary, which is the only place a seam can appear.
+    private func verge(_ parent: SCNNode) {
+        let inner: simd_float3
+        switch Self.currentStage {
+        case .yunque:     inner = simd_float3(0.30, 0.23, 0.16)   // packed dirt
+        case .cordillera: inner = simd_float3(0.21, 0.22, 0.24)   // asphalt
+        case .playa:      inner = simd_float3(0.84, 0.76, 0.62)   // dry sand
+        }
+        var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
+        let across = 5
+        let rowLen = Int32(across + 1)
+        for side in [Float(-1), Float(1)] {
+            let base0 = Int32(verts.count)
+            for i in 0..<Self.count {
+                let p = pts[i], r = rights[i]
+                for k in 0...across {
+                    let t = Float(k) / Float(across)
+                    let lat = side * (Self.roadHalf + Self.shoulderWidth * t)
+                    let y = groundY(i, lat)
+                    // Lifted a centimetre and a half: this sits on top of the terrain
+                    // mesh rather than replacing it, and coplanar surfaces z-fight.
+                    verts.append(simd_float3(p.x + r.x * lat, y + 0.015, p.z + r.z * lat))
+                    let w = t * t * (3 - 2 * t)            // smoothstep
+                    var c = simd_mix(inner, terrainColor(i, lat, y),
+                                     simd_float3(repeating: w))
+                    c *= 0.90 + PropMeshes.propHash(i &* 7 &+ k, 13) * 0.20
+                    cols.append(c)
+                }
+            }
+            // Winding mirrors with the side: on the right, k advances along +right and
+            // i along the tangent, and right x tangent is +y. On the left, k advances
+            // the other way, so the same order would face the triangles into the
+            // ground.
+            for i in 0..<Int32(Self.count - 1) {
+                for k in 0..<(rowLen - 1) {
+                    let a = base0 + i * rowLen + k
+                    let b = a + 1
+                    let c2 = a + rowLen
+                    let d = c2 + 1
+                    idx.append(contentsOf: side < 0 ? [a, c2, b, b, c2, d]
+                                                    : [a, b, c2, b, d, c2])
+                }
+            }
+        }
+        let mat = lambert(.white, roughness: 0.92)
+        let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
+                                                  colors: cols, material: mat))
         node.castsShadow = false
         parent.addChildNode(node)
     }
