@@ -98,12 +98,26 @@ static inline half4 pfxGrade(float2 uv,
     return half4(half3(saturate(col)), 1.0h);
 }
 
-// Late sunset over the karst: warm highlights, magenta in the shadows.
+// Late sunset over the karst: warm highlights, and shadows opened without being
+// tinted.
+//
+// The lift used to be (0.030, 0.008, 0.045) — red and blue up, green near zero, so a
+// magenta floor. That reads as a deliberate vaporwave choice until you notice where
+// `lift * (1 - col)` puts it: hardest into the *darkest* pixels, and the darkest large
+// surface in every frame is the asphalt. So the one thing carrying the strongest cast
+// was the road, ~60% of the screen, and it came out plum. Measured on the same stretch:
+// asphalt rgb(75, 22, 62) against rgb(73, 43, 47) here, a magenta bias of 46.5 down to
+// 17.0 at the same brightness.
+//
+// The sunset itself is unaffected — it lives in the sky texture and the `gain`, neither
+// of which changed. This only stops the shadows dyeing the surface the game is played
+// on. Kept slightly cool rather than perfectly neutral so it still sits under a
+// magenta sky.
 fragment half4 hoyoGradeCordillera(PFXVertexOut vert [[stage_in]],
                                    texture2d<float, access::sample> colorSampler [[texture(0)]],
                                    constant SCNSceneBuffer& scn_frame [[buffer(0)]]) {
     return pfxGrade(vert.uv, colorSampler,
-                    float3(0.030, 0.008, 0.045), float3(1.06, 0.99, 0.94),
+                    float3(0.028, 0.026, 0.030), float3(1.06, 0.99, 0.94),
                     1.12, 1.06, 0.24, 0.022, scn_frame.time,
                     // the only stage with sun-baked asphalt to rise off
                     0.0016);
