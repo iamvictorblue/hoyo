@@ -138,6 +138,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     // dynamic nodes
     private let cameraNode = SCNNode()
+
+    /// The sun. Held rather than local because its *position* has to follow the
+    /// craft: a directional light's shadow map covers a finite box centred on its
+    /// node, so leaving it at the world origin means the shadow frustum sits at the
+    /// start of a 3.6 km course and everything past the first few seconds casts
+    /// nothing. Which is exactly what was happening — the whole game rendered with
+    /// no cast shadows at all.
+    private let sunNode = SCNNode()
+
+    /// Unit direction the sunlight travels, read off `sunNode` once it is oriented.
+    private var sunForward = simd_float3(0, -1, 0)
     private let playerNode = SCNNode()
     private let chassisNode = SCNNode()
     private let blobNode = SCNNode()
@@ -609,6 +620,30 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let k2 = 0.20 + 0.07 * sin(sd / 120 + 2)
             yy = p.y - d * k2 + sin(d * 0.19 + sd * 0.017) * min(d * 0.12, 3)
         }
+        // Macro relief, and the reason the hillsides read as hillsides.
+        //
+        // Everything above is a smooth ramp plus one gentle ripple, which at the scale
+        // the camera actually sees — 50 to 250 m out — is a featureless slope. No
+        // folds, no ridges, nothing for a directional light to differentiate, so the
+        // terrain came out as one continuous gradient however good its material was.
+        // It had a PBR material, a detail texture and a normal map already; none of
+        // that can help, because the detail tiles every 7 m and is sub-pixel by the
+        // time the ground is far enough away to look flat. The missing thing was shape.
+        //
+        // Three octaves at 465 m, 153 m and 66 m along the road. Those are sampled
+        // every 2 m by the mesh so they tessellate cleanly, and they vary slowly
+        // across `lat`, which puts the folds roughly perpendicular to the road — ridges
+        // a mountain road cuts across, rather than corrugation running with it.
+        //
+        // Ramped in from `barrier` over 12 m so the shoulder and everything inside it
+        // is bit-for-bit unchanged. The road itself returns above on `d <= 0` and never
+        // reaches here at all.
+        let ramp = min(max(0, abs(lat) - Self.barrier) / 12, 1)
+        if ramp > 0 {
+            yy += (sinf(sd * 0.0135 + lat * 0.021) * 3.4
+                 + sinf(sd * 0.0410 - lat * 0.056) * 1.5
+                 + sinf(sd * 0.0950 + lat * 0.131) * 0.6) * ramp
+        }
         return max(yy, Self.seaFloor)
     }
 
@@ -713,9 +748,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         case .cordillera:
             ambient.light!.color = UIColor(red: 0.50, green: 0.42, blue: 0.50, alpha: 1)
         }
+        // Explicit, and low. This was never set, so it ran at SceneKit's default of
+        // 1000 — and an ambient light is pure directionless fill, so at that strength
+        // it was contributing on the same order as the 1280 sun. Add the bounce light
+        // and `lightingEnvironment` at 0.85 on top and the fill total rivalled the
+        // key, which is the definition of a flat image: if every face receives nearly
+        // the same light regardless of which way it points, nothing has form.
+        //
+        // The sky cubemap is already doing the job an ambient light would, and doing
+        // it directionally through IBL. This is only here to keep the deepest
+        // shadows off pure black, which is what 260 buys.
+        ambient.light!.intensity = 260
         world.addChildNode(ambient)
 
-        let sunNode = SCNNode()
         sunNode.light = SCNLight()
         sunNode.light!.type = .directional
         // dappled, weaker light under the canopy
@@ -737,8 +782,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         sunNode.light!.shadowRadius = 3
         sunNode.light!.shadowColor = UIColor(white: 0, alpha: 0.5)
         sunNode.light!.maximumShadowDistance = 150
+        // Without this the ortho frustum is SceneKit's default and far too small to
+        // contain anything, so the map renders essentially nothing. 46 covers the
+        // stretch of road and verge the camera can actually see at speed; going much
+        // wider spends the same texels over ground that is off screen and softens
+        // every shadow for nothing.
+        sunNode.light!.orthographicScale = 46
+        sunNode.light!.zNear = 1
+        sunNode.light!.zFar = 400
         sunNode.eulerAngles = SCNVector3(-0.55, 0.45, 0)
         world.addChildNode(sunNode)
+        // Read back rather than derived by hand, so changing the angles above cannot
+        // silently decouple the shadow frustum from the light again.
+        sunForward = sunNode.simdWorldFront
 
         // Rim light from low and behind. A single overhead key left everything
         // reading flat against a bright sky; this puts an edge on the craft, the
@@ -4795,6 +4851,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         // shadow stays on the road and shrinks as the car climbs, which is what
         // actually communicates height
+        // Carry the shadow frustum along with the craft.
+        //
+        // Two things had to be true and neither was. A directional light's ortho box is
+        // centred on its *node*, so leaving the sun at the world origin meant the map
+        // covered the start line and nothing else — the game rendered with no cast
+        // shadows for its whole life. And the node has to sit back along the light's
+        // own direction, not simply above the craft: this sun points down at about 31
+        // degrees, so hanging it overhead at 90 m put the centre of the box roughly
+        // 147 m downrange and left the craft outside its own shadow map.
+        //
+        // Snapped to a 2 m grid because a frustum that slides a fraction of a texel per
+        // frame makes every shadow edge crawl, which looks worse than no shadows.
+        let sunAnchor = groundPos - sunForward * 150
+        sunNode.simdPosition = simd_float3((sunAnchor.x / 2).rounded() * 2,
+                                           sunAnchor.y,
+                                           (sunAnchor.z / 2).rounded() * 2)
+
         blobNode.simdPosition = simd_float3(groundPos.x, pos.y + 0.03, groundPos.z)
         blobNode.eulerAngles = SCNVector3(-.pi / 2, atan2(tan.x, -tan.z), 0)
         let shadowScale = 1 / (1 + jumpY * 0.42)
