@@ -1088,6 +1088,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cam.vignettingIntensity = 0.0
         // Contact darkening. Without it every object floated — the craft, the trees
         // and the guardrail posts all met the ground with no shading at all.
+        // Contact darkening — except it does nothing, and that is measured rather than
+        // suspected. Cranked to intensity 4.0 with radius 3.0, values that would drown
+        // the frame in dark halos if they were reaching the image, and the render was
+        // pixel-for-pixel unchanged: no occlusion at the foot of a toolbox sitting on
+        // the road, none under the guardrail posts, none anywhere.
+        //
+        // Cause not isolated. The most likely candidate is that `view.technique` — the
+        // colour grade — displaces the pass SSAO lives in; it could equally be that
+        // SceneKit's SSAO is simply a no-op in this configuration, which is a
+        // long-standing complaint. Distinguishing them would need a device comparison
+        // and would not change what to do about it either way.
+        //
+        // Left configured rather than deleted, because these values are harmless and
+        // the day SceneKit starts honouring them the intent is already written down.
+        // What actually grounds objects here is the sun's cast shadows, which were
+        // themselves dead until the frustum was fixed — and they arrive from a real
+        // light direction, which AO never would have.
         if quality != .low {
             cam.screenSpaceAmbientOcclusionIntensity = 0.85
             cam.screenSpaceAmbientOcclusionRadius = 1.3
