@@ -147,6 +147,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// no cast shadows at all.
     private let sunNode = SCNNode()
 
+    /// Whether to ask SceneKit for cast shadows.
+    ///
+    /// Off, because it does not render them — see `contactShadows` for how that was
+    /// established. Everything needed to turn them back on is still below and is
+    /// correct: the frustum is sized, and the sun follows the craft so the ortho box
+    /// travels with the action. Flip this to re-test on a future OS.
+    ///
+    /// Off is not merely neutral. With it on, the light asks for a 2048-square shadow
+    /// map at four samples every frame and the render loop moves the sun to steer a
+    /// frustum whose output is discarded. Whether SceneKit actually rasterises that
+    /// map is not something this project can observe, but there is no reason to pay
+    /// for the chance.
+    private static let castShadows = false
+
     /// Unit direction the sunlight travels, read off `sunNode` once it is oriented.
     private var sunForward = simd_float3(0, -1, 0)
 
@@ -779,21 +793,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             sunNode.light!.color = UIColor(red: 1.0, green: 0.82, blue: 0.63, alpha: 1)
             sunNode.light!.intensity = 1280
         }
-        sunNode.light!.castsShadow = true
-        sunNode.light!.shadowMapSize = CGSize(width: quality.shadowMapSize,
-                                              height: quality.shadowMapSize)
-        sunNode.light!.shadowSampleCount = quality == .low ? 1 : 4
-        sunNode.light!.shadowRadius = 3
-        sunNode.light!.shadowColor = UIColor(white: 0, alpha: 0.5)
-        sunNode.light!.maximumShadowDistance = 150
+        sunNode.light!.castsShadow = Self.castShadows
+        if Self.castShadows {
+            sunNode.light!.shadowMapSize = CGSize(width: quality.shadowMapSize,
+                                                  height: quality.shadowMapSize)
+            sunNode.light!.shadowSampleCount = quality == .low ? 1 : 4
+            sunNode.light!.shadowRadius = 3
+            sunNode.light!.shadowColor = UIColor(white: 0, alpha: 0.5)
+            sunNode.light!.maximumShadowDistance = 150
         // Without this the ortho frustum is SceneKit's default and far too small to
         // contain anything, so the map renders essentially nothing. 46 covers the
         // stretch of road and verge the camera can actually see at speed; going much
         // wider spends the same texels over ground that is off screen and softens
         // every shadow for nothing.
-        sunNode.light!.orthographicScale = 46
-        sunNode.light!.zNear = 1
-        sunNode.light!.zFar = 400
+            sunNode.light!.orthographicScale = 46
+            sunNode.light!.zNear = 1
+            sunNode.light!.zFar = 400
+        }
         sunNode.eulerAngles = SCNVector3(-0.55, 0.45, 0)
         world.addChildNode(sunNode)
         // Read back rather than derived by hand, so changing the angles above cannot
@@ -4944,10 +4960,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         //
         // Snapped to a 2 m grid because a frustum that slides a fraction of a texel per
         // frame makes every shadow edge crawl, which looks worse than no shadows.
-        let sunAnchor = groundPos - sunForward * 150
-        sunNode.simdPosition = simd_float3((sunAnchor.x / 2).rounded() * 2,
-                                           sunAnchor.y,
-                                           (sunAnchor.z / 2).rounded() * 2)
+        if Self.castShadows {
+            let sunAnchor = groundPos - sunForward * 150
+            sunNode.simdPosition = simd_float3((sunAnchor.x / 2).rounded() * 2,
+                                               sunAnchor.y,
+                                               (sunAnchor.z / 2).rounded() * 2)
+        }
 
         blobNode.simdPosition = simd_float3(groundPos.x, pos.y + 0.03, groundPos.z)
         blobNode.eulerAngles = SCNVector3(-.pi / 2, atan2(tan.x, -tan.z), 0)
