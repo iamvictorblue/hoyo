@@ -149,6 +149,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// Unit direction the sunlight travels, read off `sunNode` once it is oriented.
     private var sunForward = simd_float3(0, -1, 0)
+
+    /// Ground position and radius for each static prop's contact patch, gathered
+    /// while the props are placed and consumed once by `contactShadows`.
+    private var contactPatches: [(pos: simd_float3, radius: Float)] = []
     private let playerNode = SCNNode()
     private let chassisNode = SCNNode()
     private let blobNode = SCNNode()
@@ -1175,6 +1179,52 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         parent.addChildNode(node)
     }
 
+    /// A soft dark patch on the ground under every static prop.
+    ///
+    /// This is standing in for cast shadows, which do not work. `SCNLight.castsShadow`
+    /// is set, the frustum is sized and follows the craft, and nothing renders: probed
+    /// with an opaque magenta `shadowColor` and scanned four frames for it, 0 hits in
+    /// 1.2M ground pixels each; ruled out the `SCNTechnique` grade by disabling it
+    /// entirely, same result; confirmed on device. SSAO is dead in exactly the same
+    /// way. The craft has carried a hand-drawn `blobShadow` plane since long before
+    /// any of this, which is the same workaround arrived at independently.
+    ///
+    /// So: the effect that actually grounds an object is a dark patch where it meets
+    /// the ground, and that does not need a shadow map. One alpha-blended quad per
+    /// prop, all of them merged into a single geometry — 400-odd quads is one draw
+    /// call and no per-frame work at all.
+    ///
+    /// It is not a real shadow and does not pretend to be. There is no light direction
+    /// in it, so it reads as ambient occlusion rather than sunlight, which is the
+    /// honest version of what it is: contact darkening.
+    private func contactShadows(_ parent: SCNNode) {
+        guard !contactPatches.isEmpty else { return }
+        var verts: [simd_float3] = [], uvs: [CGPoint] = [], idx: [Int32] = []
+        for (p, r) in contactPatches {
+            let base = Int32(verts.count)
+            verts.append(simd_float3(p.x - r, p.y, p.z - r))
+            verts.append(simd_float3(p.x + r, p.y, p.z - r))
+            verts.append(simd_float3(p.x - r, p.y, p.z + r))
+            verts.append(simd_float3(p.x + r, p.y, p.z + r))
+            uvs.append(CGPoint(x: 0, y: 0)); uvs.append(CGPoint(x: 1, y: 0))
+            uvs.append(CGPoint(x: 0, y: 1)); uvs.append(CGPoint(x: 1, y: 1))
+            // wound for a +y normal
+            idx.append(contentsOf: [base, base + 2, base + 1,
+                                    base + 1, base + 2, base + 3])
+        }
+        // Same recipe as the craft's blob, which is the one shadow in this game that
+        // has always rendered.
+        let mat = constant(.black)
+        mat.diffuse.contents = Textures.blobShadow()
+        mat.transparency = 1
+        mat.writesToDepthBuffer = false
+        let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx,
+                                                 uvs: uvs, material: mat))
+        node.castsShadow = false
+        parent.addChildNode(node)
+        contactPatches.removeAll(keepingCapacity: false)
+    }
+
     /// The shoulder, drawn.
     ///
     /// `shoulderWidth` has always been a gameplay zone — "slow and scrapey, but
@@ -1762,6 +1812,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                                  worldRng.next() * 6.28,
                                  (worldRng.next() - 0.5) * 0.2)
             // Same transform on both halves, different containers.
+            // A palm's trunk is thin, so its patch is tight — it should read as the
+            // trunk meeting the ground, not as a puddle under the crown.
+            contactPatches.append((simd_float3(pos.x, gy + 0.05, pos.z), 1.05 * sc))
             for (container, g) in [(palmContainer, geo.trunk), (frondContainer, geo.fronds)] {
                 let n = SCNNode(geometry: g)
                 n.position = pos
@@ -1829,6 +1882,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let fsc = 0.8 + worldRng.next() * 0.9
             tree.scale = SCNVector3(fsc, fsc, fsc)
             tree.position = SCNVector3(fp.x + fr.x * flat, fgy - 0.2, fp.z + fr.z * flat)
+            // Wider than the palm's: a poinciana crown is broad and its shade pools.
+            contactPatches.append((simd_float3(tree.position.x, fgy + 0.05, tree.position.z),
+                                   2.1 * fsc))
             flamGroups[shade].addChildNode(tree)
             placed += 1
         }
@@ -1906,6 +1962,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             house.scale = SCNVector3(hsc, hsc, hsc)
             house.position = SCNVector3(hp.x + hr.x * hlat, hgy - 0.3, hp.z + hr.z * hlat)
             house.eulerAngles.y = atan2(tans[hi].x, -tans[hi].z) + (worldRng.next() - 0.5) * 0.5
+            contactPatches.append((simd_float3(house.position.x, hgy + 0.05, house.position.z),
+                                   3.6 * hsc))
             houseGroups[ci].addChildNode(house)
             placed += 1
         }
@@ -1937,6 +1995,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             let rs = 0.5 + worldRng.next() * 1.6
             rock.scale = SCNVector3(rs, rs * (0.7 + worldRng.next() * 0.5), rs)
             rock.eulerAngles.y = worldRng.next() * 3
+            contactPatches.append((simd_float3(rock.position.x,
+                                               groundY(ri, rlat) + 0.05,
+                                               rock.position.z), 1.25 * rs))
             // Deterministic tilt off the counter, so boulders sit at angles instead
             // of all standing on the same axis. Not from worldRng — the draw count
             // in this loop is part of the fixed world's contract.
@@ -1972,6 +2033,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             gi += 4
         }
         parent.addChildNode(FlattenGuard.flattened(postContainer, "guardrail posts"))
+
+        // Last, so every prop above has registered its patch.
+        contactShadows(parent)
 
         // A continuous beam between the posts. Isolated posts read as scenery;
         // a rail reads as a wall you must not cross, which is the whole point of
