@@ -1875,8 +1875,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                                           material: flamMat)
         }
         placed = 0; guard_ = 0
-        // flamboyanes are an inland tree; the shoreline gets palms instead
-        let flamTarget = Self.currentStage == .playa ? 0 : 46
+        // Guajataca only. Flamboyanes are a dry-lowland tree — the shoreline gets palms,
+        // and El Yunque was getting 46 of them for no botanical reason at all. Worse,
+        // that stage's grade desaturates their red to ochre, so each one rendered as a
+        // tan cap on a bare stalk: a mushroom, in a rainforest. Tree ferns now.
+        let flamTarget = Self.currentStage == .cordillera ? 46 : 0
         while placed < flamTarget && guard_ < 2000 {
             guard_ += 1
             // flamboyanes line the pueblo and the lower mountain
@@ -2049,6 +2052,56 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             gi += 4
         }
         parent.addChildNode(FlattenGuard.flattened(postContainer, "guardrail posts"))
+
+        // Understory. Only El Yunque has one, and its absence is most of why that stage
+        // read as mown hillside rather than rainforest: 300 palms scattered over bare
+        // green with clear sightlines to open hills. A forest is dense at eye level.
+        //
+        // Deliberately the last loop in this function. It draws from `worldRng`, and
+        // every draw taken shifts the sequence for everything after it — so it goes
+        // after the palms, flamboyanes, casitas, rocks and posts have all had theirs,
+        // and none of them move.
+        // 650 out to 28 m rather than 420 out to 15. At the tighter spread the cover was
+        // patchy: where the hillside rises steeply straight off the trail edge there is
+        // no room inside 15 m, so whole stretches came out bare green while others were
+        // dense. Reaching further up the slope is what makes it continuous.
+        let fernTarget = Self.currentStage == .yunque ? 650 : 0
+        if fernTarget > 0 {
+            let fernMat = lambert(.white, roughness: 0.94)
+            fernMat.isDoubleSided = true          // fronds are ribbons
+            let fernGeos = (0..<4).map { v -> SCNGeometry in
+                let f = PropMeshes.treeFern(variant: v)
+                return makeGeometry(verts: f.verts, indices: f.indices,
+                                    colors: f.cols, material: fernMat)
+            }
+            let fernContainer = SCNNode()
+            placed = 0; guard_ = 0
+            while placed < fernTarget && guard_ < 9000 {
+                guard_ += 1
+                let fi = indexIn(pickRegion(&worldRng, simd_float3(0.34, 0.33, 0.33)), &worldRng)
+                // Tight to the trail — 0.4 m past the barrier out to 15 m. Understory is
+                // what you brush past, not scenery on a distant hill.
+                let flat = (worldRng.next() < 0.5 ? 1 : -1)
+                         * (Self.barrier + 0.4 + worldRng.next() * 28)
+                let fgy = groundY(fi, flat)
+                if fgy < -1 { continue }
+                let fp = pts[fi], fr = rights[fi]
+                let n = SCNNode(geometry: fernGeos[placed % 4])
+                n.position = SCNVector3(fp.x + fr.x * flat, fgy - 0.05, fp.z + fr.z * flat)
+                // Floor raised from 0.7: at the bottom of that range a fern was under a
+                // metre tall and simply vanished into the fog and the motion blur.
+                let sc = 0.95 + worldRng.next() * 0.95
+                n.scale = SCNVector3(sc, sc, sc)
+                n.eulerAngles = SCNVector3((worldRng.next() - 0.5) * 0.18,
+                                           worldRng.next() * 6.28,
+                                           (worldRng.next() - 0.5) * 0.18)
+                fernContainer.addChildNode(n)
+                // No contact patch: a fern's own shaded underside is the contact cue, and
+                // 420 more quads under plants this small would just grey the ground.
+                placed += 1
+            }
+            parent.addChildNode(FlattenGuard.flattened(fernContainer, "tree ferns"))
+        }
 
         // Last, so every prop above has registered its patch.
         contactShadows(parent)

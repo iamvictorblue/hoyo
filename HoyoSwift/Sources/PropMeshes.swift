@@ -164,6 +164,93 @@ enum PropMeshes {
         return m
     }
 
+    // MARK: - tree fern
+
+    /// A tree fern: short thick trunk, big arching fronds, understory green.
+    ///
+    /// El Yunque was being furnished with flamboyanes, which are a dry-lowland tree —
+    /// and worse, the stage's grade desaturates their red to ochre, so each one read as
+    /// a tan cap on a bare stalk. A mushroom, in a rainforest. This is what belongs
+    /// there instead: squat, wide, and layered low enough to be understory rather than
+    /// canopy, so it fills the bare ground that made the hillsides look mown.
+    ///
+    /// Single mesh, single double-sided material on purpose. The fronds are flat
+    /// ribbons and need double-siding; the trunk is short and thick enough that
+    /// rasterising its backfaces costs almost nothing, and keeping it to one material
+    /// means one container and one draw call — see FlattenGuard.
+    static func treeFern(variant: Int) -> Mesh {
+        var m = Mesh()
+
+        // trunk: stubby, fibrous, barely tapered
+        let rings = 4, sides = 6
+        let height: Float = 0.75 + propHash(variant, 71) * 0.85
+        let lean = propHash(variant, 72) * 6.28
+        let ldx = cos(lean), ldz = sin(lean)
+        let bend: Float = 0.10 + propHash(variant, 73) * 0.16
+        func centre(_ t: Float) -> simd_float3 {
+            simd_float3(ldx * bend * t * t, height * t, ldz * bend * t * t)
+        }
+        for r in 0..<rings {
+            let t = Float(r) / Float(rings - 1)
+            let c = centre(t)
+            let rad = 0.15 * (1 - 0.22 * t)
+            let shade = 0.42 + 0.18 * t
+            for sIdx in 0..<sides {
+                let a = Float(sIdx) / Float(sides) * 2 * .pi
+                m.verts.append(c + simd_float3(cos(a) * rad, 0, sin(a) * rad))
+                m.cols.append(simd_float3(shade * 0.50, shade * 0.40, shade * 0.28))
+            }
+        }
+        for r in 0..<(rings - 1) {
+            for sIdx in 0..<sides {
+                let a = Int32(r * sides + sIdx)
+                let b = Int32(r * sides + (sIdx + 1) % sides)
+                let c = Int32((r + 1) * sides + sIdx)
+                let d = Int32((r + 1) * sides + (sIdx + 1) % sides)
+                m.indices.append(contentsOf: [a, c, b, b, c, d])
+            }
+        }
+
+        // crown: a rosette that rises then arches over, so the silhouette is a fountain
+        // rather than a dome. Wider than tall and low to the ground — understory.
+        let crown = centre(1)
+        let fronds = 7 + Int(propHash(variant, 74) * 4)
+        let segs = 4
+        let lo = simd_float3(0.05, 0.20, 0.07)          // shaded, near the crown
+        let hi = simd_float3(0.34, 0.62, 0.20)          // the light that gets through
+        for f in 0..<fronds {
+            let a = Float(f) / Float(fronds) * 2 * .pi + propHash(variant, 75) * 3
+            let dx = cos(a), dz = sin(a)
+            let vigour = 0.75 + propHash(variant &* 17 &+ f, 79) * 0.5
+            let reachMax: Float = (1.5 + propHash(variant &* 17 &+ f, 83) * 0.9) * vigour
+            let riseMax: Float = 0.55 * vigour
+            for k in 1...segs {
+                let t = Float(k) / Float(segs)
+                let tp = Float(k - 1) / Float(segs)
+                func spine(_ u: Float) -> simd_float3 {
+                    // up first, then over: sin gives the arch, the cubic pulls the tip down
+                    let rise = riseMax * sinf(u * .pi * 0.72) - 0.42 * u * u * u
+                    return crown + simd_float3(dx * u * reachMax, rise, dz * u * reachMax)
+                }
+                func half(_ u: Float) -> Float { 0.30 * sinf(u * .pi) * (1 - u * 0.25) + 0.02 }
+                let side = simd_float3(-dz, 0, dx)
+                let p0 = spine(tp), p1 = spine(t)
+                let l0 = p0 + side * half(tp), r0 = p0 - side * half(tp)
+                let l1 = p1 + side * half(t),  r1 = p1 - side * half(t)
+                let c0 = simd_mix(lo, hi, simd_float3(repeating: tp))
+                let c1 = simd_mix(lo, hi, simd_float3(repeating: t))
+                let base = Int32(m.verts.count)
+                m.verts.append(l0); m.verts.append(r0)
+                m.verts.append(l1); m.verts.append(r1)
+                m.cols.append(c0); m.cols.append(c0)
+                m.cols.append(c1); m.cols.append(c1)
+                m.indices.append(contentsOf: [base, base + 2, base + 1,
+                                              base + 1, base + 2, base + 3])
+            }
+        }
+        return m
+    }
+
     // MARK: - palm
 
     /// Trunk and fronds come back separately, and the caller must keep them in
