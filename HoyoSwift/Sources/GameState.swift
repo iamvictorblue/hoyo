@@ -232,6 +232,11 @@ struct HudSnapshot: Equatable {
     var lap = 1                    // endless only
     var lapFlash: Double = 0       // white wash that hides the lap teleport
     var floatLeft: Double = 0      // 1…0 while the triple-jump float is running
+    /// Hops banked toward the float, 0…2. The third one launches it.
+    var jumpChain = 0
+    /// 1…0 of the chain window. The chain silently resets when this reaches zero,
+    /// which is the part that was invisible.
+    var jumpChainLeft: Double = 0
     var pendingStyle = 0           // drift points at risk right now
     var heat: Double = 0           // 0…1 wanted meter
     var chased = 0                 // cruisers currently on you

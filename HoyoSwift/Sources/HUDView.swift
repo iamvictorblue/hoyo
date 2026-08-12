@@ -422,7 +422,11 @@ struct HUDView: View {
                     HStack(spacing: 11) {
                         TapButton(symbol: "arrow.up.circle.fill", tint: .neonGold,
                                   caption: "SALTA", voiceLabel: "Salta",
-                                  voiceHint: "Brinca los hoyos y los carros. Tres veces seguidas y flotas.") {
+                                  voiceHint: "Brinca los hoyos y los carros. Tres veces seguidas y flotas.",
+                                  progress: Double(state.hud.jumpChain) / 3,
+                                  progressLeft: state.hud.jumpChainLeft,
+                                  progressLabel: state.hud.jumpChain > 0
+                                      ? "\(state.hud.jumpChain) de 3" : "") {
                             state.input.jumpRequested = true
                         }
                         TapButton(symbol: "bolt.fill", tint: .neonTeal,
@@ -862,6 +866,14 @@ struct TapButton: View {
     /// the trait and the action all have to be supplied by hand.
     var voiceLabel: String = ""
     var voiceHint: String = ""
+    /// Optional progress ring drawn around the button, 0…1. Used by SALTA to show how
+    /// many hops are banked toward the float.
+    var progress: Double = 0
+    /// 1…0 of the time left to add the next one. Fades the ring as it runs out, so an
+    /// expiring chain looks like it is expiring.
+    var progressLeft: Double = 1
+    /// Spoken as the button's value, e.g. "2 de 3".
+    var progressLabel: String = ""
     let onTap: () -> Void
     @State private var pressed = false
 
@@ -877,6 +889,7 @@ struct TapButton: View {
         .accessibilityLabel(voiceLabel.isEmpty ? (caption ?? "") : voiceLabel)
         .accessibilityHint(voiceHint)
         .accessibilityAddTraits(.isButton)
+        .accessibilityValue(progressLabel)
         .accessibilityAction { onTap() }
     }
 
@@ -888,6 +901,21 @@ struct TapButton: View {
             .background(pressed ? Color.neonGold.opacity(0.45) : Color.black.opacity(0.35),
                         in: Circle())
             .overlay(Circle().stroke(pressed ? Color.neonGold : tint.opacity(0.5), lineWidth: 2))
+            // Hops banked toward the float. This existed only as hidden state before:
+            // three hops chained triggers it, the chain resets silently after two
+            // seconds, and nothing on screen said either thing — so a dropped chain was
+            // indistinguishable from a mechanic that did not work. Drawn from the top,
+            // clockwise, and faded by the time remaining so an expiring chain reads as
+            // expiring rather than just vanishing.
+            .overlay(
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(Color.neonGold.opacity(0.35 + 0.65 * progressLeft),
+                            style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .padding(-3)
+                    .animation(.linear(duration: 0.08), value: progress)
+            )
             .shadow(color: pressed ? .neonGold : .clear, radius: 12)
             .gesture(
                 DragGesture(minimumDistance: 0)

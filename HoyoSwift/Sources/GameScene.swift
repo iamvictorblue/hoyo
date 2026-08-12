@@ -5342,6 +5342,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.lap = lap
             snap.lapFlash = Double(min(1, lapFlash)) * (state.reduceMotion ? 0.45 : 1)
             snap.floatLeft = Double(floatT / Self.floatDuration)
+            snap.jumpChain = jump.chain
+            snap.jumpChainLeft = Double(jump.chainT / JumpState.chainWindow)
             snap.progress = Double(s / Self.total)
             snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1)) * (state.reduceMotion ? 0.4 : 1)
             snap.flash = Double(max(0, flashT)) * (state.reduceMotion ? 0.30 : 1)
