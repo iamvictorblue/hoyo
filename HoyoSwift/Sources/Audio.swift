@@ -42,10 +42,31 @@ final class SoundEngine: ObservableObject {
     private var stagePhrases: [Int: AVAudioPCMBuffer] = [:]
     private var loadedPhrase: Stage?
 
+    /// Optional real music, one loop per course, played instead of the synth phrase
+    /// when the file is present. Its own node and its own stereo connection: the rest
+    /// of the engine runs mono at 44.1k, and downmixing a music bed to mono to fit
+    /// that would throw away the one thing a written track has over a rendered one.
+    private let trackPlayer = AVAudioPlayerNode()
+    private var trackFormat: AVAudioFormat!
+    private var trackCache: [Int: AVAudioPCMBuffer] = [:]
+    private var loadedTrack: Stage?
+    private var musicOn = true
+
+    /// Louder than the synth phrase's 0.28, because a mastered track sits at a much
+    /// lower peak-to-average than four bars of synthesized dembow. This is the dial to
+    /// turn if music fights the engine — the engine already owns the low end.
+    private static let trackVolume: Float = 0.34
+
     /// Swaps the groove and the ambient bed to match the course. Phrases are
     /// rendered on first use and kept — each is a couple of seconds of PCM.
     func setStage(_ stage: Stage) {
-        guard started, loadedPhrase != stage else { return }
+        guard started else { return }
+        // A written loop wins if one shipped for this course.
+        if loadedTrack == stage { return }
+        if startTrack(for: stage) { return }
+        guard loadedPhrase != stage else { return }
+        loadedTrack = nil
+        trackPlayer.stop()
         loadedPhrase = stage
         let buf: AVAudioPCMBuffer?
         if stage == .cordillera {
@@ -61,6 +82,100 @@ final class SoundEngine: ObservableObject {
         musicPlayer.stop()
         musicPlayer.scheduleBuffer(buf, at: nil, options: .loops)
         musicPlayer.play()
+    }
+
+    // MARK: - optional written music
+
+    /// Bundle filename stem for a course's music, e.g. `music-yunque`.
+    ///
+    /// Deliberately not derived from `Stage.name`, which is display text ("EL YUNQUE")
+    /// and is free to change with the Spanish without anyone thinking about filenames.
+    private func trackStem(_ stage: Stage) -> String {
+        switch stage {
+        case .cordillera: return "music-cordillera"
+        case .yunque:     return "music-yunque"
+        case .playa:      return "music-playa"
+        }
+    }
+
+    /// Reads a bundled loop for the course, or nil if none shipped.
+    ///
+    /// Prefers uncompressed. AAC and MP3 both prepend encoder padding, and a
+    /// sample-exact loop with a few thousand samples of silence welded to the front
+    /// audibly hiccups on every repeat — which is the one thing a driving game's
+    /// backing loop cannot do. WAV and AIFF have no such priming.
+    private func loadTrack(for stage: Stage) -> AVAudioPCMBuffer? {
+        let stem = trackStem(stage)
+        for ext in ["wav", "aiff", "aif", "caf", "m4a", "mp3"] {
+            guard let url = Bundle.main.url(forResource: stem, withExtension: ext) else { continue }
+            if let buf = readLoop(url) { return buf }
+        }
+        return nil
+    }
+
+    /// Decodes a file into the track node's own stereo format.
+    ///
+    /// The conversion is not optional. A file is whatever the person who made it
+    /// exported — 48k, or mono, or 24-bit — and `AVAudioPlayerNode` will only play
+    /// buffers matching the format its connection was made with. Without this step a
+    /// 48k export simply fails to schedule, silently.
+    private func readLoop(_ url: URL) -> AVAudioPCMBuffer? {
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        let inFormat = file.processingFormat
+        let frames = AVAudioFrameCount(file.length)
+        guard frames > 0,
+              let input = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: frames)
+        else { return nil }
+        do { try file.read(into: input) } catch { return nil }
+
+        if inFormat.sampleRate == trackFormat.sampleRate,
+           inFormat.channelCount == trackFormat.channelCount,
+           inFormat.commonFormat == trackFormat.commonFormat {
+            return input
+        }
+        guard let converter = AVAudioConverter(from: inFormat, to: trackFormat) else { return nil }
+        // Round up, and leave slack: resampling 48k to 44.1k is not an integer ratio and
+        // a capacity computed exactly will drop the tail, which is precisely the sample
+        // a seamless loop needs.
+        let ratio = trackFormat.sampleRate / inFormat.sampleRate
+        let capacity = AVAudioFrameCount((Double(frames) * ratio).rounded(.up)) + 4096
+        guard let output = AVAudioPCMBuffer(pcmFormat: trackFormat, frameCapacity: capacity)
+        else { return nil }
+        var supplied = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if supplied { status.pointee = .endOfStream; return nil }
+            supplied = true
+            status.pointee = .haveData
+            return input
+        }
+        guard error == nil, output.frameLength > 0 else { return nil }
+        return output
+    }
+
+    /// Starts the written loop for a course, if there is one. Returns whether it did,
+    /// so callers can fall back to the synth phrase.
+    @discardableResult
+    private func startTrack(for stage: Stage) -> Bool {
+        let buf: AVAudioPCMBuffer?
+        if let cached = trackCache[stage.rawValue] {
+            buf = cached
+        } else if let loaded = loadTrack(for: stage) {
+            trackCache[stage.rawValue] = loaded
+            buf = loaded
+        } else {
+            buf = nil
+        }
+        guard let buf else { return false }
+        loadedTrack = stage
+        // The synth groove and the written track are alternatives, never a layer.
+        musicPlayer.stop()
+        loadedPhrase = nil
+        trackPlayer.stop()
+        trackPlayer.scheduleBuffer(buf, at: nil, options: .loops)
+        trackPlayer.volume = musicOn ? Self.trackVolume : 0
+        trackPlayer.play()
+        return true
     }
 
     /// A call, an alarm or Siri deactivates the session. Without this the engine
@@ -162,12 +277,16 @@ final class SoundEngine: ObservableObject {
         }
         sourceNode = node
 
+        trackFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)
+
         engine.attach(node)
+        engine.attach(trackPlayer)
         engine.attach(musicPlayer)
         engine.attach(fxPlayer)
         engine.attach(ambientPlayer)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         engine.connect(musicPlayer, to: engine.mainMixerNode, format: format)
+        engine.connect(trackPlayer, to: engine.mainMixerNode, format: trackFormat)
         engine.connect(fxPlayer, to: engine.mainMixerNode, format: format)
         engine.connect(ambientPlayer, to: engine.mainMixerNode, format: format)
         engine.mainMixerNode.outputVolume = 0.9
@@ -192,6 +311,10 @@ final class SoundEngine: ObservableObject {
                 musicPlayer.play()
                 loadedPhrase = .cordillera
             }
+            // Then hand over to a real track if one shipped. Done in this order rather
+            // than instead of the above so a missing or unreadable file degrades to the
+            // synth groove rather than to silence.
+            startTrack(for: .cordillera)
             fxPlayer.volume = 1.0
             ambientPlayer.volume = 0.22
             fxPlayer.play()
@@ -200,7 +323,9 @@ final class SoundEngine: ObservableObject {
     }
 
     func setMusic(on: Bool) {
+        musicOn = on
         musicPlayer.volume = on ? 0.28 : 0
+        trackPlayer.volume = on ? Self.trackVolume : 0
     }
 
     func playCoqui() { if let b = coquiBuffer { fxPlayer.scheduleBuffer(b) } }
