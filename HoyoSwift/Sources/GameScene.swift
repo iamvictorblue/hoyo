@@ -191,6 +191,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var flameNodes: [SCNNode] = []
     private var brakeLightMaterial = SCNMaterial()
     private var glowMaterial = SCNMaterial()
+    /// The player craft's cockpit dome, kept so damage can make it stutter.
+    private var craftDomeMat: SCNMaterial?
+    /// True on frames where damage is cutting the craft's systems. Set in the damage
+    /// block and read further down, where the hover field's opacity is assigned — the
+    /// dome and the field have to drop together or it reads as two glitches instead of
+    /// one failing craft.
+    private var systemsFailing = false
+    /// Smoke pouring off a beaten-up hull. See the damage block in the frame update.
+    private var damageSmoke = SCNParticleSystem()
 
     /// Hover-field opacity, and the amount the render loop pulses it either side.
     ///
@@ -3309,7 +3318,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Builds a saucer hull. Shared by the player craft and the intro cutscene, so
     /// the thing escaping Area 51 is visibly the thing you then drive.
     /// Returns the rotating light ring so the caller can spin it.
-    private func ufoHull(scale: Float = 1) -> (node: SCNNode, lightRing: SCNNode) {
+    private func ufoHull(scale: Float = 1)
+        -> (node: SCNNode, lightRing: SCNNode, dome: SCNMaterial) {
         let craft = SCNNode()
 
         let hullMat = SCNMaterial()
@@ -3394,7 +3404,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         craft.addChildNode(lightRing)
 
         craft.scale = SCNVector3(scale, scale, scale)
-        return (craft, lightRing)
+        return (craft, lightRing, domeMat)
     }
 
     // MARK: - Area 51 intro cutscene
@@ -4000,6 +4010,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let built = ufoHull()
         chassisNode.addChildNode(built.node)
         ufoLightRing = built.lightRing
+        craftDomeMat = built.dome
 
         // A soft pool of light on the asphalt ahead, in place of headlights.
         // On playerNode rather than the chassis so it stays flat on the road while
@@ -4155,6 +4166,38 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         grindNode.position = SCNVector3(0, 0.12, 1.1)      // under the rear of the hull
         grindNode.addParticleSystem(grindSystem)
         chassisNode.addChildNode(grindNode)
+
+        // Damage. The craft has always looked showroom-fresh at 3 % health, which made
+        // the CARRO bar the only thing telling you that you were about to lose — a
+        // number in the corner, doing work the craft itself should be doing.
+        //
+        // Dark and alpha-blended, unlike everything else the craft emits. The nitro,
+        // the underglow and the scrape sparks are all additive and all read as energy;
+        // this has to read as the opposite, so it subtracts light instead of adding it.
+        damageSmoke.particleImage = puffImg
+        damageSmoke.birthRate = 0
+        // Bigger, longer-lived and climbing much harder than the first attempt, which
+        // vented at hull height and hugged the road. Dark smoke against dark asphalt is
+        // invisible — it only reads once it has risen into the bright sky band behind
+        // the craft, so getting it up there quickly is the whole job.
+        damageSmoke.particleLifeSpan = 1.6
+        damageSmoke.particleLifeSpanVariation = 0.6
+        damageSmoke.particleSize = 0.52
+        damageSmoke.particleSizeVariation = 0.28
+        damageSmoke.particleVelocity = 4.4
+        damageSmoke.particleVelocityVariation = 2.4
+        damageSmoke.spreadingAngle = 48
+        damageSmoke.emittingDirection = SCNVector3(0, 0.9, 1)
+        damageSmoke.acceleration = SCNVector3(0, 3.2, 0)
+        damageSmoke.particleColor = UIColor(white: 0.22, alpha: 0.62)
+        damageSmoke.particleColorVariation = SCNVector4(0, 0, 0.08, 0.15)
+        damageSmoke.blendMode = .alpha
+        let damageNode = SCNNode()
+        // On top of the hull, not under it: a venting craft, not a dragging one. The
+        // scrape sparks already own the underside.
+        damageNode.position = SCNVector3(0, 0.95, 0.75)
+        damageNode.addParticleSystem(damageSmoke)
+        chassisNode.addChildNode(damageNode)
 
         streakSystem.particleImage = puffImg
         streakSystem.birthRate = 0
@@ -4768,6 +4811,29 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         } else {
             grindSystem.birthRate = 0
         }
+
+        // Damage, shown on the craft rather than only in the corner.
+        //
+        // Nothing below 60 hp is arbitrary: above that a hit is a setback, below it the
+        // run is genuinely in trouble, and that is the point at which the player should
+        // be able to tell without reading a bar.
+        let hurt = simd_clamp(1 - hp / 60, 0, 1)
+        // Capped at 150 rather than 240. At the higher rate a craft on its last few
+        // points of health vanished inside its own plume — dramatic, and unplayable,
+        // since the thing being hidden is the object you are steering.
+        damageSmoke.birthRate = CGFloat(hurt * 150)
+        // Failing systems stutter rather than dim. Three sines at unrelated rates give
+        // an irregular flicker with no audible period; the threshold falls as damage
+        // rises, so dropouts start as an occasional blink and end up near-constant.
+        let ft = Float(playTime)
+        let n = sinf(ft * 43) * sinf(ft * 19.7) * sinf(ft * 7.3)
+        // The 1.25 coefficient made the threshold negative at full damage, so the dome
+        // and hover field were dark on most frames rather than blinking — the craft
+        // lost its main visual anchor exactly when the player most needs to track it.
+        // At 0.65 the worst case is a dropout on roughly a third of frames: clearly
+        // failing, still legible.
+        systemsFailing = hurt > 0.02 && n > (1 - hurt * 0.65)
+        craftDomeMat?.emission.intensity = systemsFailing ? 0.1 : 1.0
         if drifting {
             // escalating rate: a long drift is worth far more than two short ones,
             // which is the whole reason not to bail early
@@ -5074,8 +5140,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let flash = sin(tNow * 9) > 0
         policeRedMat.emission.intensity = flash ? 2.2 : 0.05
         policeBlueMat.emission.intensity = flash ? 0.05 : 2.2
-        glowMaterial.transparency = Self.hoverFieldOpacity
-            + CGFloat(Self.hoverFieldPulse * sin(tNow * 9))
+        glowMaterial.transparency = (Self.hoverFieldOpacity
+            + CGFloat(Self.hoverFieldPulse * sin(tNow * 9)))
+            * (systemsFailing ? 0.35 : 1)
 
         // shadow stays on the road and shrinks as the car climbs, which is what
         // actually communicates height
