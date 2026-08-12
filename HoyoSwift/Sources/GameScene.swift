@@ -213,6 +213,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var dustSystem = SCNParticleSystem()
     private let dustNode = SCNNode()
     private var sparkSystem = SCNParticleSystem()
+    /// Continuous ground contact under the craft — see `particles()`.
+    private var grindSystem = SCNParticleSystem()
+    /// Struck off tarmac: hot and additive.
+    private static let grindSparkColor = UIColor(red: 0.95, green: 0.60, blue: 0.20, alpha: 1)
+    /// Kicked off dirt or sand: cooler, dimmer, and much more of it.
+    private static let grindDustColor = UIColor(red: 0.86, green: 0.74, blue: 0.55, alpha: 1)
     private let sparkNode = SCNNode()
     private var oceanNormal: SCNMaterialProperty?
     private let holeNode = SCNNode()
@@ -4068,6 +4074,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         smokeSystem.particleImage = puffImg
         smokeSystem.birthRate = 0
+        grindSystem.birthRate = 0
         smokeSystem.particleLifeSpan = 0.7
         smokeSystem.particleSize = 0.7
         smokeSystem.particleSizeVariation = 0.3
@@ -4107,6 +4114,47 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         sparkSystem.particleColorVariation = SCNVector4(0.04, 0.2, 0.2, 0)
         sparkSystem.blendMode = .additive
         sparkNode.addParticleSystem(sparkSystem)
+
+        // Ground scrape. The craft is a stolen saucer held a few inches off a Puerto
+        // Rican back road, and until now it glided over one in perfect silence — the
+        // only thing connecting it to the surface was its own underglow. This throws
+        // debris out from beneath it whenever it is low and moving, which is what sells
+        // "barely under control" rather than "hovering serenely".
+        //
+        // Emitted backwards and low, so it reads as thrown off the surface rather than
+        // vented by the craft. Additive, because on asphalt it is sparks.
+        grindSystem.particleImage = puffImg
+        grindSystem.birthRate = 0
+        // Small, brief and fast, and all three matter. The first attempt ran 0.09 across
+        // with a 0.42 s life, and since `puffImg` is a soft radial gradient that renders
+        // as a 9 cm fuzzy ball — the craft trailed a shower of golden bubbles. A spark
+        // is a point that is gone before you can focus on it, so this is a third the
+        // size, a little over half the life, and thrown harder.
+        grindSystem.particleLifeSpan = 0.26
+        grindSystem.particleLifeSpanVariation = 0.16
+        grindSystem.particleSize = 0.028
+        grindSystem.particleSizeVariation = 0.018
+        grindSystem.particleVelocity = 11
+        grindSystem.particleVelocityVariation = 7
+        grindSystem.spreadingAngle = 42
+        grindSystem.emittingDirection = SCNVector3(0, 0.25, 1)
+        grindSystem.acceleration = SCNVector3(0, -11, 0)
+        // Born across the underside rather than at a point. A point emitter puts every
+        // particle in the same place at birth, and 700 additive sprites overlapping
+        // there saturate to a white teardrop welded under the craft — the same failure
+        // as the old bloom blowout, arrived at from a different direction. Spreading
+        // births over the hull's footprint removes the hotspot and is what actually
+        // happens anyway: the whole underside is scraping, not one spot on it.
+        grindSystem.emitterShape = SCNBox(width: 1.7, height: 0.05, length: 0.6,
+                                          chamferRadius: 0)
+        grindSystem.birthLocation = .volume
+        grindSystem.particleColor = Self.grindSparkColor
+        grindSystem.particleColorVariation = SCNVector4(0.05, 0.22, 0.22, 0)
+        grindSystem.blendMode = .additive
+        let grindNode = SCNNode()
+        grindNode.position = SCNVector3(0, 0.12, 1.1)      // under the rear of the hull
+        grindNode.addParticleSystem(grindSystem)
+        chassisNode.addChildNode(grindNode)
 
         streakSystem.particleImage = puffImg
         streakSystem.birthRate = 0
@@ -4690,6 +4738,36 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         x = simd_clamp(x, -Self.barrier, Self.barrier)
 
         smokeSystem.birthRate = drifting ? 90 : 0
+
+        // Ground contact. Fades out as the craft lifts — by 1.2 m it is clearly flying
+        // and nothing should be touching. Needs speed too, or a stationary craft sits
+        // in a permanent shower of sparks at the start line.
+        let contact = simd_clamp(1 - jumpY / 1.2, 0, 1)
+        let scrapeSpeed = simd_clamp((v - 10) / 42, 0, 1)
+        let scrape = contact * scrapeSpeed
+        if scrape > 0.02 {
+            // Off the asphalt it is dirt rather than sparks: far more of it, thrown
+            // slower and wider, and no longer glowing. Reuses `offroad`, which already
+            // decides the rumble-strip audio, so what you hear and what you see agree.
+            grindSystem.particleColor = offroad ? Self.grindDustColor : Self.grindSparkColor
+            grindSystem.particleVelocity = offroad ? 7 : 11
+            grindSystem.spreadingAngle = offroad ? 70 : 42
+            grindSystem.particleSize = offroad ? 0.055 : 0.028
+            grindSystem.blendMode = offroad ? .alpha : .additive
+            // Braking digs in; drifting drags the whole underside across the surface.
+            let dig: Float = drifting ? 2.1 : (braking ? 1.4 : 1.0)
+            // Rates are high because each particle is now tiny — the density is what
+            // reads as a spray, not the individual grains.
+            // Rates are low, and this is the third correction to them. Additive sprites
+            // stack, and a stack that clears the camera's 0.98 bloom threshold becomes
+            // one white ball — the identical failure as the underglow-plus-nitro
+            // blowout, reached from a different direction. Spreading the emitter over
+            // the hull was not enough on its own; there simply cannot be many of them.
+            // Sparks read as sparks when they are sparse and individually visible.
+            grindSystem.birthRate = CGFloat(scrape * dig * (offroad ? 380 : 110))
+        } else {
+            grindSystem.birthRate = 0
+        }
         if drifting {
             // escalating rate: a long drift is worth far more than two short ones,
             // which is the whole reason not to bail early
