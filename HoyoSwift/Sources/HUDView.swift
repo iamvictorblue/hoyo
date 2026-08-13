@@ -150,6 +150,13 @@ struct HUDView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
+            // lightning. Its own channel rather than reusing the damage flash, which is
+            // red — a red lightning strike would read as taking a hit.
+            Color(red: 0.90, green: 0.95, blue: 1.0)
+                .opacity(state.hud.lightning * 0.62)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
             // damage flash
             RadialGradient(colors: [Color.red.opacity(0.3), Color(red: 1, green: 0, blue: 0.23).opacity(0.6)],
                            center: .center, startRadius: 80, endRadius: 500)

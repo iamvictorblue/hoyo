@@ -226,6 +226,8 @@ struct HudSnapshot: Equatable {
     var progress: Double = 0
     var speedNorm: Double = 0      // 0…1, drives the speed vignette
     var flash: Double = 0          // damage flash opacity
+    /// 1…0 immediately after a lightning strike. El Yunque only.
+    var lightning: Double = 0
     var nitroActive = false
     var invuln = false             // post-hit grace period, blinks the car
     var comboLeft: Double = 0      // 1…0, how much of the combo window is left

@@ -194,6 +194,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Unit direction the sunlight travels, read off `sunNode` once it is oriented.
     private var sunForward = simd_float3(0, -1, 0)
 
+    /// Ambient fill, held so lightning can pulse it. A screen-space flash alone reads as
+    /// a UI blink; brightening the light is what makes the hillsides and the canopy
+    /// actually catch the strike.
+    private var ambient = SCNNode()
+    private var ambientBase: CGFloat = 260
+
+    /// 1…0 immediately after a strike, and seconds until the next one.
+    private var lightningT: Float = 0
+    private var lightningCool: Float = 6
+
     /// Ground position and radius for each static prop's contact patch, gathered
     /// while the props are placed and consumed once by `contactShadows`.
     private var contactPatches: [(pos: simd_float3, radius: Float)] = []
@@ -801,7 +811,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             sky = Textures.skyCubemap(.sunset);     raceSky = sky
         }
 
-        let ambient = SCNNode()
+        ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light!.type = .ambient
         switch Self.currentStage {
@@ -824,6 +834,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // it directionally through IBL. This is only here to keep the deepest
         // shadows off pure black, which is what 260 buys.
         ambient.light!.intensity = 260
+        ambientBase = 260
         world.addChildNode(ambient)
 
         sunNode.light = SCNLight()
@@ -4318,6 +4329,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         lap = 1; lapFlash = 0; lapWrapPending = false
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
+        lightningT = 0; lightningCool = 6
         jump.reset()
         chassisNode.opacity = 1
         driftYaw = 0; leanRoll = 0; pitchAng = 0
@@ -5317,6 +5329,33 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cameraNode.camera?.motionBlurIntensity = calm ? 0 : quality.motionBlur
 
         streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0
+        // Lightning, El Yunque only. Rain without it is drizzle; a strike every ten
+        // seconds or so is what makes the weather feel like weather.
+        //
+        // Two channels on purpose. The screen flash alone reads as a UI blink, so the
+        // ambient light is driven with it — the hillsides, the canopy and the craft all
+        // catch the strike, which is what a lightning flash actually is. The decay is
+        // fast and doubled up: a bright spike that is gone in about a fifth of a second,
+        // because a slow fade reads as a lamp being turned up.
+        if Self.currentStage == .yunque {
+            if lightningT > 0 { lightningT = max(0, lightningT - dt * 5.5) }
+            lightningCool -= dt
+            if lightningCool <= 0 {
+                lightningT = 1
+                // Irregular, so it never feels metronomic. 7 to 17 seconds.
+                lightningCool = 7 + Float(playTime).truncatingRemainder(dividingBy: 10)
+                sound.playThunder()
+            }
+            // 320, not 900. At 900 the strike put ambient at 1160 against a resting 260 —
+            // a four-fold spike, which washed the hillsides flat and, worse, pushed the
+            // craft's additive underglow past the camera's 0.98 bloom threshold into a
+            // white blowout. Third time that threshold has caught something in this
+            // project. Most of the flash now comes from the HUD overlay instead, which
+            // composites after the render and therefore cannot feed bloom at all.
+            let boost = lightningT * lightningT * 320
+            ambient.light?.intensity = ambientBase + CGFloat(boost)
+        }
+
         if Self.currentStage == .yunque && quality.rainScale > 0 {
             // Rake it back as speed rises. Rain falls straight down; a craft doing
             // 190 km/h through it sees it coming at the windscreen, and vertical rain at
@@ -5452,6 +5491,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             snap.progress = Double(s / Self.total)
             snap.speedNorm = Double(simd_clamp((v - 20) / 30, 0, 1)) * (state.reduceMotion ? 0.4 : 1)
             snap.flash = Double(max(0, flashT)) * (state.reduceMotion ? 0.30 : 1)
+            snap.lightning = Double(max(0, lightningT)) * (state.reduceMotion ? 0.25 : 1)
             snap.nitroActive = wantNitro
             snap.invuln = invuln > 0
             snap.timeText = String(format: "%d:%04.1f", mm, ss)

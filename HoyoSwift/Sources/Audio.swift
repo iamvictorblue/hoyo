@@ -38,6 +38,7 @@ final class SoundEngine: ObservableObject {
     private var zapBuffer: AVAudioPCMBuffer?
     private var floatBuffer: AVAudioPCMBuffer?
     private var sirenBuffer: AVAudioPCMBuffer?
+    private var thunderBuffer: AVAudioPCMBuffer?
     private var cordilleraPhrase: AVAudioPCMBuffer?
     private var stagePhrases: [Int: AVAudioPCMBuffer] = [:]
     private var loadedPhrase: Stage?
@@ -300,6 +301,7 @@ final class SoundEngine: ObservableObject {
         zapBuffer = renderZap()
         floatBuffer = renderFloat()
         sirenBuffer = renderSiren()
+        thunderBuffer = renderThunder()
         cordilleraPhrase = renderPhrase(for: .cordillera)
 
         do {
@@ -337,6 +339,9 @@ final class SoundEngine: ObservableObject {
     func playZap()   { if let b = zapBuffer { fxPlayer.scheduleBuffer(b) } }
     func playFloat() { if let b = floatBuffer { fxPlayer.scheduleBuffer(b) } }
     func playSiren() { if let b = sirenBuffer { fxPlayer.scheduleBuffer(b) } }
+    /// Distant thunder over El Yunque. Played on the ambient bed rather than the effects
+    /// player: it is weather, not feedback, and it should not duck a hit or a pickup.
+    func playThunder() { if let b = thunderBuffer { ambientPlayer.scheduleBuffer(b) } }
     func playBeep(final: Bool) {
         if let b = final ? beepHiBuffer : beepBuffer { fxPlayer.scheduleBuffer(b) }
     }
@@ -370,6 +375,33 @@ final class SoundEngine: ObservableObject {
             let env = max(0, 1 - t / 0.24)
             lp += 0.05 * (Double.random(in: -1...1, using: &rng) - lp)
             d[i] += Float(lp * env * env * 0.9)
+        }
+        return buf
+    }
+
+    /// Distant thunder: a long, soft-edged roll rather than a crack.
+    ///
+    /// A nearby strike is a sharp transient, and that is the wrong sound here — the
+    /// lightning is somewhere over the ridge, not on the trail, so what reaches you is
+    /// low-passed noise with a slow attack and a very long tail. Two decaying rumbles
+    /// slightly apart, because real thunder arrives as overlapping reflections off the
+    /// terrain and a single envelope reads as a wave breaking.
+    private func renderThunder() -> AVAudioPCMBuffer? {
+        guard let (buf, d, n) = makeBuffer(seconds: 2.6) else { return nil }
+        var lp1 = 0.0, lp2 = 0.0
+        var rng = SystemRandomNumberGenerator()
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            let noise = Double.random(in: -1...1, using: &rng)
+            // two one-pole lowpasses in series: a single pass still passes enough high
+            // end to sound like static rather than distance
+            lp1 += 0.010 * (noise - lp1)
+            lp2 += 0.016 * (lp1 - lp2)
+            // slow swell in, long decay out, and a second roll behind the first
+            let swell = min(1, t / 0.28)
+            let body = exp(-t * 1.5)
+            let echo = t > 0.55 ? exp(-(t - 0.55) * 1.1) * 0.55 : 0
+            d[i] += Float(lp2 * swell * (body + echo) * 9.0)
         }
         return buf
     }
