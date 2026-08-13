@@ -27,7 +27,24 @@ struct Lcg {
 enum Quality {
     case low, medium, high
 
+    /// `-quality low|medium|high` forces a tier.
+    ///
+    /// The simulator reports `.low`, and `.low` is meant to describe a pre-A13 phone.
+    /// Conflating the two means every visual check made in the simulator is made against
+    /// a renderer nobody plays on — no antialiasing, no motion blur, wind streaks at 0.4
+    /// — so anything judged there is judged blind, and quietly differs from what an A17
+    /// actually draws. This exists so the real tier can be previewed before shipping to
+    /// a device.
     static func detect() -> Quality {
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-quality"), i + 1 < args.count {
+            switch args[i + 1] {
+            case "low": return .low
+            case "medium": return .medium
+            case "high": return .high
+            default: break
+            }
+        }
         guard let device = MTLCreateSystemDefaultDevice() else { return .low }
         if device.supportsFamily(.apple8) { return .high }        // A15 and up
         if device.supportsFamily(.apple6) { return .medium }      // A13 / A14
