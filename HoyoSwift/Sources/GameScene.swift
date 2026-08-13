@@ -29,12 +29,10 @@ enum Quality {
 
     /// `-quality low|medium|high` forces a tier.
     ///
-    /// The simulator reports `.low`, and `.low` is meant to describe a pre-A13 phone.
-    /// Conflating the two means every visual check made in the simulator is made against
-    /// a renderer nobody plays on — no antialiasing, no motion blur, wind streaks at 0.4
-    /// — so anything judged there is judged blind, and quietly differs from what an A17
-    /// actually draws. This exists so the real tier can be previewed before shipping to
-    /// a device.
+    /// This exists because the simulator reports `.low`, and `.low` is meant to describe
+    /// a pre-A13 phone. Conflating the two means every visual check made in the simulator
+    /// is made against a renderer nobody plays on: no antialiasing, no motion blur, wind
+    /// streaks at 0.4 and rain thinned right out. Anything tuned there is tuned blind.
     static func detect() -> Quality {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-quality"), i + 1 < args.count {
@@ -89,6 +87,21 @@ enum Quality {
         case .high: return 1.0
         case .medium: return 0.7
         case .low: return 0.4
+        }
+    }
+
+    /// Rain on El Yunque. Volumetric like the wind streaks, so it scales the same way —
+    /// but it thins on the low tier rather than switching off.
+    ///
+    /// Motion blur and shadows can go to zero because they are polish — the stage still
+    /// reads without them. Rain is not polish here: it is the difference between a
+    /// rainforest and a green hill, and a course whose identity is weather should not
+    /// silently lose it on a weaker phone.
+    var rainScale: CGFloat {
+        switch self {
+        case .high: return 1.0
+        case .medium: return 0.6
+        case .low: return 0.3
         }
     }
 }
@@ -425,6 +438,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private var cd: Float = 0
     private var cdLabel = ""
     private var streakSystem = SCNParticleSystem()
+    /// Rain, El Yunque only. See `particles()`.
+    private var rainSystem = SCNParticleSystem()
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
     private var invuln: Float = 0
     // jump
@@ -4216,6 +4231,53 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         damageNode.addParticleSystem(damageSmoke)
         chassisNode.addChildNode(damageNode)
 
+        // Rain. El Yunque is a rainforest that has never had any, and the audio has
+        // been implying it the whole time — the canopy bed is documented as "leaves and
+        // light rain", so the sound was already describing weather the frame did not
+        // show.
+        //
+        // `stretchFactor` is what turns round sprites into streaks: the particle is
+        // drawn elongated along its own velocity, which is exactly rain and costs
+        // nothing over a normal billboard. Emitted from a slab above and ahead of the
+        // craft and attached to `playerNode`, so the volume travels with the camera —
+        // the same trick the wind streaks use, because rain is everywhere and only the
+        // few metres around the player are ever on screen.
+        if Self.currentStage == .yunque && quality.rainScale > 0 {
+            rainSystem.particleImage = puffImg
+            // On from the moment the world exists, not from the green light. Birth rate
+            // used to be set only in the racing frame update, so it rained on El Yunque
+            // exclusively while moving — the countdown, the pause menu and the results
+            // screen all sat in implausibly dry weather.
+            rainSystem.birthRate = 600 * quality.rainScale
+            rainSystem.particleLifeSpan = 1.3
+            rainSystem.particleLifeSpanVariation = 0.4
+            rainSystem.particleSize = 0.026
+            rainSystem.particleSizeVariation = 0.012
+            rainSystem.particleVelocity = 26
+            rainSystem.particleVelocityVariation = 6
+            rainSystem.spreadingAngle = 5
+            rainSystem.emittingDirection = SCNVector3(0, -1, 0)
+            rainSystem.acceleration = SCNVector3(0, -6, 0)
+            // 0.16, not 0.6. At the higher value the streaks came out roughly a metre
+            // long and read as scratches on the film rather than water — and at 1500 a
+            // second they hid the road, which turns weather into a hazard the player
+            // cannot do anything about. Rain should be something you notice, not
+            // something you fight.
+            rainSystem.stretchFactor = 0.16
+            // Pale and cool rather than white. Against a green canopy and green fog,
+            // white rain reads as snow.
+            rainSystem.particleColor = UIColor(red: 0.72, green: 0.84, blue: 0.86, alpha: 0.28)
+            rainSystem.particleColorVariation = SCNVector4(0, 0, 0.06, 0.2)
+            rainSystem.blendMode = .alpha
+            rainSystem.emitterShape = SCNBox(width: 46, height: 2, length: 76,
+                                             chamferRadius: 0)
+            rainSystem.birthLocation = .volume
+            let rainNode = SCNNode()
+            rainNode.position = SCNVector3(0, 17, -22)
+            rainNode.addParticleSystem(rainSystem)
+            playerNode.addChildNode(rainNode)
+        }
+
         streakSystem.particleImage = puffImg
         streakSystem.birthRate = 0
         streakSystem.particleLifeSpan = 1.2
@@ -5244,6 +5306,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         cameraNode.camera?.motionBlurIntensity = calm ? 0 : quality.motionBlur
 
         streakSystem.birthRate = v > 25 ? CGFloat((v - 25) * 4) * quality.streakScale : 0
+        if Self.currentStage == .yunque && quality.rainScale > 0 {
+            // Rake it back as speed rises. Rain falls straight down; a craft doing
+            // 190 km/h through it sees it coming at the windscreen, and vertical rain at
+            // that speed reads as a still photograph with lines drawn on it.
+            let rake = simd_clamp(v / 60, 0, 1) * 0.85
+            rainSystem.emittingDirection = SCNVector3(0, -1, rake)
+        }
 
         // Coquís calling in the background. On the island at dusk this is the
         // ambience, not a sound effect — sparse in town, constant in the forest.
