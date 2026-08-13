@@ -76,7 +76,23 @@ struct JumpState: Equatable {
     // tuning, matching the values GameScene used before extraction
     static let gravity: Float = 24
     static let impulse: Float = 10.6
-    static let chainWindow: Float = 2.0
+    /// How long a banked hop stays banked. 3.0, up from 2.0, on playtest evidence.
+    ///
+    /// The chain indicator went in first on the theory that the chain was hard because
+    /// it was invisible rather than because it was tight. That turned out to be only
+    /// half right: with the ring on the SALTA button the chain is legible and still
+    /// hard to complete, which is what this number is for.
+    ///
+    /// The arithmetic says why. A hop is airborne for 2 * impulse / gravity = 0.88 s and
+    /// lands with a cooldown of 0.42 + 0.25 * impact, so 0.48 to 0.67 s. Against a 2.0 s
+    /// window that left roughly half a second per hop to register the landing, wait out
+    /// the cooldown and tap again — three times consecutively. At 3.0 the same margin is
+    /// about 1.5 s, which is a reaction window rather than a rhythm test.
+    ///
+    /// Widening this does not make the float cheap: `floatCost` is the real gate, and it
+    /// competes with the pursuit for the same nitro bar. This only stops the entry being
+    /// a dexterity check on top of that.
+    static let chainWindow: Float = 3.0
     static let floatDuration: Float = 10
     static let floatHeight: Float = 12
     /// Spent to enter a float, so the chase and the float compete for one bar.
