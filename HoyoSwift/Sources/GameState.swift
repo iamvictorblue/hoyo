@@ -14,9 +14,34 @@ enum GamePhase {
 enum GameMode: Int {
     case race = 0       // one run of the course, timed, with a finish line
     case endless = 1    // lap it until the craft gives out
+    /// One layout a day, the same one for everybody. See `Stage.dailySeed`.
+    case daily = 2
 
-    var name: String { self == .race ? "CARRERA" : "SIN FIN" }
-    var blurb: String { self == .race ? "DE PUNTA A PUNTA" : "HASTA QUE AGUANTES" }
+    var name: String {
+        switch self {
+        case .race: return "CARRERA"
+        case .endless: return "SIN FIN"
+        case .daily: return "RETO DEL DÍA"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .race: return "DE PUNTA A PUNTA"
+        case .endless: return "HASTA QUE AGUANTES"
+        case .daily: return "MISMO RETO PA' TODOS"
+        }
+    }
+}
+
+/// Today, as a plain integer — 20260813 for the 13th of August 2026.
+///
+/// The calendar, not a timestamp: a daily challenge has to change at local midnight and
+/// stay put for the rest of the day, so anything derived from elapsed seconds is wrong.
+enum HoyoDay {
+    static func stamp(_ date: Date = Date()) -> Int {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return (c.year ?? 2026) * 10000 + (c.month ?? 1) * 100 + (c.day ?? 1)
+    }
 }
 
 /// A playable course. Each one rebuilds the world: its own path shape, surface,
@@ -96,6 +121,33 @@ enum Stage: Int, CaseIterable {
     /// the only thing a ghost is for — puts you in a hole.
     var ghostSeedKey: String { "hoyo_ghostSeed_\(rawValue)" }
     var endlessScoreKey: String { "hoyo_endlessScore_\(rawValue)" }
+
+    /// Today's hazard layout for this course, identical on every device.
+    ///
+    /// Mixed rather than concatenated, and the reason is narrower than it first looks.
+    ///
+    /// `stamp * 3 + rawValue` would give the three courses seeds one apart. `Lcg.next()`
+    /// returns `(seed * 16807 % 2147483647) / 2147483646`, so its *first* draw is very
+    /// nearly proportional to the seed: measured over 4000 pairs, seeds one apart differ
+    /// on the opening draw by 0.0000078, and seeds 1000 through 1004 all resolve to path
+    /// index 14. Identical, not merely similar. Everything from the second draw on is
+    /// fully decorrelated — the artifact is confined to the first one, which is exactly
+    /// the draw that places the first hazard.
+    ///
+    /// So all three dailies would have opened with a hazard in the same spot. The odd
+    /// multipliers put the seeds ~40,500 apart instead, which measures 0.43 of separation
+    /// on that first draw and scatters the opening index to 849, 1420 and 190.
+    var dailySeed: UInt64 {
+        let mixed = UInt64(HoyoDay.stamp()) &* 2_654_435_761 &+ UInt64(rawValue &+ 1) &* 40_503
+        // Lcg rejects 0 and the game clamps seeds into this range elsewhere.
+        return 1 &+ mixed % 2_147_483_645
+    }
+
+    /// Daily best, keyed by the day itself so it expires on its own rather than needing
+    /// anything to notice the date changed and clear it.
+    func dailyScoreKey(_ stamp: Int = HoyoDay.stamp()) -> String {
+        "hoyo_daily_\(rawValue)_\(stamp)"
+    }
     var endlessLapKey: String { "hoyo_endlessLaps_\(rawValue)" }
 
     /// Target time for the finish bonus, in seconds. Beat it and every second
@@ -424,7 +476,11 @@ final class GameState: ObservableObject {
     static func makeRecordLine(for stage: Stage, mode: GameMode) -> String {
         let d = UserDefaults.standard
         var parts: [String] = []
-        if mode == .endless {
+        if mode == .daily {
+            let best = d.integer(forKey: stage.dailyScoreKey())
+            parts.append("RETO #\(HoyoDay.stamp() % 1000)")
+            parts.append(best > 0 ? "TU MEJOR HOY \(best) pts" : "SIN INTENTAR HOY")
+        } else if mode == .endless {
             let best = d.integer(forKey: stage.endlessScoreKey)
             let laps = d.integer(forKey: stage.endlessLapKey)
             if best > 0 { parts.append("RÉCORD \(best) pts") }

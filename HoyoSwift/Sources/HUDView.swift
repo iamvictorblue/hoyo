@@ -1313,7 +1313,7 @@ struct IntroOverlay: View {
                     .opacity(entered ? 1 : 0)
 
                     HStack(spacing: 9) {
-                        ForEach([GameMode.race, GameMode.endless], id: \.rawValue) { m in
+                        ForEach([GameMode.race, GameMode.endless, GameMode.daily], id: \.rawValue) { m in
                             Button {
                                 state.mode = m
                                 state.refreshRecordLine()

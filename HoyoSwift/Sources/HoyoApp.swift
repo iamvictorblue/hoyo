@@ -122,6 +122,7 @@ struct GameSceneView: UIViewRepresentable {
         // stage without finishing the one before it.
         let args = ProcessInfo.processInfo.arguments
         if args.contains("-endless") { state.mode = .endless }
+        if args.contains("-daily") { state.mode = .daily }
         if let i = args.firstIndex(of: "-stage"), i + 1 < args.count,
            let n = Int(args[i + 1]), let want = Stage(rawValue: n) {
             want.unlock()

@@ -4363,7 +4363,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let d = UserDefaults.standard
         let savedSeed = UInt64(bitPattern: Int64(d.integer(forKey: Self.currentStage.ghostSeedKey)))
         let haveGhost = d.data(forKey: Self.currentStage.ghostKey) != nil
-        if mode == .race, Self.startOffset <= 40, haveGhost, savedSeed != 0 {
+        if mode == .daily {
+            // The whole point: everyone gets the same layout today, so a score is
+            // comparable without a server. Takes precedence over the ghost seed —
+            // a rematch against your own ghost is a different promise from a shared
+            // challenge, and the challenge wins.
+            runSeed = Self.currentStage.dailySeed
+        } else if mode == .race, Self.startOffset <= 40, haveGhost, savedSeed != 0 {
             runSeed = savedSeed
         } else {
             runSeed = UInt64.random(in: 1..<2147483646)
@@ -4543,6 +4549,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
+        // Daily runs earn medals — the thresholds are per-course and a shared layout is a
+        // fair test of them. Endless does not, since a long enough lap count clears any
+        // threshold eventually.
         let medal = mode == .endless ? .none : Medal.forScore(sc, on: Self.currentStage)
         let defaults = UserDefaults.standard
         // A run that skipped part of the course isn't a record. Without this the
@@ -4550,14 +4559,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let eligible = Self.startOffset <= 40
         let stage = Self.currentStage
         let endless = mode == .endless
-        let scoreKey = endless ? stage.endlessScoreKey : stage.bestScoreKey
+        let daily = mode == .daily
+        // Three separate score books. A daily score is not comparable to a race record —
+        // the layout is different every day — so it gets its own key, dated, and expires
+        // on its own when the day rolls over.
+        let scoreKey = daily ? stage.dailyScoreKey()
+                     : (endless ? stage.endlessScoreKey : stage.bestScoreKey)
         let newScoreRec = eligible && sc > defaults.integer(forKey: scoreKey)
         if newScoreRec { defaults.set(sc, forKey: scoreKey) }
         if endless, lap > defaults.integer(forKey: stage.endlessLapKey) {
             defaults.set(lap, forKey: stage.endlessLapKey)
         }
         var newTimeRec = false
-        if !dead && eligible && !endless {
+        // Race only. A best time set on one day's daily layout would be a record nobody
+        // can chase tomorrow, and writing the ghost seed here would hand a shared
+        // challenge's layout to the ghost rematch.
+        if !dead && eligible && mode == .race {
             let bestTime = defaults.double(forKey: stage.bestTimeKey)
             if bestTime == 0 || playTime < bestTime {
                 newTimeRec = true
@@ -4570,7 +4587,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         // finishing a stage opens the next one
         var opened: Stage?
-        if !dead, eligible, !endless, let nxt = stage.next, !nxt.unlocked {
+        if !dead, eligible, mode == .race, let nxt = stage.next, !nxt.unlocked {
             nxt.unlock()
             opened = nxt
         }
