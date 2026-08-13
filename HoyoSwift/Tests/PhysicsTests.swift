@@ -144,7 +144,11 @@ final class JumpStateTests: XCTestCase {
         let r4 = jump.requestJump(speed: 40, nitro: &nitro)
         XCTAssertEqual(r4, .float)
         XCTAssertTrue(jump.floating)
-        XCTAssertEqual(nitro, 50, "a float should cost exactly floatCost")
+        // Derived, not written out. This read `50` and so it was really asserting the
+        // tuning value rather than the behaviour — retuning the cost broke a test that
+        // has nothing to do with the cost's size.
+        XCTAssertEqual(nitro, 100 - JumpState.floatCost,
+                       "a float should cost exactly floatCost")
     }
 
     /// Let the window lapse and the chain must be forgotten, or a hop taken a
@@ -172,13 +176,14 @@ final class JumpStateTests: XCTestCase {
     /// single hop would float the moment nitro came back.
     func testDeniedFloatClearsTheChain() {
         var jump = JumpState()
-        var nitro: Float = 10                              // below floatCost
+        var nitro: Float = JumpState.floatCost - 1          // just below the cost
         _ = jump.requestJump(speed: 40, nitro: &nitro); land(&jump)
         _ = jump.requestJump(speed: 40, nitro: &nitro); land(&jump)
         let r6 = jump.requestJump(speed: 40, nitro: &nitro)
         XCTAssertEqual(r6, .floatDenied)
         XCTAssertEqual(jump.chain, 0, "chain left armed after a denied float")
-        XCTAssertEqual(nitro, 10, "a denied float still charged for it")
+        XCTAssertEqual(nitro, JumpState.floatCost - 1,
+                       "a denied float still charged for it")
         XCTAssertFalse(jump.floating)
         land(&jump)
         nitro = 100

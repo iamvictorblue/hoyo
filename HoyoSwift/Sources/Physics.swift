@@ -96,7 +96,17 @@ struct JumpState: Equatable {
     static let floatDuration: Float = 10
     static let floatHeight: Float = 12
     /// Spent to enter a float, so the chase and the float compete for one bar.
-    static let floatCost: Float = 50
+    ///
+    /// 30, down from 50. Widening the chain window made the chain complete, and logging
+    /// every attempt across a run then showed both completions refused for nitro — 28
+    /// and 0 against a cost of 50. Half the bar is more than a move costs to be worth
+    /// using: it regenerates at 3.5/s, so 50 meant fourteen seconds of not touching
+    /// boost, in a game whose whole verb is going fast.
+    ///
+    /// At 30 it is nine seconds of restraint, or one piragua (+35) with change. Still a
+    /// real spend against the pursuit, which draws on the same bar, but affordable to
+    /// someone who has decided to fly.
+    static let floatCost: Float = 30
     /// Minimum forward speed for a jump to be allowed at all.
     static let minSpeed: Float = 6
 
