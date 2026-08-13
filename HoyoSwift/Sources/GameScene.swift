@@ -4682,7 +4682,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // short pulses only: holding the brake bleeds speed below the drift
             // threshold and nothing ever slides
             brakeIn = t > 5 && t.truncatingRemainder(dividingBy: 6) < 2.0
-            nitroIn = !brakeIn && t.truncatingRemainder(dividingBy: 6) > 3.5
+            // Nitro on an 18 s cycle rather than 6, with a long quiet phase, and the
+            // reason is the float. The hop burst below exists so the float gets
+            // exercised headlessly — but the old schedule boosted 2.5 s out of every 6
+            // at 26/s against a 3.5/s regen, so the bar sat near zero permanently and
+            // every completed chain was refused for nitro. The mechanic this driver was
+            // built to cover was the one thing it could never reach. Boosting in a 5 s
+            // slot and then leaving 9 s clear banks about 31 units, just over the cost.
+            let cyc = t.truncatingRemainder(dividingBy: 18)
+            nitroIn = !brakeIn && cyc > 4.0 && cyc < 9.0
         }
         let braking = brakeIn
         let wantNitro = nitroIn && nitro > 0
@@ -4755,7 +4763,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // Bursts of three rather than a lone hop every few seconds: a single hop
             // can never chain, so the float would go untested headlessly.
             let t = Float(playTime)
-            if t > 6 && t.truncatingRemainder(dividingBy: 9) < 3.2 {
+            if t > 6 && t.truncatingRemainder(dividingBy: 18) < 3.2 {
                 state.input.jumpRequested = true
             }
         }
