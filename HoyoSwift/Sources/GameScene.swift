@@ -4118,14 +4118,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         smokeSystem.particleImage = puffImg
         smokeSystem.birthRate = 0
         grindSystem.birthRate = 0
-        smokeSystem.particleLifeSpan = 0.7
-        smokeSystem.particleSize = 0.7
-        smokeSystem.particleSizeVariation = 0.3
+        // Smaller, briefer and much less opaque than it was, and the reason only became
+        // visible once `-quality high` existed. At 0.7 across with 0.6 alpha and a 0.7 s
+        // life this was fine on the simulator's low tier, where motion blur is 0 — and
+        // on high, where blur runs at 0.35, a single drift smeared into a pale fog bank
+        // covering two thirds of the screen. Tyre smoke behind the craft, not weather.
+        smokeSystem.particleLifeSpan = 0.55
+        smokeSystem.particleSize = 0.42
+        smokeSystem.particleSizeVariation = 0.18
         smokeSystem.particleVelocity = 2.5
         smokeSystem.particleVelocityVariation = 1.5
         smokeSystem.spreadingAngle = 60
         smokeSystem.emittingDirection = SCNVector3(0, 1, 1)
-        smokeSystem.particleColor = UIColor(white: 0.85, alpha: 0.6)
+        smokeSystem.particleColor = UIColor(white: 0.82, alpha: 0.34)
         smokeSystem.blendMode = .alpha
         let smokeNode = SCNNode()
         smokeNode.position = SCNVector3(0, 0.2, 1.9)
@@ -4212,10 +4217,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // vented at hull height and hugged the road. Dark smoke against dark asphalt is
         // invisible — it only reads once it has risen into the bright sky band behind
         // the craft, so getting it up there quickly is the whole job.
-        damageSmoke.particleLifeSpan = 1.6
-        damageSmoke.particleLifeSpanVariation = 0.6
-        damageSmoke.particleSize = 0.52
-        damageSmoke.particleSizeVariation = 0.28
+        // Retuned once the -quality flag made the real renderer visible. These numbers
+        // were set on the simulator's low tier, where `motionBlur` is 0 — so the smoke
+        // stayed a series of discrete puffs. On high, blur at 0.35 smears them into a
+        // continuous grey veil, and at CARRO 13 the craft, the road and half the frame
+        // disappeared behind it. Shorter-lived and smaller, so blur has less to smear.
+        damageSmoke.particleLifeSpan = 1.15
+        damageSmoke.particleLifeSpanVariation = 0.45
+        damageSmoke.particleSize = 0.40
+        damageSmoke.particleSizeVariation = 0.2
         damageSmoke.particleVelocity = 4.4
         damageSmoke.particleVelocityVariation = 2.4
         damageSmoke.spreadingAngle = 48
@@ -4867,7 +4877,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         x += xd * dt
         x = simd_clamp(x, -Self.barrier, Self.barrier)
 
-        smokeSystem.birthRate = drifting ? 90 : 0
+        smokeSystem.birthRate = drifting ? 60 : 0
 
         // Ground contact. Fades out as the craft lifts — by 1.2 m it is clearly flying
         // and nothing should be touching. Needs speed too, or a stationary craft sits
@@ -4905,10 +4915,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // run is genuinely in trouble, and that is the point at which the player should
         // be able to tell without reading a bar.
         let hurt = simd_clamp(1 - hp / 60, 0, 1)
-        // Capped at 150 rather than 240. At the higher rate a craft on its last few
-        // points of health vanished inside its own plume — dramatic, and unplayable,
-        // since the thing being hidden is the object you are steering.
-        damageSmoke.birthRate = CGFloat(hurt * 150)
+        // 80, down from 150, and 150 was already down from 240. Each cut was made
+        // against what was on screen at the time; the last one was made on a tier with
+        // no motion blur, which flattered it badly. The rule has not changed — the
+        // thing being hidden is the object you are steering.
+        damageSmoke.birthRate = CGFloat(hurt * 80)
         // Failing systems stutter rather than dim. Three sines at unrelated rates give
         // an irregular flicker with no audible period; the threshold falls as damage
         // rises, so dropouts start as an occasional blink and end up near-constant.
