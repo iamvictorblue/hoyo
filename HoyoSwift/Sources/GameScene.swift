@@ -451,6 +451,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Rain, El Yunque only. See `particles()`.
     private var rainSystem = SCNParticleSystem()
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
+    /// Whether the beam has been fired at all this run, for the teaching prompt.
+    private var firedBeam = false
     private var invuln: Float = 0
     // jump
     /// The craft's vertical state. Lives in `JumpState` so the chain/float rules
@@ -3163,10 +3165,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         patchCursor = 0
         charge = 100
         fireCool = 0
+        firedBeam = false
     }
 
     private func fireBolt() {
         guard charge >= Self.shotCost, fireCool <= 0 else { return }
+        firedBeam = true
         charge -= Self.shotCost
         fireCool = 0.28
         sound.playZap()
@@ -4674,6 +4678,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         DispatchQueue.main.async { self.state.popup(msg, tone) }
     }
 
+    /// Fires a teaching prompt the first time ever, and never again. See `Tip`.
+    ///
+    /// Suppressed under `-autoplay`: the smoke-test driver would burn all three on its
+    /// first headless run and every later run would be missing the thing being tested.
+    private func tip(_ t: Tip) {
+        guard !Self.autoplay, t.claim() else { return }
+        popupAsync(t.text, .pickup)
+    }
+
     /// Shouts, in Puerto Rican Spanish. Pools rather than single strings, so the
     /// game doesn't say the exact same thing every time something happens.
     private enum Shout {
@@ -4864,9 +4877,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             switch jump.requestJump(speed: v, nitro: &nitro) {
             case .refused:
                 break
-            case .hop:
+            case .hop(let chain):
                 sound.playJump()
                 Haptics.shared.tap(intensity: 0.6, sharpness: 0.4)
+                // Said at two, not one: at one you might not be chaining at all, at two
+                // you are one tap from the best move in the game and nothing says so.
+                if chain == 2 { tip(.chain) }
             case .float:
                 sound.playFloat()
                 Haptics.shared.crash(intensity: 0.8)
@@ -4943,6 +4959,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // Nothing below 60 hp is arbitrary: above that a hit is a setback, below it the
         // run is genuinely in trouble, and that is the point at which the player should
         // be able to tell without reading a bar.
+        // Beam hint. Full charge on its own is not evidence of anything — it starts full
+        // — so this waits until someone has driven twenty seconds with a charged beam and
+        // never pressed it, which is what not knowing it exists looks like.
+        if !firedBeam, playTime > 20, charge >= 100 { tip(.beam) }
+
         let hurt = simd_clamp(1 - hp / 60, 0, 1)
         // 80, down from 150, and 150 was already down from 240. Each cut was made
         // against what was on screen at the time; the last one was made on a tier with
@@ -5189,6 +5210,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     score += tc.isPolice ? 250 : 120
                     damage(6, tc.isPolice ? "¡LA POLICÍA!" : Shout.one(Shout.shove), tone: .big)
                 } else {
+                    // Bounced instead of shoved, so the closing speed was under 16.
+                    // This is the moment the threshold is discoverable.
+                    tip(.parry)
                     traffic[ti].cool = 2
                     v = min(v, tc.v * 0.8)
                     shake = 1.2; jolt = 1

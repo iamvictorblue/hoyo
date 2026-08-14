@@ -240,6 +240,51 @@ enum Region: Int, CaseIterable {
     }
 }
 
+/// One-shot teaching prompts, fired the first time a mechanic is nearly discovered.
+///
+/// The deep moves in this game — the three-hop float, shoving a car aside instead of
+/// bouncing off it, sealing a pothole with the beam — are currently only findable by
+/// opening the how-to card. Anyone who taps straight into a race never learns they exist,
+/// and the float in particular is the best thing the craft can do.
+///
+/// Each tip fires once, ever, and then never again: a hint that repeats stops being a
+/// hint and becomes noise. They are keyed in UserDefaults rather than held in memory so
+/// they survive relaunches — being taught the same thing on every cold start is exactly
+/// the failure this is meant to avoid.
+///
+/// Deliberately triggered by *near misses of the mechanic* rather than by a timer. Being
+/// told "one more and you fly" the instant you have two hops banked lands, because you
+/// are already mid-attempt; the same sentence on a loading screen does not.
+enum Tip: String, CaseIterable {
+    /// Two hops banked. The third is the float, and nothing says so.
+    case chain
+    /// Bounced off a car instead of shoving it — closing speed was under the threshold.
+    case parry
+    /// Beam is charged and has never been fired.
+    case beam
+
+    var text: String {
+        switch self {
+        case .chain: return "¡UNA MÁS Y VUELAS!"
+        case .parry: return "DALE MÁS DURO PA' TUMBARLO"
+        case .beam:  return "EL RAYO TAPA LOS HOYOS"
+        }
+    }
+
+    private var key: String { "hoyo_tip_\(rawValue)" }
+    var seen: Bool { UserDefaults.standard.bool(forKey: key) }
+    func markSeen() { UserDefaults.standard.set(true, forKey: key) }
+
+    /// Marks it seen and reports whether it should show now.
+    func claim() -> Bool {
+        guard !seen else { return false }
+        markSeen()
+        return true
+    }
+
+    static func resetAll() { allCases.forEach { UserDefaults.standard.removeObject(forKey: $0.key) } }
+}
+
 /// What kind of moment a popup is, so a hit and a celebration don't look identical.
 enum PopupTone {
     case hit        // you took damage
