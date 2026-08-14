@@ -231,22 +231,36 @@ struct HUDView: View {
         VStack {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
+                    // Health leads: taller, segmented into tenths so it can be counted
+                    // rather than measured, and it pulses once the run is nearly over.
                     BarView(label: "CARRO", value: state.hud.hp / 100,
                             // deep red rather than neon pink at the bottom: it reads
                             // apart from the gold by brightness, not just hue
                             color: state.hud.hp > 50 ? .green
                                  : (state.hud.hp > 25 ? .neonGold
                                     : Color(red: 0.92, green: 0.18, blue: 0.12)),
-                            showValue: true)
-                    BarView(label: "NITRO", value: state.hud.nitro / 100, color: .neonTeal)
-                    BarView(label: "RAYO", value: state.hud.charge / 100, color: .neonGold)
+                            showValue: true,
+                            symbol: "shield.lefthalf.filled",
+                            height: 12,
+                            segments: 10,
+                            critical: state.hud.hp <= 25)
+                    // The two resources follow, short and quiet, carrying the same glyphs
+                    // their buttons do.
+                    BarView(label: "NITRO", value: state.hud.nitro / 100, color: .neonTeal,
+                            symbol: "flame.fill")
+                    BarView(label: "RAYO", value: state.hud.charge / 100, color: .neonGold,
+                            symbol: "bolt.fill")
                     // Only present once you've drawn attention — a permanently
                     // empty fourth bar would just be clutter on a careful run.
                     if state.hud.heat > 0.02 || state.hud.chased > 0 {
                         BarView(label: state.hud.chased > 0
                                 ? "POLICÍA x\(state.hud.chased)" : "TE BUSCAN",
                                 value: state.hud.chased > 0 ? 1 : state.hud.heat,
-                                color: Color(red: 0.95, green: 0.22, blue: 0.30))
+                                color: Color(red: 0.95, green: 0.22, blue: 0.30),
+                                symbol: "exclamationmark.triangle.fill",
+                                // Being actively chased is not a resource level, it is an
+                                // alarm, so it pulses like low health does.
+                                critical: state.hud.chased > 0)
                     }
                 }
                 .frame(width: 168)
@@ -496,14 +510,35 @@ struct BarView: View {
     /// green/gold/pink is the most common confusion axis — so health carries length,
     /// hue and a figure.
     var showValue = false
+    /// SF Symbol drawn before the label, and it must be the *same* glyph the control
+    /// uses. The buttons and the how-to card already say nitro with `flame.fill` and the
+    /// beam with `bolt.fill`; the bars used to say them in words, so the same resource had
+    /// two different signs depending on where you looked. At 200 km/h with your eyes on
+    /// the road a glyph you already know beats a word you have to read.
+    var symbol: String? = nil
+    /// Health is existential and the two resources are tactical, so they should not be
+    /// the same size. This is the whole hierarchy: one tall bar, two short ones.
+    var height: CGFloat = 7
+    /// Notches across the track. A continuous fill has to be measured; a segmented one
+    /// can be counted, which is faster when you have a fifth of a second to spare.
+    var segments: Int = 0
+    /// Pulses the fill. Reserved for health about to run out — the screen already flashes
+    /// on a hit, but the bar itself stayed inert at 8% and at 80%.
+    var critical = false
+    @State private var pulse = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: height > 8 ? 10 : 8, weight: .bold))
+                        .foregroundStyle(color.opacity(0.9))
+                }
                 Text(label)
-                    .font(.label(10))
-                    .tracking(3)
-                    .foregroundStyle(Color.creamText.opacity(0.85))
+                    .font(.label(height > 8 ? 10 : 9))
+                    .tracking(height > 8 ? 3 : 2)
+                    .foregroundStyle(Color.creamText.opacity(height > 8 ? 0.9 : 0.7))
                 if showValue {
                     Text("\(Int(value * 100))")
                         .font(.data(10))
@@ -515,19 +550,46 @@ struct BarView: View {
                     .overlay(RoundedRectangle(cornerRadius: 2)
                         .stroke(.white.opacity(0.18), lineWidth: 1))
                 GeometryReader { geo in
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(color)
-                        .frame(width: max(0, geo.size.width * value))
-                        .padding(1.5)
+                    ZStack(alignment: .leading) {
+                        // Gradient rather than flat, brighter at the leading edge, so the
+                        // bar has a direction and does not read as a coloured block.
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(LinearGradient(colors: [color.opacity(0.72), color],
+                                                 startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(0, geo.size.width * value))
+                            .padding(1.5)
+                            .opacity(critical && !pulse ? 0.4 : 1)
+                        if segments > 1 {
+                            HStack(spacing: 0) {
+                                ForEach(1..<segments, id: \.self) { _ in
+                                    Spacer()
+                                    Rectangle().fill(.black.opacity(0.55)).frame(width: 1)
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
                 }
             }
-            .frame(height: 9)
+            .frame(height: height)
+            .onAppear {
+                guard critical else { return }
+                withAnimation(.easeInOut(duration: 0.42).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+            // Single-parameter form on purpose: the two-parameter `onChange` is iOS 17
+            // and this target is 16.
+            .onChange(of: critical) { now in
+                if now {
+                    withAnimation(.easeInOut(duration: 0.42).repeatForever(autoreverses: true)) {
+                        pulse = true
+                    }
+                } else {
+                    withAnimation(.linear(duration: 0.1)) { pulse = false }
+                }
+            }
         }
-        // One element with a spoken value, rather than a label and a rectangle that
-        // read as two unrelated things. Length and hue are both visual-only.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue("\(Int(value * 100)) por ciento")
     }
 }
 
