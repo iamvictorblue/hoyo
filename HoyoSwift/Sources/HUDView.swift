@@ -502,6 +502,38 @@ struct IconButton: View {
     }
 }
 
+/// A course's earned medal as a single coloured dot, for the stage picker.
+///
+/// The title screen showed a medal only for the *selected* course, so the shelf of what
+/// you have actually won was never visible in one glance — you had to tab through three
+/// courses to find out where you stood. Medals are the game's only long-term goal and
+/// they were the least visible thing on the screen.
+///
+/// A dot rather than the word. Three labels reading BRONCE / PLATA / ORO across the picker
+/// would out-shout the course names they are annotating, and the metal colours carry it on
+/// their own — an unearned course gets a hollow ring, which reads as an empty slot to fill.
+struct MedalDot: View {
+    let medal: Medal
+    var size: CGFloat = 7
+
+    private var tint: Color {
+        switch medal {
+        case .gold:   return Color(red: 1.00, green: 0.82, blue: 0.30)
+        case .silver: return Color(red: 0.82, green: 0.86, blue: 0.90)
+        case .bronze: return Color(red: 0.83, green: 0.55, blue: 0.32)
+        case .none:   return .white.opacity(0.22)
+        }
+    }
+
+    var body: some View {
+        Circle()
+            .fill(medal == .none ? Color.clear : tint)
+            .frame(width: size, height: size)
+            .overlay(Circle().stroke(tint, lineWidth: 1.2))
+            .accessibilityHidden(true)
+    }
+}
+
 struct BarView: View {
     let label: String
     let value: Double
@@ -766,6 +798,8 @@ struct StagePicker: View {
                             .font(.label(12)).tracking(2)
                             .foregroundStyle(state.selectedStage == st
                                              ? Color.white : Color.white.opacity(0.45))
+                        MedalDot(medal: Medal.forScore(
+                            UserDefaults.standard.integer(forKey: st.bestScoreKey), on: st))
                     }
                     .padding(.trailing, 12)
                     .padding(.vertical, 4)
