@@ -375,6 +375,66 @@ enum Medal: Int {
 }
 
 /// Observable bridge between the render loop and SwiftUI.
+/// Totals that survive across runs.
+///
+/// Every number the game kept was per-course and per-run: a best score, a best time, a medal.
+/// Nothing recorded that you had been playing for a month — so the long arc of getting good
+/// at it left no trace anywhere in the app, and quitting a run returned you to a screen that
+/// looked exactly as it had the first time.
+///
+/// Five counters, not fifteen. This is a line of small type under the record line, not a
+/// statistics page; the ones kept are the ones that make a sentence — how far you have driven,
+/// how many hoyos ate you, how many you sealed, and how many times you got airborne.
+enum Career {
+    private static func key(_ n: String) -> String { "hoyo_life_\(n)" }
+
+    static func add(_ n: String, _ v: Int) {
+        guard v != 0 else { return }
+        let d = UserDefaults.standard
+        d.set(d.integer(forKey: key(n)) + v, forKey: key(n))
+    }
+
+    /// Not named `get` — inside a computed property `{ total("m") }` parses as the accessor
+    /// keyword and the whole enum fails to compile.
+    static func total(_ n: String) -> Int { UserDefaults.standard.integer(forKey: key(n)) }
+
+    /// Metres, banked as an integer so the total cannot drift the way a repeatedly
+    /// re-encoded Double would over hundreds of runs.
+    static var metres: Int { total("m") }
+    static var runs: Int { total("runs") }
+    static var holes: Int { total("holes") }
+    static var sealed: Int { total("sealed") }
+    static var floats: Int { total("floats") }
+
+    /// Nil until there is enough to be worth saying. One run's totals are not a career, and
+    /// a line reading "0 KM · 0 HOYOS" on a first launch is worse than no line.
+    static var line: String? {
+        guard runs >= 3 else { return nil }
+        var parts = ["\(metres / 1000) KM", "\(holes) HOYOS"]
+        if sealed > 0 { parts.append("\(sealed) TAPADOS") }
+        if floats > 0 { parts.append("\(floats) VUELOS") }
+        return parts.joined(separator: "  ·  ")
+    }
+
+    static func reset() {
+        for n in ["m", "runs", "holes", "sealed", "floats"] {
+            UserDefaults.standard.removeObject(forKey: key(n))
+        }
+    }
+}
+
+/// One run's shape, for the results screen. Speed is normalised 0...1 against the run's own
+/// peak — an absolute axis would make every trace on a slow course a flat line near the
+/// floor, when the interesting thing is always where *this* run was fast relative to itself.
+struct RunTrace {
+    var speed: [Float] = []
+    var hurt: [Bool] = []
+    /// Index of the last bucket reached, so a run that ended early draws a partial line.
+    var end = 0
+    /// Too short to read as a shape — a run that died in the first few metres.
+    var isEmpty: Bool { end < 4 }
+}
+
 final class GameState: ObservableObject {
     @Published var phase: GamePhase = .intro
     @Published var hud = HudSnapshot()
@@ -455,6 +515,7 @@ final class GameState: ObservableObject {
     @Published var newRecordTime = false
 
     // final-screen stats
+    @Published var statTrace = RunTrace()
     @Published var statTime = ""
     @Published var statScore = 0
     @Published var statTopSpeed = 0

@@ -451,6 +451,43 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Rain, El Yunque only. See `particles()`.
     private var rainSystem = SCNParticleSystem()
     private var shake: Float = 0, flashT: Float = 0, jolt: Float = 0
+    /// Slow-motion, 1 at the moment it fires and decaying to 0 in real time.
+    ///
+    /// Surviving a hit on single-digit health is the most dramatic thing that happens in a
+    /// run, and it used to pass in one frame — a flash, a number, gone. Dilating time is
+    /// how every game since Max Payne has said "that was close", and it costs nothing but
+    /// a multiplier on `dt`.
+    ///
+    /// Deliberately *only* the near-death beat. Slow motion is a punctuation mark; put it
+    /// on landings and parries too and it stops meaning anything, which is the mistake that
+    /// makes it read as a framerate problem instead of an effect.
+    private var warp: Float = 0
+    /// Real seconds until another beat may fire. Without it, scraping the guardrail at 9 HP
+    /// re-triggers on every grace window and the game stutters instead of punctuating.
+    private var warpCool: Float = 0
+    /// Whether the particle systems are currently carrying a non-unit `speedFactor`, so the
+    /// restoring write happens once when the beat ends rather than on every idle frame.
+    private var warpApplied = false
+    // ----- run trace -----
+    // The results screen listed what happened (top speed, holes hit) but never *where*,
+    // so there was no way to learn anything from it. A shape you can read in one glance —
+    // where you were quick, where you got hurt — turns the screen from a receipt into a
+    // reason to run the course again.
+    /// Fastest speed reached in each 1/96th of the course, in m/s. 96 because it is
+    /// about one bucket per two screen points at the width this draws at — finer just
+    /// aliases, coarser starts hiding an individual hairpin.
+    private var traceSpeed = [Float](repeating: 0, count: GameScene.traceBuckets)
+    /// Buckets where the craft took a hit, drawn as ticks under the speed line.
+    private var traceHurt = [Bool](repeating: false, count: GameScene.traceBuckets)
+    /// Highest bucket reached. A run that ended at the halfway point must draw half a
+    /// line, not a full-width one that flatlines to zero — the flatline reads as
+    /// "you stopped dead here", which is a different and wrong story.
+    private var traceEnd = 0
+    /// Per-run tallies for the career line. Counted here rather than incremented straight
+    /// into `UserDefaults` so that a run abandoned mid-way — quit to title, app killed —
+    /// contributes nothing: a career total is a record of runs you finished, and writing on
+    /// every pothole would also mean a synchronous defaults write inside the frame loop.
+    private var runSealed = 0, runFloats = 0
     /// Whether the beam has been fired at all this run, for the teaching prompt.
     private var firedBeam = false
     private var invuln: Float = 0
@@ -3280,6 +3317,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                     guard !h.zapped, !h.hit, h.s > s else { continue }
                     if sweep.hits(s: h.s, x: h.x, tolerance: h.r + 1.8) {
                         holes[hIdx].zapped = true
+                        runSealed += 1
                         layPatch(over: h)
                         score += 70
                         popupAsync("\(Shout.one(Shout.sealed)) +70", .pickup)
@@ -4333,6 +4371,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         lap = 1; lapFlash = 0; lapWrapPending = false
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
+        warp = 0; warpCool = 0; applyWarp()
+        runSealed = 0; runFloats = 0
+        clearTrace()
         lightningT = 0; lightningCool = 6
         jump.reset()
         chassisNode.opacity = 1
@@ -4442,8 +4483,16 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     /// Next lap of an endless run. Keeps score, combo and damage — the attrition is
     /// what eventually ends the run — but relays the whole hazard field harder.
+    /// Wipes the run trace. Called per lap as well as per run, so an endless trace shows
+    /// the lap you are actually on — 40 laps overlaid on 96 buckets is a solid block.
+    private func clearTrace() {
+        for i in 0..<Self.traceBuckets { traceSpeed[i] = 0; traceHurt[i] = false }
+        traceEnd = 0
+    }
+
     private func beginLap() {
         lap += 1
+        clearTrace()
         s = Self.startOffset
         v = min(v, 34)                       // carry momentum, but not all of it
         jump.reset()
@@ -4551,6 +4600,22 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             bonus = max(0, Int((Self.currentStage.parTime - playTime) * 90))
             score += Float(bonus)
         }
+        // Snapshotted here, not read from `self` inside the async block: the arrays keep
+        // being written by the next run the moment you hit OTRA VEZ, and the block can land
+        // after that. Normalised now too, so the view never needs to know about m/s.
+        // Banked on every run including a death and including endless — unlike the records,
+        // which are gated on `startOffset`, because a career is a record of what you did
+        // rather than of a comparable performance. Distance is the one exception: with
+        // -startAt you did not drive the part you skipped.
+        Career.add("runs", 1)
+        Career.add("m", Int(max(0, s - Self.startOffset)) + (lap - 1) * Int(Self.total))
+        Career.add("holes", holesHit)
+        Career.add("sealed", runSealed)
+        Career.add("floats", runFloats)
+
+        let peak = max(traceSpeed.max() ?? 0, 1)
+        let trace = RunTrace(speed: traceSpeed.map { $0 / peak },
+                             hurt: traceHurt, end: traceEnd)
         let sc = Int(score), top = Int(topSpeed * 3.6)
         let hh = holesHit, nm = nearMisses
         // Daily runs earn medals — the thresholds are per-course and a shared layout is a
@@ -4605,6 +4670,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             self.state.statTimeBonus = bonus
             self.state.statFinished = !dead
             self.state.statLaps = self.lap
+            self.state.statTrace = trace
             self.state.newRecordScore = newScoreRec
             self.state.newRecordTime = newTimeRec
             self.state.unlockedStage = opened
@@ -4637,11 +4703,44 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// Collision damage. `grace` hits are ignored while the post-hit invulnerable
     /// window is open — without it a pothole cluster chain-killed you in a
     /// single second, which is what made the old balance feel unfair.
+    /// How long a slow-motion beat lasts in real seconds. Long enough to register as a
+    /// held breath, short enough that you are back at speed before the next hazard —
+    /// at 0.55 s and 200 km/h the world still covers ~12 m during the beat.
+    static let traceBuckets = 96
+
+    private static let warpSpan: Float = 0.55
+    /// The deepest dilation. 0.42 rather than something cinematic like 0.15 because you are
+    /// still steering: at 0.15 the controls feel unplugged for half a second, and the point
+    /// is to give you a chance to react, not to take one away.
+    private static let warpFloor: Float = 0.42
+
+    /// The current time multiplier: 1 at rest, `warpFloor` at the moment of the hit.
+    private var warpScale: Float { 1 - (1 - Self.warpFloor) * warp }
+
+    /// Pushes the dilation out to the things that do not run on our `dt`.
+    ///
+    /// Particles are stepped by SceneKit's own clock, so without `speedFactor` the sparks
+    /// and dust keep flying at full speed through the beat and the effect reads as the
+    /// *car* having lagged rather than time having slowed — which is worse than no effect.
+    private func applyWarp() {
+        let f = CGFloat(warpScale)
+        for ps in [smokeSystem, dustSystem, sparkSystem, grindSystem,
+                   streakSystem, rainSystem, damageSmoke] {
+            ps.speedFactor = f
+        }
+        warpApplied = warp > 0
+    }
+
     private func damage(_ amount: Float, _ msg: String?, tone: PopupTone = .hit,
                         grace: Bool = true) {
         if grace && invuln > 0 { return }
         if grace { invuln = 0.85 }
         hp -= amount
+        // Every source, including the off-road trickle: the trace should show the stretch
+        // where you were grinding through the dirt as continuously bad, because it was.
+        let hb = Int(simd_clamp(s / Self.total * Float(Self.traceBuckets), 0,
+                                Float(Self.traceBuckets - 1)))
+        traceHurt[hb] = true
         flashT = 1
         combo = 0
         comboTimer = 0
@@ -4662,6 +4761,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 self.state.combo = 0
             }
             lastCombo = 0
+        }
+        // The near-death beat. Gated on the size of the hit as well as the health left,
+        // because the off-road trickle is 2 a tick and would otherwise hold the world in
+        // slow motion for as long as you kept a wheel on the dirt at low health.
+        if hp > 0, hp <= 14, amount >= 6, warpCool <= 0 {
+            warp = 1
+            warpCool = 6
+            applyWarp()
         }
         if hp <= 0 { hp = 0; endGame(dead: true) }
     }
@@ -4713,7 +4820,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
         guard worldAttached else { return }
         if lastTime < 0 { lastTime = time }
-        let dt = Float(min(time - lastTime, 0.033))
+        let realDt = Float(min(time - lastTime, 0.033))
         lastTime = time
 
         if state.requestStart { state.requestStart = false; sound.start(); resetGame() }
@@ -4740,17 +4847,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
         switch phase {
         case .cutscene:
-            updateCutscene(dt)
+            updateCutscene(realDt)
             return
         case .intro:
-            updateIntro(dt)
+            updateIntro(realDt)
             return
         case .arrival:
-            updateArrival(dt)
-            if dustT > 0 { dustT -= dt; if dustT <= 0 { dustSystem.birthRate = 0 } }
+            updateArrival(realDt)
+            if dustT > 0 { dustT -= realDt; if dustT <= 0 { dustSystem.birthRate = 0 } }
             return
         case .countdown:
-            cd -= dt
+            cd -= realDt
             let lbl = cd > 2.4 ? "3" : cd > 1.4 ? "2" : cd > 0.4 ? "1" : "¡DALE!"
             if lbl != cdLabel {
                 cdLabel = lbl
@@ -4768,14 +4875,43 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             }
             return
         case .finished, .dead:
-            updateSkids(dt)
-            updateResultsCamera(dt)
+            updateSkids(realDt)
+            updateResultsCamera(realDt)
             return
         case .playing:
             break
         }
 
-        playTime += Double(dt)
+        // ----- slow motion -----
+        // `dt` is shadowed from here down so every consumer below — physics, particles,
+        // timers, the camera — dilates together without seven separate multiplications
+        // that could fall out of step. Above this line the intro, cutscene and results
+        // cameras keep real time, which is right: a menu that stutters is a bug.
+        if warpCool > 0 { warpCool = max(0, warpCool - realDt) }
+        if warp > 0 { warp = max(0, warp - realDt / Self.warpSpan) }
+        // Every frame of the beat, not just its edges. Writing the factor only on the
+        // transitions pinned the particles at the 0.42 floor for the whole beat and then
+        // snapped them to full speed on the last frame — so the world eased back up to
+        // speed while the sparks stayed in deep slow motion behind it. The trailing
+        // `warpApplied` catches the frame warp reaches 0, which is the one that restores it.
+        if warp > 0 || warpApplied { applyWarp() }
+        let dt = realDt * warpScale
+
+        // Real time, not dilated. Scoring time has to be wall-clock or slow motion becomes
+        // an exploit: playTime would advance at 0.4x through the beat, so deliberately
+        // grazing death would shave time off your record and pay out a bigger under-par
+        // bonus. Charging the full second means the beat costs you exactly what it looks
+        // like it costs, which is also the honest reading — you did take that long to get
+        // down the hill.
+        playTime += Double(realDt)
+
+        // Distance rather than time, because the question the trace answers is "where on
+        // this road", and a time axis would stretch the slow parts — exactly the parts you
+        // want to see as short.
+        let tb = Int(simd_clamp(s / Self.total * Float(Self.traceBuckets), 0,
+                                Float(Self.traceBuckets - 1)))
+        traceSpeed[tb] = max(traceSpeed[tb], v)
+        traceEnd = max(traceEnd, tb)
         if invuln > 0 { invuln = max(0, invuln - dt) }
 
         // the multiplier bleeds away unless you keep threading hazards
@@ -4884,6 +5020,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 // you are one tap from the best move in the game and nothing says so.
                 if chain == 2 { tip(.chain) }
             case .float:
+                runFloats += 1
                 sound.playFloat()
                 Haptics.shared.crash(intensity: 0.8)
                 popupAsync("¡A VOLAR!", .big)
@@ -5438,11 +5575,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let gearSpan: Float = 64.0 / 6
         let gear = min(5, Int(v / gearSpan))
         let inGear = (v - Float(gear) * gearSpan) / gearSpan
-        sound.engineFreq = Double(52 + inGear * 118 + Float(gear) * 9 + (wantNitro ? 26 : 0))
+        // The pitch drop is what actually sells slow motion. Dilating the picture while the
+        // engine holds its note reads as a dropped-frames stutter; bending the note down
+        // reads as time. Shallower than the visual dilation (0.55x floor against 0.42x) —
+        // taken all the way down, a 52 Hz idle lands near 22 Hz and stops being a pitch.
+        let warpPitch = 1 - 0.45 * warp
+        sound.engineFreq = Double((52 + inGear * 118 + Float(gear) * 9 + (wantNitro ? 26 : 0))
+                                  * warpPitch)
         // Halved — the saw pair sits right in the ear and read as a drone. Wind and
         // the gear steps carry the sense of speed; the motor just needs to be there.
         sound.engineLevel = Double(0.026 + simd_clamp(v / 64, 0, 1) * 0.042)
-        sound.windLevel = Double(simd_clamp(v / 90, 0, 0.35))
+        // Wind ducks through the beat too. It is broadband noise with no pitch to bend, so
+        // the only way it can participate is by getting out of the way of the engine.
+        sound.windLevel = Double(simd_clamp(v / 90, 0, 0.35) * (1 - 0.5 * warp))
         sound.skidLevel = drifting ? Double(simd_clamp(v / 140, 0, 0.22)) : 0
         sound.nitroLevel = wantNitro ? 0.035 : 0
         sound.rumbleLevel = offroad ? Double(simd_clamp(v / 55, 0, 0.32)) : 0

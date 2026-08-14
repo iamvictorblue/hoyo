@@ -502,6 +502,108 @@ struct IconButton: View {
     }
 }
 
+/// A run's speed along the course, with ticks where the craft took a hit.
+///
+/// The results screen could tell you that you hit nine potholes but not that eight of them
+/// were in the same 200 m — and that second version is the only one you can act on. Distance
+/// runs left to right, so the shape *is* the road: you can point at the bit that went wrong.
+///
+/// Two channels, split by the axis: speed above it, damage below. The first attempt drew the
+/// hits as full-height bars *behind* the curve in the course accent, which on Guajataca is
+/// the same pink as the line — so "I was fast here" and "I got hurt here" were the same
+/// colour in the same space and neither could be read. Putting damage in its own strip below
+/// the axis separates them by position rather than by hue, which also means it survives all
+/// three courses' accents instead of only the ones that happen not to clash.
+struct RunTraceView: View {
+    let trace: RunTrace
+    let accent: Color
+
+    /// Shared with `StatLine.wide` so the axis and the stat rows are the same measure.
+    static let width: CGFloat = 250
+
+    private static let plotH: CGFloat = 30
+    private static let tickH: CGFloat = 6
+
+    /// Buckets actually reached. Drawing all 96 when the run ended at 40 would flatline the
+    /// right-hand half, which reads as coming to a stop rather than as never getting there.
+    private var n: Int { min(trace.end + 1, trace.speed.count) }
+
+    private func x(_ i: Int, _ w: CGFloat) -> CGFloat {
+        w * CGFloat(i) / CGFloat(max(n - 1, 1))
+    }
+
+    private func pt(_ i: Int, _ w: CGFloat) -> CGPoint {
+        // Inset top and bottom: the peak needs somewhere to sit, and a near-stop should
+        // still read as a low line rather than disappear into the axis.
+        CGPoint(x: x(i, w), y: Self.plotH - 2 - (Self.plotH - 7) * CGFloat(trace.speed[i]))
+    }
+
+    private func line(_ w: CGFloat) -> Path {
+        var p = Path()
+        for i in 0..<n { i == 0 ? p.move(to: pt(i, w)) : p.addLine(to: pt(i, w)) }
+        return p
+    }
+
+    /// The same curve closed along the axis. A 1.4 pt stroke alone is too thin to read as a
+    /// quantity at this height; the fill is what makes it a speed graph rather than a squiggle.
+    private func area(_ w: CGFloat) -> Path {
+        var p = line(w)
+        p.addLine(to: CGPoint(x: x(n - 1, w), y: Self.plotH))
+        p.addLine(to: CGPoint(x: 0, y: Self.plotH))
+        p.closeSubpath()
+        return p
+    }
+
+    private var hits: Int { trace.hurt.prefix(n).filter { $0 }.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text("EL RECORRIDO")
+                    .font(.label(9)).tracking(3)
+                    .foregroundStyle(.white.opacity(0.4))
+                // The strip below the axis needs one word of key or it is just red marks.
+                Text("· GOLPES")
+                    .font(.label(9)).tracking(2)
+                    .foregroundStyle(Color.neonPink.opacity(0.65))
+            }
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .topLeading) {
+                    area(w).fill(LinearGradient(
+                        colors: [accent.opacity(0.42), accent.opacity(0.04)],
+                        startPoint: .top, endPoint: .bottom))
+                    line(w)
+                        .strokedPath(.init(lineWidth: 1.4, lineJoin: .round))
+                        .foregroundStyle(accent)
+                        .shadow(color: accent.opacity(0.5), radius: 5)
+                    Rectangle().fill(.white.opacity(0.18))
+                        .frame(height: 1).offset(y: Self.plotH)
+                    ForEach(0..<n, id: \.self) { i in
+                        if trace.hurt[i] {
+                            Rectangle()
+                                .fill(Color.neonPink)
+                                .frame(width: max(w / CGFloat(max(n - 1, 1)), 2),
+                                       height: Self.tickH)
+                                .offset(x: x(i, w), y: Self.plotH + 1)
+                        }
+                    }
+                }
+            }
+            .frame(height: Self.plotH + Self.tickH + 1)
+        }
+        // Pinned rather than greedy: a bare GeometryReader takes every point on offer, and
+        // this has to line up edge-to-edge with the `StatLine` rows above it — a graph whose
+        // axis runs past the numbers it belongs to reads as a separate widget.
+        .frame(width: RunTraceView.width)
+        .accessibilityElement()
+        .accessibilityLabel("Recorrido")
+        // The graph is a shape, so the only thing a screen reader can usefully say about it
+        // is the count it encodes.
+        .accessibilityValue("\(hits) golpes")
+    }
+}
+
 /// A course's earned medal as a single coloured dot, for the stage picker.
 ///
 /// The title screen showed a medal only for the *selected* course, so the shelf of what
@@ -819,7 +921,10 @@ struct StatLine: View {
     let label: String
     let value: String
     var accent: Color = .neonGold
-    var wide: CGFloat = 176
+    /// 250, matching `RunTraceView.width`. Was 176, which is narrower than
+    /// "HOYOS / ESQUIVES" plus its value and truncated the longest label on the screen to
+    /// "HOYOS /…" — a label ending in an ellipsis where the game names its own scoring.
+    var wide: CGFloat = RunTraceView.width
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1461,6 +1566,16 @@ struct IntroOverlay: View {
                     }
                     .padding(.top, 14)
 
+                    // Under the per-course record, because it is the same kind of fact one
+                    // scale up: that line says how you did here, this one says how long you
+                    // have been at it. Dimmer than the record — it is texture, not a target.
+                    if let career = Career.line {
+                        Text(career)
+                            .font(.label(9)).tracking(2)
+                            .foregroundStyle(.white.opacity(0.3))
+                            .padding(.top, 5)
+                    }
+
                     if state.sceneReady {
                         SignButton("TOCA PA' ARRANCAR") {
                             tilt.reader.recalibrate()
@@ -1715,6 +1830,11 @@ struct EndOverlay: View {
                      value: "\(state.statHolesHit) / \(state.statNearMisses)",
                      accent: Color.creamText)
                 .appear(0.6, calm: calm)
+            if !state.statTrace.isEmpty {
+                RunTraceView(trace: state.statTrace, accent: accent)
+                    .padding(.top, 4)
+                    .appear(0.66, calm: calm)
+            }
         }
     }
 
@@ -1723,7 +1843,7 @@ struct EndOverlay: View {
             SignButton("OTRA VEZ", color: accent) { state.requestReset = true }
             GhostButton("AL INICIO") { state.requestTitle = true }
         }
-        .appear(0.72, calm: calm)
+        .appear(0.78, calm: calm)
     }
 
     private var rightColumn: some View {
