@@ -365,6 +365,64 @@ enum Textures {
     }
 
     /// Packed dirt trail: wet earth, exposed roots, embedded stones and puddles.
+    /// Where the trail holds water, as a roughness map: dark is glossy, light is rough.
+    ///
+    /// It rains continuously on El Yunque — 600 drops a second, lightning behind the ridge —
+    /// onto a trail set to roughness 0.90 and described in its own comment as "dry packed
+    /// dirt". The rain read as an overlay on someone else's dry world. Standing water is
+    /// what makes a surface look rained on, and it is almost free: one greyscale map on a
+    /// channel the material was not using.
+    ///
+    /// Puddles are drawn stretched along the vertical axis because that is the direction of
+    /// travel in the road's UVs, and water on a track collects in the ruts running down it,
+    /// not in circles across it.
+    static func trailWetness() -> UIImage {
+        let dim: CGFloat = 512
+        return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
+            let g = ctx.cgContext
+            // Damp, not dry. The first version filled 0.90 here — bone dry — and left the
+            // puddles to carry the whole effect, which showed up as nothing at all: 26 small
+            // ellipses per tile against a matte field is invisible at 200 km/h. The entire
+            // trail is under continuous rain, so damp soil is the correct baseline and the
+            // puddles are what sits glossier than it. Probed at a uniform 0.05 to confirm
+            // gloss reads on this stage before tuning: the trail turned to glass and every
+            // bump in the dirt relief became a water bead, so the surface was never the
+            // problem, the map was.
+            UIColor(white: 0.56, alpha: 1).setFill()
+            g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
+
+            // Standing water. Soft-edged, because a hard rim reads as a painted spot — the
+            // gradient is the shallow margin where the water thins out to damp ground.
+            for _ in 0..<26 {
+                let cx = CGFloat.random(in: 0...dim), cy = CGFloat.random(in: 0...dim)
+                let rx = CGFloat.random(in: 14...54), ry = rx * .random(in: 1.6...3.4)
+                guard let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(),
+                                            colors: [UIColor(white: 0.16, alpha: 1).cgColor,
+                                                     UIColor(white: 0.56, alpha: 1).cgColor]
+                                                    as CFArray,
+                                            locations: [0, 1]) else { continue }
+                g.saveGState()
+                g.translateBy(x: cx, y: cy)
+                g.scaleBy(x: 1, y: ry / rx)
+                g.drawRadialGradient(grad, startCenter: .zero, startRadius: 0,
+                                     endCenter: .zero, endRadius: rx,
+                                     options: [.drawsAfterEndLocation])
+                g.restoreGState()
+            }
+            // Damp streaks between the puddles, so the transition is not puddle-or-nothing.
+            g.setLineCap(.round)
+            for _ in 0..<40 {
+                g.setStrokeColor(UIColor(white: .random(in: 0.30...0.52),
+                                         alpha: .random(in: 0.3...0.7)).cgColor)
+                g.setLineWidth(.random(in: 5...16))
+                let x = CGFloat.random(in: 0...dim), y = CGFloat.random(in: 0...dim)
+                g.move(to: CGPoint(x: x, y: y))
+                g.addLine(to: CGPoint(x: x + .random(in: -14...14), y: y + .random(in: 40...150)))
+                g.strokePath()
+            }
+        }
+    }
+
     static func dirtTrail() -> UIImage {
         let dim: CGFloat = 512
         return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in

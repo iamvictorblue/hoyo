@@ -268,6 +268,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private static let grindSparkColor = UIColor(red: 0.95, green: 0.60, blue: 0.20, alpha: 1)
     /// Kicked off dirt or sand: cooler, dimmer, and much more of it.
     private static let grindDustColor = UIColor(red: 0.86, green: 0.74, blue: 0.55, alpha: 1)
+    /// What comes off the ground on El Yunque, where the trail is standing water rather
+    /// than dust. Cooler and paler than dust, and less opaque — spray is lit water, so it
+    /// carries the sky's colour instead of the ground's, and you can see through it.
+    private static let sprayColor = UIColor(red: 0.80, green: 0.86, blue: 0.84, alpha: 0.55)
     private let sparkNode = SCNNode()
     private var oceanNormal: SCNMaterialProperty?
     private let holeNode = SCNNode()
@@ -1497,8 +1501,12 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let relief: Float
         switch Self.currentStage {
         case .yunque:
-            // dry packed dirt: rough, and the most relief of the three
-            roughness = 0.90; relief = 5.0
+            // Unused on this stage — `trailWetness` replaces it with a map below, since the
+            // trail is rained on continuously and needs puddles rather than one value. Kept
+            // because `roughness` is a `let` the switch has to bind on every path, and the
+            // relief beside it is very much used: 5.0 is what turns the wet surface into
+            // beaded water rather than a flat sheet.
+            roughness = 0.74; relief = 5.0
         case .playa:
             // Wet sand. Glossy at a grazing angle, and that sheen is most of the
             // read — a previous version set it and then had it overwritten two lines
@@ -1522,6 +1530,23 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         }
         mat.diffuse.wrapS = .repeat
         mat.diffuse.wrapT = .repeat
+
+        // Standing water on the rainforest trail. Two separate cues, and both are needed:
+        // the map makes puddles catch the sky while the ridges between them stay matte, and
+        // the multiply darkens the whole surface because wetting soil darkens it — a trail
+        // that is glossy at its original brightness reads as polished, not soaked.
+        if Self.currentStage == .yunque {
+            mat.roughness.contents = Textures.trailWetness()
+            mat.roughness.wrapS = .repeat
+            mat.roughness.wrapT = .repeat
+            // Deliberately not the diffuse's scale. Sharing it would put an identical puddle
+            // at the same offset every 9 m, and a puddle is a large distinctive shape — the
+            // grain gets away with repeating at that rate, standing water would read as
+            // wallpaper. This lands the cycle around 29 m and out of step with the grain.
+            mat.roughness.contentsTransform = SCNMatrix4MakeScale(0.6, 0.31, 1)
+            mat.multiply.contents = UIColor(white: 0.62, alpha: 1)
+        }
+
         let node = SCNNode(geometry: makeGeometry(verts: verts, indices: idx, uvs: uvs, material: mat))
         node.castsShadow = false
         parent.addChildNode(node)
@@ -4268,7 +4293,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         dustSystem.particleVelocity = 4
         dustSystem.particleVelocityVariation = 3
         dustSystem.spreadingAngle = 180
-        dustSystem.particleColor = UIColor(red: 0.54, green: 0.48, blue: 0.36, alpha: 0.7)
+        // Landing on a soaked trail throws water, not dust. The one colour used to serve all
+        // three stages, so the rainforest — which now visibly has standing water on it —
+        // still puffed dry tan dirt on every touchdown.
+        dustSystem.particleColor = Self.currentStage == .yunque
+            ? Self.sprayColor
+            : UIColor(red: 0.54, green: 0.48, blue: 0.36, alpha: 0.7)
+        // Spray is thrown harder and dies sooner than dust: a dust cloud hangs in still air,
+        // water is flung off and gone.
+        if Self.currentStage == .yunque {
+            dustSystem.particleLifeSpan = 0.34
+            dustSystem.particleVelocity = 7
+            dustSystem.particleSize = 0.42
+        }
         dustNode.addParticleSystem(dustSystem)
 
         // guardrail sparks
@@ -5142,11 +5179,20 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // Off the asphalt it is dirt rather than sparks: far more of it, thrown
             // slower and wider, and no longer glowing. Reuses `offroad`, which already
             // decides the rumble-strip audio, so what you hear and what you see agree.
-            grindSystem.particleColor = offroad ? Self.grindDustColor : Self.grindSparkColor
+            // Scraping a wet dirt trail throws spray whether or not you have wandered off it.
+            // Everything on this stage is soaked, so the off-trail/on-trail distinction that
+            // the other two courses draw between dust and sparks does not exist here.
+            grindSystem.particleColor = Self.currentStage == .yunque
+                ? Self.sprayColor
+                : (offroad ? Self.grindDustColor : Self.grindSparkColor)
             grindSystem.particleVelocity = offroad ? 7 : 11
             grindSystem.spreadingAngle = offroad ? 70 : 42
             grindSystem.particleSize = offroad ? 0.055 : 0.028
-            grindSystem.blendMode = offroad ? .alpha : .additive
+            // Alpha throughout on the wet stage. Additive spray would glow, and additive
+            // anything near the craft's own underglow is how this project has blown the
+            // bloom threshold to white three separate times.
+            grindSystem.blendMode = (offroad || Self.currentStage == .yunque)
+                ? .alpha : .additive
             // Braking digs in; drifting drags the whole underside across the surface.
             let dig: Float = drifting ? 2.1 : (braking ? 1.4 : 1.0)
             // Rates are high because each particle is now tiny — the density is what
