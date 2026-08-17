@@ -816,6 +816,50 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return geo
     }
 
+    /// One wind for the whole stage.
+    ///
+    /// The shader used to run straight off `scn_frame.time`, which cannot be reconciled with
+    /// anything on the CPU: that clock is scene time and the render callback's is
+    /// `CACurrentMediaTime`, so they differ by system uptime. Two consequences, both wrong on
+    /// the stage whose entire identity is weather — the rain could not be made to lean with
+    /// the same gust that moves the trees, and the slow-motion beat slowed the rain (it is in
+    /// `applyWarp`) while the canopy carried on at full speed.
+    ///
+    /// So the clock is ours now, advanced by the dilated `dt`, and handed to the materials as
+    /// a uniform. The constants live here and are interpolated into the shader body, so the
+    /// gust the rain leans with and the gust the fronds bend with are the same arithmetic
+    /// rather than two copies that can drift.
+    enum Wind {
+        static let phX: Float = 0.21, phZ: Float = 0.17
+        static let gustBase: Float = 0.55, gustAmp: Float = 0.45
+        static let gustRate: Float = 0.23, gustPh: Float = 0.35
+        static let octave1: Float = 0.62, octave2: Float = 0.28
+        static let o2Rate: Float = 1.7, o2Ph: Float = 1.4
+
+        /// The slow swell, 0.10...1.00. On its own this is the squall passing through, which
+        /// is why it is exposed: the rain thickens and thins on it as well as leaning on it.
+        static func gust(t: Float, ph: Float) -> Float {
+            gustBase + gustAmp * sinf(t * gustRate + ph * gustPh)
+        }
+
+        /// Signed bend, roughly -1...1. `ph` is the spatial phase; `t` is `windT * rate`.
+        static func bend(t: Float, ph: Float) -> Float {
+            (sinf(t + ph) * octave1 + sinf(t * o2Rate + ph * o2Ph) * octave2) * gust(t: t, ph: ph)
+        }
+
+        static func phase(x: Float, z: Float) -> Float { x * phX + z * phZ }
+    }
+
+    /// The palms' rate on El Yunque, named because the rain has to lean at this rate to agree
+    /// with the trees the player can actually see beside the trail.
+    private static let palmWindRate: Float = 1.05
+
+    /// Our own wind clock, in seconds, advanced by the dilated `dt`.
+    private var windT: Float = 0
+    /// The foliage materials, so the clock can be pushed to them once a frame. Three writes,
+    /// against the alternative of the canopy and the weather disagreeing.
+    private var windMaterials: [SCNMaterial] = []
+
     /// Bends foliage in the wind, on the GPU.
     ///
     /// A rainforest with rain falling through it and lightning going off behind it, in which
@@ -838,15 +882,19 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     ///   instance scale is already baked into the position and this is world units.
     private static func windModifier(amp: Float, rate: Float) -> String {
         """
+        #pragma arguments
+        float windT;
+        #pragma body
         float w = _geometry.texcoords[0].x;
         float3 p = _geometry.position.xyz;
-        float ph = p.x * 0.21 + p.z * 0.17;
-        float t = scn_frame.time * \(rate);
+        float ph = p.x * \(Wind.phX) + p.z * \(Wind.phZ);
+        float t = windT * \(rate);
         // Two octaves at an irrational-ish ratio so the loop never audibly repeats, plus a
         // slow third that swells and drops: a trade wind arrives in gusts, and a single
         // sine reads as a metronome no matter how slow you make it.
-        float gust = 0.55 + 0.45 * sin(t * 0.23 + ph * 0.35);
-        float bend = (sin(t + ph) * 0.62 + sin(t * 1.7 + ph * 1.4) * 0.28) * gust;
+        float gust = \(Wind.gustBase) + \(Wind.gustAmp) * sin(t * \(Wind.gustRate) + ph * \(Wind.gustPh));
+        float bend = (sin(t + ph) * \(Wind.octave1)
+                    + sin(t * \(Wind.o2Rate) + ph * \(Wind.o2Ph)) * \(Wind.octave2)) * gust;
         float k = w * \(amp);
         _geometry.position.x += bend * k;
         _geometry.position.z += bend * k * 0.65;
@@ -1984,8 +2032,9 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         palmFrondMat.shaderModifiers = [
             .geometry: Self.windModifier(
                 amp: Self.currentStage == .yunque ? 0.30 : 0.42,
-                rate: Self.currentStage == .yunque ? 1.05 : 1.45)
+                rate: Self.currentStage == .yunque ? Self.palmWindRate : 1.45)
         ]
+        windMaterials.append(palmFrondMat)
         let palmGeos = (0..<3).map {
             palmGeometries(variant: $0, trunkMaterial: palmTrunkMat,
                            frondMaterial: palmFrondMat)
@@ -2059,6 +2108,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // it nods, it does not thrash, and pushing it as far as the palms turns the grove
         // into a field of wobbling lollipops.
         flamMat.shaderModifiers = [.geometry: Self.windModifier(amp: 0.16, rate: 0.85)]
+        windMaterials.append(flamMat)
         let canopyGeos: [SCNGeometry] = (0..<5).map { k in
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             UIColor(hue: CGFloat(0.02 + Double(k) * 0.011),
@@ -2268,6 +2318,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // the trail edge, so the same amplitude that reads as a breeze on a distant palm
             // reads as an earthquake here.
             fernMat.shaderModifiers = [.geometry: Self.windModifier(amp: 0.10, rate: 0.70)]
+            windMaterials.append(fernMat)
             let fernGeos = (0..<4).map { v -> SCNGeometry in
                 let f = PropMeshes.treeFern(variant: v)
                 return makeGeometry(verts: f.verts, indices: f.indices,
@@ -4486,6 +4537,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         topSpeed = 0; holesHit = 0; nearMisses = 0
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
         warp = 0; warpCool = 0; applyWarp()
+        windT = 0
         runSealed = 0; runFloats = 0
         clearTrace()
         lightningT = 0; lightningCool = 6
@@ -5010,6 +5062,11 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // `warpApplied` catches the frame warp reaches 0, which is the one that restores it.
         if warp > 0 || warpApplied { applyWarp() }
         let dt = realDt * warpScale
+
+        // Dilated, so the canopy slows with the rain during a slow-motion beat. The rain is
+        // in `applyWarp`, so before this the particles slowed and the trees did not.
+        windT += dt
+        for m in windMaterials { m.setValue(windT, forKey: "windT") }
 
         // Real time, not dilated. Scoring time has to be wall-clock or slow motion becomes
         // an exploit: playTime would advance at 0.4x through the beat, so deliberately
@@ -5662,7 +5719,25 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // 190 km/h through it sees it coming at the windscreen, and vertical rain at
             // that speed reads as a still photograph with lines drawn on it.
             let rake = simd_clamp(v / 60, 0, 1) * 0.85
-            rainSystem.emittingDirection = SCNVector3(0, -1, rake)
+            // And lean it sideways on the same gust that is bending the fronds, evaluated at
+            // the craft's own position so it agrees with the trees within a few metres of the
+            // camera — the ones you can see well enough to compare. Before this the canopy
+            // thrashed in a crosswind while the rain fell in a dead vertical line through it,
+            // which reads as two weather systems in one shot.
+            //
+            // 0.55 against the fronds' full travel: rain has almost no mass and would in
+            // truth blow further than a frond, but past about this the drops streak across
+            // the frame instead of falling and it stops reading as rain at all.
+            let (cp, _, _) = sample(s)
+            let wt = windT * Self.palmWindRate
+            let ph = Wind.phase(x: cp.x, z: cp.z)
+            rainSystem.emittingDirection = SCNVector3(Wind.bend(t: wt, ph: ph) * 0.55, -1, rake)
+            // And thickens and thins on the same swell, so squall bands pass through instead
+            // of the downpour running at one unvarying rate for the whole course. Driven off
+            // the slow envelope, not the bend: the bend oscillates about once a second and
+            // modulating the birth rate at that speed makes the rain flicker.
+            rainSystem.birthRate = 600 * quality.rainScale
+                                 * CGFloat(0.74 + 0.46 * Wind.gust(t: wt, ph: ph))
         }
 
         // Coquís calling in the background. On the island at dusk this is the

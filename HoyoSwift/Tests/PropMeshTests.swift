@@ -236,3 +236,57 @@ final class SwayTests: XCTestCase {
                        "the outer ring is the hinge and should not travel")
     }
 }
+
+/// The shared wind. These constants are now read from two places — the Metal shader that bends
+/// the foliage and the Swift that leans the rain — so the numbers here are a contract rather
+/// than a tuning knob, and a drift between the two is invisible in a screenshot.
+final class WindTests: XCTestCase {
+
+    /// The envelope must stay strictly positive. It multiplies the bend, so a zero crossing
+    /// would flip the wind's direction mid-gust — the canopy snapping the other way with no
+    /// gust front, which reads as a glitch rather than as weather.
+    func testGustNeverReachesZeroOrExceedsOne() {
+        var lo = Float.greatestFiniteMagnitude, hi = -Float.greatestFiniteMagnitude
+        for i in 0..<4000 {
+            let t = Float(i) * 0.05
+            for ph in stride(from: Float(0), to: 40, by: 3.7) {
+                let g = GameScene.Wind.gust(t: t, ph: ph)
+                lo = min(lo, g); hi = max(hi, g)
+            }
+        }
+        XCTAssertGreaterThan(lo, 0.05, "gust dipped to \(lo) — the wind would reverse")
+        XCTAssertLessThanOrEqual(hi, 1.001, "gust peaked at \(hi)")
+    }
+
+    /// Bend has to stay inside roughly -1...1 because the amplitudes are quoted in metres of
+    /// travel at weight 1. If it can reach 2 then a palm frond moves 0.6 m rather than 0.3 and
+    /// the numbers in the call sites stop meaning what their comments say.
+    func testBendStaysWithinItsQuotedRange() {
+        var peak: Float = 0
+        for i in 0..<8000 {
+            let t = Float(i) * 0.03
+            for ph in stride(from: Float(0), to: 40, by: 2.3) {
+                peak = max(peak, abs(GameScene.Wind.bend(t: t, ph: ph)))
+            }
+        }
+        XCTAssertLessThanOrEqual(peak, 1.0, "bend peaked at \(peak), so every amplitude lies")
+        XCTAssertGreaterThan(peak, 0.7, "bend only reached \(peak) — the wind barely blows")
+    }
+
+    /// Neighbouring trees must not move as one plate. Ten metres apart is a normal spacing in
+    /// these groves, and at the phase rate chosen they should be visibly out of step.
+    func testTreesTenMetresApartAreOutOfPhase() {
+        let a = GameScene.Wind.phase(x: 0, z: 0)
+        let b = GameScene.Wind.phase(x: 10, z: 0)
+        XCTAssertGreaterThan(abs(b - a), 1.5,
+                             "10 m apart gives only \(abs(b - a)) rad — the grove moves as one")
+    }
+
+    /// Two points a couple of metres apart — across one crown — should lag slightly rather
+    /// than sit a half cycle apart, so the near side leads the far side.
+    func testOneCrownLagsButDoesNotInvert() {
+        let d = abs(GameScene.Wind.phase(x: 2, z: 0) - GameScene.Wind.phase(x: 0, z: 0))
+        XCTAssertGreaterThan(d, 0.15, "no internal lag: the crown moves as a plate")
+        XCTAssertLessThan(d, 1.2, "\(d) rad across one crown would tear it in half")
+    }
+}
