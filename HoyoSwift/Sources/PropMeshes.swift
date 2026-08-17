@@ -23,8 +23,25 @@ enum PropMeshes {
         var verts: [simd_float3] = []
         var cols: [simd_float3] = []
         var indices: [Int32] = []
+        /// How much wind moves this vertex: 0 pinned, 1 free. Parallel to `verts`, and
+        /// empty on the meshes that do not bend.
+        ///
+        /// Per-vertex rather than per-material because that is the only thing that works
+        /// here. A tree fern's trunk and crown are one mesh with one material, so nothing
+        /// at the material level can sway the fronds and leave the trunk planted; and the
+        /// props are `flattenedClone`d into shared containers, which destroys the per-tree
+        /// node hierarchy an animation would need. A weight baked into the vertex stream
+        /// survives flattening, costs one float, and is read straight by the shader.
+        var sway: [Float] = []
 
         var triangleCount: Int { indices.count / 3 }
+
+        /// Appends a vertex with all three of its channels, so the arrays cannot drift
+        /// out of step. `sway` defaults to 0 — a vertex nobody thought about is pinned,
+        /// which fails toward "does not move" rather than toward geometry pulling apart.
+        mutating func add(_ v: simd_float3, _ c: simd_float3, sway w: Float = 0) {
+            verts.append(v); cols.append(c); sway.append(w)
+        }
 
         /// Outward-facing normal of triangle `t`, from its winding.
         func faceNormal(_ t: Int) -> simd_float3 {
@@ -119,8 +136,9 @@ enum PropMeshes {
 
     static func flamboyanCrown(seed: Int, tint: simd_float3) -> Mesh {
         var m = Mesh()
-        m.verts.append(simd_float3(0, crownApexY, 0))
-        m.cols.append(tint)
+        // The apex moves most: the crown is a broad umbrella on a stiff bole, so it
+        // pivots about its rim rather than bending along a stem.
+        m.add(simd_float3(0, crownApexY, 0), tint, sway: 1)
         let rings = 5, sides = 16
         // three boughs of unequal weight — this is what scallops the outline
         let l1 = 0.20 + propHash(seed, 11) * 0.10
@@ -135,13 +153,16 @@ enum PropMeshes {
                 let rad = 2.15 * sinf(t * .pi * 0.5) * lump * (0.86 + n * 0.28)
                 let dome = crownApexY * cosf(t * .pi * 0.55) - 0.30 * t * t
                 let y = dome + (n - 0.5) * 0.34
-                m.verts.append(simd_float3(cos(a) * rad, y, sin(a) * rad))
+                // Falls off toward the outer rings, which are the ones nearest the bole's
+                // attachment in silhouette terms — `t` runs 0 at the apex to 1 at the rim.
+                m.add(simd_float3(cos(a) * rad, y, sin(a) * rad),
+                      simd_mix(tint * 0.22, tint,
+                               simd_float3(repeating: 0.12 + simd_clamp(
+                                   (y - crownRimY) / (crownApexY - crownRimY), 0, 1) * 0.88)),
+                      sway: (1 - t) * (1 - t) * 0.8)
                 // Sunlit caps keep the tint; hollows and the underside drop to about
                 // a third of it. Driving this off the jittered height is what makes
                 // the bumps legible instead of a flat silhouette.
-                let lit = simd_clamp((y - crownRimY) / (crownApexY - crownRimY), 0, 1)
-                m.cols.append(simd_mix(tint * 0.22, tint,
-                                       simd_float3(repeating: 0.12 + lit * 0.88)))
             }
         }
         // Apex fan wound so the face normal comes out +y. With the apex on the y axis
@@ -197,8 +218,8 @@ enum PropMeshes {
             let shade = 0.42 + 0.18 * t
             for sIdx in 0..<sides {
                 let a = Float(sIdx) / Float(sides) * 2 * .pi
-                m.verts.append(c + simd_float3(cos(a) * rad, 0, sin(a) * rad))
-                m.cols.append(simd_float3(shade * 0.50, shade * 0.40, shade * 0.28))
+                m.add(c + simd_float3(cos(a) * rad, 0, sin(a) * rad),
+                      simd_float3(shade * 0.50, shade * 0.40, shade * 0.28))
             }
         }
         for r in 0..<(rings - 1) {
@@ -240,10 +261,13 @@ enum PropMeshes {
                 let c0 = simd_mix(lo, hi, simd_float3(repeating: tp))
                 let c1 = simd_mix(lo, hi, simd_float3(repeating: t))
                 let base = Int32(m.verts.count)
-                m.verts.append(l0); m.verts.append(r0)
-                m.verts.append(l1); m.verts.append(r1)
-                m.cols.append(c0); m.cols.append(c0)
-                m.cols.append(c1); m.cols.append(c1)
+                // Same squared falloff as the palm, but scaled down: a tree fern is
+                // understory, sheltered by everything above it, and a fern whipping as
+                // hard as the canopy would say the wind reaches the forest floor.
+                m.add(l0, c0, sway: tp * tp * 0.55)
+                m.add(r0, c0, sway: tp * tp * 0.55)
+                m.add(l1, c1, sway: t * t * 0.55)
+                m.add(r1, c1, sway: t * t * 0.55)
                 m.indices.append(contentsOf: [base, base + 2, base + 1,
                                               base + 1, base + 2, base + 3])
             }
@@ -278,8 +302,11 @@ enum PropMeshes {
             let shade = 0.60 + 0.26 * t          // sun-bleached toward the crown
             for s in 0..<sides {
                 let a = Float(s) / Float(sides) * 2 * .pi
-                trunk.verts.append(c + simd_float3(cos(a) * rad, 0, sin(a) * rad))
-                trunk.cols.append(simd_float3(shade * 0.64, shade * 0.52, shade * 0.37))
+                // Pinned. A coconut palm's trunk is a 7 m post that barely reads as moving
+                // even in a squall; it is the crown that thrashes, and swaying the post
+                // makes the whole tree look inflatable.
+                trunk.add(c + simd_float3(cos(a) * rad, 0, sin(a) * rad),
+                          simd_float3(shade * 0.64, shade * 0.52, shade * 0.37))
             }
         }
         for r in 0..<(rings - 1) {
@@ -314,6 +341,7 @@ enum PropMeshes {
             var prevL = crown + simd_float3(0, 0.18, 0)
             var prevR = prevL
             var prevC = frondColor(0)
+            var prevT: Float = 0
             for k in 1...segs {
                 let t = Float(k) / Float(segs)
                 let reach = t * reachMax
@@ -324,13 +352,17 @@ enum PropMeshes {
                 let l = spine + side, r = spine - side
                 let c = frondColor(t)
                 let base = Int32(fronds.verts.count)
-                fronds.verts.append(prevL); fronds.verts.append(prevR)
-                fronds.verts.append(l);     fronds.verts.append(r)
-                fronds.cols.append(prevC);  fronds.cols.append(prevC)
-                fronds.cols.append(c);      fronds.cols.append(c)
+                // Squared, so the base of the frond stays welded to the crown while the
+                // tip does nearly all of the travelling. Linear weight bows the whole
+                // frond evenly, which reads as rubber; a frond is stiff for its first
+                // third and whips at the end.
+                fronds.add(prevL, prevC, sway: prevT * prevT)
+                fronds.add(prevR, prevC, sway: prevT * prevT)
+                fronds.add(l, c, sway: t * t)
+                fronds.add(r, c, sway: t * t)
                 fronds.indices.append(contentsOf: [base, base + 2, base + 1,
                                                    base + 1, base + 2, base + 3])
-                prevL = l; prevR = r; prevC = c
+                prevL = l; prevR = r; prevC = c; prevT = t
             }
         }
         return (trunk, fronds)

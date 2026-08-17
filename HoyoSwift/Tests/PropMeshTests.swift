@@ -163,3 +163,76 @@ final class PropMeshTests: XCTestCase {
         XCTAssertEqual(FlattenGuard.distinctMaterials(in: node), 2)
     }
 }
+
+/// The wind weights. Every number here is invisible in the running game — a wrong one shows up
+/// as foliage that bends slightly oddly, which nobody would ever trace back to arithmetic. That
+/// is the exact failure class this file was created for.
+final class SwayTests: XCTestCase {
+
+    /// Parity with `verts` is the one that matters most. `makeGeometry` builds a texcoord
+    /// source from this array and the shader indexes it per vertex, so a short array is read
+    /// off the end.
+    func testSwayIsParallelToVerts() {
+        let palm = PropMeshes.palm(variant: 0)
+        XCTAssertEqual(palm.fronds.sway.count, palm.fronds.verts.count)
+        XCTAssertEqual(palm.trunk.sway.count, palm.trunk.verts.count)
+        let fern = PropMeshes.treeFern(variant: 0)
+        XCTAssertEqual(fern.sway.count, fern.verts.count)
+        let crown = PropMeshes.flamboyanCrown(seed: 0, tint: simd_float3(1, 0, 0))
+        XCTAssertEqual(crown.sway.count, crown.verts.count)
+    }
+
+    /// A palm trunk is a 7 m post. If any of its vertices picked up a weight the whole tree
+    /// would lean in the wind, which reads as inflatable rather than windswept.
+    func testPalmTrunkIsPinned() {
+        for v in 0..<3 {
+            let trunk = PropMeshes.palm(variant: v).trunk
+            XCTAssertEqual(trunk.sway.max(), 0, "trunk variant \(v) should not bend")
+        }
+    }
+
+    /// Fronds must reach full weight at the tip and start at zero where they meet the crown.
+    /// A non-zero base detaches the frond from the trunk; a tip below 1 wastes the range and
+    /// makes the wind constant harder to reason about.
+    func testFrondsRunFromPinnedBaseToFreeTip() {
+        for v in 0..<3 {
+            let f = PropMeshes.palm(variant: v).fronds
+            XCTAssertEqual(f.sway.min() ?? -1, 0, accuracy: 1e-6,
+                           "frond base should be welded to the crown, variant \(v)")
+            XCTAssertEqual(f.sway.max() ?? 0, 1, accuracy: 1e-6,
+                           "frond tip should reach full travel, variant \(v)")
+        }
+    }
+
+    /// Squared, not linear. The midpoint of a frond must move appreciably less than half as
+    /// far as the tip, which is what makes it read as a stiff shaft that whips at the end
+    /// rather than a rubber band bending evenly.
+    func testFrondFalloffIsSquared() {
+        let f = PropMeshes.palm(variant: 0).fronds
+        // 5 segments, so t = 0.4 is the closest sample to the middle: 0.4^2 = 0.16.
+        XCTAssertTrue(f.sway.contains { abs($0 - 0.16) < 1e-5 },
+                      "expected a 0.16 weight from squared falloff, got \(Set(f.sway).sorted())")
+    }
+
+    /// Ferns are understory, sheltered by 300 palms of canopy, and they are also the closest
+    /// foliage to the camera. Their ceiling is deliberately well under the palms'.
+    func testFernIsShelteredAndItsTrunkPinned() {
+        for v in 0..<4 {
+            let m = PropMeshes.treeFern(variant: v)
+            let peak = m.sway.max() ?? 0
+            XCTAssertLessThanOrEqual(peak, 0.56, "fern variant \(v) bends too hard: \(peak)")
+            XCTAssertGreaterThan(peak, 0.3, "fern variant \(v) barely moves: \(peak)")
+            // The first `rings * sides` vertices are the trunk, appended before the crown.
+            XCTAssertEqual(m.sway.prefix(24).max(), 0, "fern trunk should be planted")
+        }
+    }
+
+    /// A poinciana canopy pivots on a thick bole: the apex travels, the rim is the hinge.
+    func testFlamboyanApexMovesMostAndRimLeast() {
+        let c = PropMeshes.flamboyanCrown(seed: 3, tint: simd_float3(1, 0.2, 0.1))
+        XCTAssertEqual(c.sway.first, 1, "the apex vertex is emitted first and should be free")
+        // Ring 5 of 5 is the rim, the last `sides` vertices.
+        XCTAssertEqual(c.sway.suffix(16).max() ?? -1, 0, accuracy: 1e-6,
+                       "the outer ring is the hinge and should not travel")
+    }
+}

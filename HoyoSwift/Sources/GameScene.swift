@@ -765,6 +765,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     private func makeGeometry(verts: [simd_float3], indices: [Int32],
                               uvs: [CGPoint]? = nil, colors: [simd_float3]? = nil,
+                              sway: [Float]? = nil,
                               material: SCNMaterial) -> SCNGeometry {
         var normals = [simd_float3](repeating: .zero, count: verts.count)
         var k = 0
@@ -783,6 +784,18 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             SCNGeometrySource(normals: normals.map { SCNVector3($0) })
         ]
         if let uvs = uvs { sources.append(SCNGeometrySource(textureCoordinates: uvs)) }
+        // Wind weight rides the first texcoord channel. None of the scenery is textured —
+        // its colour is in the vertex stream — so the channel is free, and unlike a custom
+        // semantic it is one that `flattenedClone()` is known to merge and that a shader
+        // modifier can read without declaring anything. Packed into .x with .y unused: a
+        // one-component texcoord source is not a shape SceneKit accepts.
+        // Count parity is a hard requirement, not a nicety: a texcoord source shorter than
+        // the vertex array is read past its end by the shader. Meshes that do not bend leave
+        // `sway` empty, and an empty channel next to 200 vertices is exactly that bug.
+        if let sway = sway, uvs == nil, sway.count == verts.count {
+            sources.append(SCNGeometrySource(
+                textureCoordinates: sway.map { CGPoint(x: CGFloat($0), y: 0) }))
+        }
         if let colors = colors {
             var floats: [Float] = []
             floats.reserveCapacity(colors.count * 3)
@@ -797,6 +810,46 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let geo = SCNGeometry(sources: sources, elements: [element])
         geo.materials = [material]
         return geo
+    }
+
+    /// Bends foliage in the wind, on the GPU.
+    ///
+    /// A rainforest with rain falling through it and lightning going off behind it, in which
+    /// every leaf is perfectly still, reads as a photograph of a jungle rather than a jungle.
+    /// This is the cheapest thing in the project that makes the world look alive: no CPU per
+    /// frame, no animation, no extra draw calls — one vertex displacement driven by
+    /// `scn_frame.time`, exactly like the ocean surface above.
+    ///
+    /// Per-vertex weight comes in on texcoord 0 (see `Mesh.sway`), which is what lets one
+    /// material hold a tree fern's planted trunk and its moving crown at once.
+    ///
+    /// The phase comes out of the vertex's own XZ rather than from per-tree data, because
+    /// after `flattenedClone()` there is no per-tree anything left — every palm on the stage
+    /// is one geometry. Position works because trees are metres apart: at 0.21 rad/m
+    /// neighbours are most of a cycle out of step, while the ~2 m across a single crown
+    /// gives 0.4 rad of internal lag, which reads as the near side leading the far side
+    /// instead of the crown moving as a plate.
+    ///
+    /// - Parameter amp: peak travel in metres, at weight 1. Applied post-flatten, so the
+    ///   instance scale is already baked into the position and this is world units.
+    private static func windModifier(amp: Float, rate: Float) -> String {
+        """
+        float w = _geometry.texcoords[0].x;
+        float3 p = _geometry.position.xyz;
+        float ph = p.x * 0.21 + p.z * 0.17;
+        float t = scn_frame.time * \(rate);
+        // Two octaves at an irrational-ish ratio so the loop never audibly repeats, plus a
+        // slow third that swells and drops: a trade wind arrives in gusts, and a single
+        // sine reads as a metronome no matter how slow you make it.
+        float gust = 0.55 + 0.45 * sin(t * 0.23 + ph * 0.35);
+        float bend = (sin(t + ph) * 0.62 + sin(t * 1.7 + ph * 1.4) * 0.28) * gust;
+        float k = w * \(amp);
+        _geometry.position.x += bend * k;
+        _geometry.position.z += bend * k * 0.65;
+        // Swinging on an arc shortens the reach, so the tip dips as it travels. Without
+        // this the frond stretches, which is the tell that it is a shear and not a hinge.
+        _geometry.position.y -= abs(bend) * k * 0.30;
+        """
     }
 
     /// Scenery surface. Physically based rather than lambert so everything in the
@@ -1836,7 +1889,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                                         material: SCNMaterial) -> SCNGeometry {
         let m = PropMeshes.flamboyanCrown(seed: seed, tint: tint)
         return makeGeometry(verts: m.verts, indices: m.indices, colors: m.cols,
-                            material: material)
+                            sway: m.sway, material: material)
     }
 
     /// A whole palm — curved tapering trunk and crown — as a two-part template.
@@ -1874,7 +1927,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         return (trunk: makeGeometry(verts: m.trunk.verts, indices: m.trunk.indices,
                                     colors: m.trunk.cols, material: trunkMaterial),
                 fronds: makeGeometry(verts: m.fronds.verts, indices: m.fronds.indices,
-                                     colors: m.fronds.cols, material: frondMaterial))
+                                     colors: m.fronds.cols, sway: m.fronds.sway,
+                                     material: frondMaterial))
     }
 
     private func vegetation(_ parent: SCNNode) {
@@ -1893,6 +1947,14 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         let palmTrunkMat = lambert(.white)
         let palmFrondMat = lambert(.white)
         palmFrondMat.isDoubleSided = true
+        // Hardest of the three. Palm fronds are 3 m ribbons on an exposed coast and they are
+        // the most visibly moving thing in any real photograph of this island; the rainforest
+        // canopy gets a slower, heavier version because it is packed together and sheltered.
+        palmFrondMat.shaderModifiers = [
+            .geometry: Self.windModifier(
+                amp: Self.currentStage == .yunque ? 0.30 : 0.42,
+                rate: Self.currentStage == .yunque ? 1.05 : 1.45)
+        ]
         let palmGeos = (0..<3).map {
             palmGeometries(variant: $0, trunkMaterial: palmTrunkMat,
                            frondMaterial: palmFrondMat)
@@ -1962,6 +2024,10 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         // five copies of the same white.
         let flamMat = lambert(.white)
         flamMat.isDoubleSided = true      // the rim dips below the eye line downhill
+        // Gentlest of the three. A poinciana canopy is a dense heavy mass on a thick bole —
+        // it nods, it does not thrash, and pushing it as far as the palms turns the grove
+        // into a field of wobbling lollipops.
+        flamMat.shaderModifiers = [.geometry: Self.windModifier(amp: 0.16, rate: 0.85)]
         let canopyGeos: [SCNGeometry] = (0..<5).map { k in
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             UIColor(hue: CGFloat(0.02 + Double(k) * 0.011),
@@ -2166,10 +2232,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         if fernTarget > 0 {
             let fernMat = lambert(.white, roughness: 0.94)
             fernMat.isDoubleSided = true          // fronds are ribbons
+            // Slowest and smallest of the three. These are the understory, sheltered by 300
+            // palms of canopy — and they are also the closest thing to the camera, 0.4 m off
+            // the trail edge, so the same amplitude that reads as a breeze on a distant palm
+            // reads as an earthquake here.
+            fernMat.shaderModifiers = [.geometry: Self.windModifier(amp: 0.10, rate: 0.70)]
             let fernGeos = (0..<4).map { v -> SCNGeometry in
                 let f = PropMeshes.treeFern(variant: v)
                 return makeGeometry(verts: f.verts, indices: f.indices,
-                                    colors: f.cols, material: fernMat)
+                                    colors: f.cols, sway: f.sway, material: fernMat)
             }
             let fernContainer = SCNNode()
             placed = 0; guard_ = 0
