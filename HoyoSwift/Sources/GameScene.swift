@@ -1426,7 +1426,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         switch Self.currentStage {
         case .yunque:     inner = simd_float3(0.30, 0.23, 0.16)   // packed dirt
         case .cordillera: inner = simd_float3(0.21, 0.22, 0.24)   // asphalt
-        case .playa:      inner = simd_float3(0.84, 0.76, 0.62)   // dry sand
+        // Each of these mirrors its stage's road texture base, which is the whole point:
+        // the strip starts at the surface tone and smoothsteps out to the terrain, so a
+        // value that does not match the road puts back the seam this function removes.
+        // Tracks `wetSand`'s base — when that dropped from 0.85/0.77/0.63 to kill the
+        // stage's blowout, leaving this at the old value drew a bright rim down both
+        // edges of the road.
+        case .playa:      inner = simd_float3(0.60, 0.54, 0.45)   // wet sand
         }
         var verts: [simd_float3] = [], cols: [simd_float3] = [], idx: [Int32] = []
         let across = 5

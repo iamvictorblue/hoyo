@@ -483,13 +483,20 @@ enum Textures {
         let dim: CGFloat = 512
         return UIGraphicsImageRenderer(size: CGSize(width: dim, height: dim)).image { ctx in
             let g = ctx.cgContext
-            UIColor(red: 0.85, green: 0.77, blue: 0.63, alpha: 1).setFill()
+            // Wet, which means dark. This was 0.85/0.77/0.63 — dry-beach albedo in a texture
+            // called wetSand — and under this stage's 1450-intensity sun plus ambient, rim,
+            // bounce and an IBL sky at 0.85, a surface that reflective cannot help but clip:
+            // 6.5% of the frame was pure 255s with the craft's glow blowing into a white
+            // halo. Soaking sand roughly halves how much light it returns, and the previous
+            // attempt at this fought the specular via roughness while leaving the diffuse at
+            // dry values, which is why it only half worked.
+            UIColor(red: 0.60, green: 0.54, blue: 0.45, alpha: 1).setFill()
             g.fill(CGRect(x: 0, y: 0, width: dim, height: dim))
 
             // damp patches, darker where the water has just been
             for _ in 0..<26 {
                 let v = CGFloat.random(in: -0.10...0.04)
-                UIColor(red: 0.85 + v, green: 0.77 + v, blue: 0.63 + v * 0.8,
+                UIColor(red: 0.60 + v, green: 0.54 + v, blue: 0.45 + v * 0.8,
                         alpha: .random(in: 0.3...0.7)).setFill()
                 g.fill(CGRect(x: .random(in: -40...dim), y: .random(in: -40...dim),
                               width: .random(in: 90...260), height: .random(in: 50...170)))
@@ -497,7 +504,7 @@ enum Textures {
             // ripple lines left by the tide
             g.setLineCap(.round)
             for _ in 0..<26 {
-                g.setStrokeColor(UIColor(red: 0.74, green: 0.66, blue: 0.53,
+                g.setStrokeColor(UIColor(red: 0.52, green: 0.46, blue: 0.38,
                                          alpha: .random(in: 0.25...0.55)).cgColor)
                 g.setLineWidth(.random(in: 1.5...4))
                 var cx: CGFloat = -20, cy = CGFloat.random(in: 0...dim)
