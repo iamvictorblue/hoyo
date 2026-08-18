@@ -72,6 +72,119 @@ enum PropMeshes {
         return s - floorf(s)
     }
 
+    // MARK: - the saucer
+
+    /// The hull, as plated panels with a history.
+    ///
+    /// It was two squashed `SCNSphere`s, a `SCNTorus` and a dome — perfectly radially
+    /// symmetric, unblemished, injection-moulded. That object is on screen for every second
+    /// of every run, dead centre, and it was the single most generic thing in the game:
+    /// a surface of revolution has no author, and you can tell.
+    ///
+    /// The fiction says you stole this thing. So it is panelled rather than smooth, dented
+    /// down one side, wearing a mismatched welded patch over part of the rim, and scorched
+    /// where something got too close. None of that is symmetric, which is the point —
+    /// asymmetry is most of what separates a made object from a generated one, and it also
+    /// means the craft reads as *turning* rather than spinning in place.
+    ///
+    /// Deliberately independent of the neon-versus-realism question hanging over the rest of
+    /// the art: character survives either answer, so this is worth doing before that is
+    /// settled rather than after.
+    static func saucerHull(segments: Int = 26) -> Mesh {
+        var m = Mesh()
+
+        // Profile from top centre, out over the shoulder to the rim, then back under to the
+        // belly. Proportions match the shells this replaces so the camera framing, the grind
+        // emitter box and the collision radius all still hold.
+        // Fuller than the first attempt, which ran nearly straight from centre to rim and
+        // read as a thin brim rather than a body — with the bright rim torus around it the
+        // whole craft came out looking like a doughnut with a marble in the middle. A saucer
+        // needs visible volume over the centre and a fast taper only in the last third.
+        let profile: [(r: Float, y: Float)] = [
+            (0.00, 1.06), (0.40, 1.04), (0.78, 0.96), (1.08, 0.82),
+            (1.30, 0.64),                                  // rim
+            (1.06, 0.48), (0.74, 0.37), (0.38, 0.31), (0.00, 0.28)
+        ]
+
+        /// Angular centres of the three authored marks, in radians.
+        let dentA: Float = 2.30, patchA: Float = 5.05, scorchA: Float = 0.55
+
+        /// Shortest angular distance, so a window centred near 0 does not tear at the seam.
+        func arc(_ a: Float, _ b: Float) -> Float {
+            let d = abs(a - b).truncatingRemainder(dividingBy: 2 * .pi)
+            return min(d, 2 * .pi - d)
+        }
+
+        // Near white, because the material this rides on already carries the grey (diffuse
+        // 0.80) and the vertex stream multiplies it. The first attempt put 0.62 here, so the
+        // hull rendered at 0.5 against the untouched rim torus at 0.80 and sank into shadow
+        // while the ring popped forward.
+        let base = simd_float3(0.97, 0.98, 1.00)
+        let patchCol = simd_float3(0.44, 0.30, 0.21)       // oxidised brown, plainly not the hull
+        let scorchCol = simd_float3(0.13, 0.12, 0.13)      // soot
+
+        for ring in 0..<(profile.count - 1) {
+            for seg in 0..<segments {
+                let a0 = Float(seg) / Float(segments) * 2 * .pi
+                let a1 = Float(seg + 1) / Float(segments) * 2 * .pi
+                let mid = (a0 + a1) / 2
+
+                // A dent is a depression, not a facet: radius pulled in and the surface
+                // pushed down, strongest at the centre of the strike and easing out.
+                let dentF = max(0, 1 - arc(mid, dentA) / 0.85)
+                let dent = dentF * dentF * (3 - 2 * dentF)      // smoothstep, so no crease
+                let rK = 1 - 0.115 * dent
+                let yK = -0.055 * dent
+
+                // Plating. Alternate panels sit a hair brighter, which is what makes the hull
+                // read as riveted sheet rather than one continuous shell — this only works
+                // because the vertices below are unshared, so the tones stay crisp instead of
+                // blending across the seam.
+                var tone: Float = seg % 2 == 0 ? 1.05 : 0.94
+                tone *= 1 - 0.10 * dent                         // dented metal sits in shadow
+
+                var col = base * tone
+                if arc(mid, patchA) < 0.42, ring >= 2, ring <= 5 { col = patchCol * tone }
+                let sc = max(0, 1 - arc(mid, scorchA) / 0.60)
+                if sc > 0, ring <= 4 { col = simd_mix(col, scorchCol, simd_float3(repeating: sc * 0.8)) }
+
+                let p0 = profile[ring], p1 = profile[ring + 1]
+                func v(_ p: (r: Float, y: Float), _ a: Float) -> simd_float3 {
+                    simd_float3(cos(a) * p.r * rK, p.y + yK, sin(a) * p.r * rK)
+                }
+                // Unshared per quad: flat shading, and the only way per-panel tone survives.
+                //
+                // The poles are fans, not quads. Both ends of the profile reach r = 0, so a
+                // quad there has two coincident vertices and one of its two triangles has zero
+                // area — 52 of 416 faces, caught by `testNoDegenerateTriangles`. Zero-area
+                // faces have no usable normal and flicker under the hull's specular.
+                let b = Int32(m.verts.count)
+                let topPole = p0.r == 0, botPole = p1.r == 0
+                if topPole || botPole {
+                    let apex = topPole ? p0 : p1
+                    let ring = topPole ? p1 : p0
+                    m.add(v(apex, (a0 + a1) / 2), col)
+                    m.add(v(ring, a0), col)
+                    m.add(v(ring, a1), col)
+                    // Apex-first either way; the winding flips so both caps face outward.
+                    m.indices.append(contentsOf: topPole ? [b, b + 1, b + 2]
+                                                         : [b, b + 2, b + 1])
+                } else {
+                    m.add(v(p0, a0), col); m.add(v(p0, a1), col)
+                    m.add(v(p1, a0), col); m.add(v(p1, a1), col)
+                    // Wound so the outward face is front — the profile runs top to bottom, so
+                    // the upper half needs the opposite order from the lower.
+                    if p0.y >= p1.y {
+                        m.indices.append(contentsOf: [b, b + 2, b + 1, b + 1, b + 2, b + 3])
+                    } else {
+                        m.indices.append(contentsOf: [b, b + 1, b + 2, b + 1, b + 3, b + 2])
+                    }
+                }
+            }
+        }
+        return m
+    }
+
     // MARK: - boulder
 
     /// An irregular faceted lump, flat-shaded.

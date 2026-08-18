@@ -3606,30 +3606,21 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             """
         hullMat.shaderModifiers = [.fragment: rimLight]
 
-        let underMat = SCNMaterial()
-        underMat.lightingModel = .physicallyBased
-        underMat.diffuse.contents = UIColor(white: 0.26, alpha: 1)
-        underMat.metalness.contents = 0.85
-        underMat.roughness.contents = 0.38
-        underMat.shaderModifiers = [.fragment: rimLight]
+        // One plated hull, dented and patched, in place of two squashed spheres. See
+        // `PropMeshes.saucerHull` for why. The tone lives in the vertex stream, so the
+        // material stays white and every panel still shares one draw call.
+        let shell = PropMeshes.saucerHull()
+        let hull = SCNNode(geometry: makeGeometry(verts: shell.verts, indices: shell.indices,
+                                                  colors: shell.cols, material: hullMat))
+        craft.addChildNode(hull)
 
-        // upper and lower shells, squashed spheres
-        let top = SCNNode(geometry: SCNSphere(radius: 1.25))
-        top.geometry!.materials = [hullMat]
-        top.scale = SCNVector3(1, 0.30, 1)
-        top.position.y = 0.66
-        craft.addChildNode(top)
-
-        let under = SCNNode(geometry: SCNSphere(radius: 1.20))
-        under.geometry!.materials = [underMat]
-        under.scale = SCNVector3(1, 0.22, 1)
-        under.position.y = 0.54
-        craft.addChildNode(under)
-
-        // rim
-        let rim = SCNNode(geometry: SCNTorus(ringRadius: 1.34, pipeRadius: 0.14))
+        // Rim kept: a saucer needs a hard edge to catch the light, and the torus is the one
+        // primitive here that is genuinely the right shape for what it represents.
+        // Thinner than it was. At 0.14 the pipe was almost as deep as the hull's whole taper,
+        // so it read as the craft's main mass instead of its edge.
+        let rim = SCNNode(geometry: SCNTorus(ringRadius: 1.32, pipeRadius: 0.085))
         rim.geometry!.materials = [hullMat]
-        rim.position.y = 0.62
+        rim.position.y = 0.64
         craft.addChildNode(rim)
 
         // cockpit dome
@@ -3639,10 +3630,13 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         domeMat.metalness.contents = 0.30
         domeMat.roughness.contents = 0.05
         domeMat.emission.contents = UIColor(red: 0.06, green: 0.42, blue: 0.38, alpha: 1)
-        let dome = SCNNode(geometry: SCNSphere(radius: 0.56))
+        // A cockpit blister, not a bauble. At 0.56 sitting proud at y 0.90 the dome was a
+        // sphere balanced on a plate — with the hull now carrying real volume it only needs
+        // to break the top surface, so it is smaller and set deeper into it.
+        let dome = SCNNode(geometry: SCNSphere(radius: 0.44))
         dome.geometry!.materials = [domeMat]
-        dome.scale = SCNVector3(1, 0.9, 1)
-        dome.position.y = 0.90
+        dome.scale = SCNVector3(1, 0.78, 1)
+        dome.position.y = 0.94
         craft.addChildNode(dome)
 
         // rotating ring of lights — one shared emissive material so it can flatten
@@ -3652,13 +3646,44 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         lampMat.emission.intensity = 1.5
         let lampGeo = SCNSphere(radius: 0.11)
         lampGeo.materials = [lampMat]
+        // One bulb out. A ring of eight identical lights is a machine in a showroom; seven lit
+        // and one dead is a machine somebody has been flying. It also gives the rotation a
+        // readable phase, so the ring reads as turning rather than shimmering.
+        let deadMat = SCNMaterial()
+        deadMat.lightingModel = .physicallyBased
+        deadMat.diffuse.contents = UIColor(white: 0.20, alpha: 1)
+        deadMat.roughness.contents = 0.7
+        let deadGeo = SCNSphere(radius: 0.11)
+        deadGeo.materials = [deadMat]
         for k in 0..<8 {
             let a = Float(k) / 8 * 2 * .pi
-            let lamp = SCNNode(geometry: lampGeo)
+            let lamp = SCNNode(geometry: k == 5 ? deadGeo : lampGeo)
             lamp.position = SCNVector3(cos(a) * 1.18, 0.5, sin(a) * 1.18)
             lightRing.addChildNode(lamp)
         }
         craft.addChildNode(lightRing)
+
+        // A bent aerial. The cheapest possible break in the silhouette, and silhouette is what
+        // you actually read at 200 km/h — every other mark on this hull is surface detail that
+        // vanishes at distance, while this changes the shape against the sky.
+        let aerialMat = SCNMaterial()
+        aerialMat.lightingModel = .physicallyBased
+        aerialMat.diffuse.contents = UIColor(white: 0.34, alpha: 1)
+        aerialMat.metalness.contents = 0.7
+        aerialMat.roughness.contents = 0.5
+        var aerialParent = craft
+        // Three segments, each shorter and kinked further over, so it reads as bent rather
+        // than designed at an angle.
+        for (len, tilt) in [(Float(0.46), Float(0.10)), (0.30, 0.42), (0.17, 0.85)] {
+            let seg = SCNNode(geometry: SCNCylinder(radius: 0.022, height: CGFloat(len)))
+            seg.geometry!.materials = [aerialMat]
+            seg.pivot = SCNMatrix4MakeTranslation(0, -len / 2, 0)
+            seg.position = aerialParent === craft
+                ? SCNVector3(0.42, 0.95, -0.30) : SCNVector3(0, len == 0.30 ? 0.46 : 0.30, 0)
+            seg.eulerAngles.z = -tilt
+            aerialParent.addChildNode(seg)
+            aerialParent = seg
+        }
 
         craft.scale = SCNVector3(scale, scale, scale)
         return (craft, lightRing, domeMat)
@@ -5977,6 +6002,17 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         case "toolbox": target = toolboxes.first(where: { !$0.node.isHidden })?.node
         case "traffic": target = traffic.first?.node
         case "iguana":  target = iguanas.first?.node
+        case "craft":
+            // Close three-quarter on the hull. Added while authoring `saucerHull`, and kept:
+            // the craft is the one object whose detail is invisible from the chase camera, so
+            // judging any change to it needs a shot you cannot otherwise get.
+            let cp = chassisNode.simdWorldPosition
+            cameraNode.simdPosition = cp + simd_float3(2.6, 1.5, 3.2)
+            cameraNode.simdLook(at: cp + simd_float3(0, 0.55, 0), up: simd_float3(0, 1, 0),
+                                localFront: simd_float3(0, 0, -1))
+            cameraNode.camera?.fieldOfView = 40
+            cameraNode.camera?.motionBlurIntensity = 0
+            return
         default:        target = nil
         }
         guard let node = target else { return }

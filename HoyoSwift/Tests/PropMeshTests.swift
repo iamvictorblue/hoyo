@@ -346,3 +346,74 @@ final class BannerTests: XCTestCase {
         XCTAssertTrue(fired, "a \(step) m frame step can jump the window entirely")
     }
 }
+
+/// The hull. Its whole purpose is to not look machine-generated, and the properties that
+/// achieve that are numeric: it must be asymmetric, its panels must differ, and its marks must
+/// actually be present. None of it is checkable from a screenshot at gameplay distance, where
+/// the craft is about 120 px wide and every one of these details is sub-pixel.
+final class SaucerHullTests: XCTestCase {
+
+    private let hull = PropMeshes.saucerHull()
+
+    func testChannelsAreParallel() {
+        XCTAssertEqual(hull.cols.count, hull.verts.count)
+        XCTAssertEqual(hull.sway.count, hull.verts.count)
+        XCTAssertFalse(hull.indices.isEmpty)
+        XCTAssertEqual(hull.indices.count % 3, 0)
+    }
+
+    /// The hull must not bend in the wind. `sway` defaults to 0 and nothing here sets it, but
+    /// the craft shares `Mesh` with the foliage and a stray weight would make it flutter.
+    func testHullDoesNotBendInTheWind() {
+        XCTAssertEqual(hull.sway.max(), 0)
+    }
+
+    /// The central claim. A surface of revolution has the same radius at every angle, and that
+    /// is exactly what reads as generated; the dent has to make it measurably untrue.
+    func testHullIsNotRadiallySymmetric() {
+        // Sample the widest band and bucket by angle.
+        var byAngle: [Int: Float] = [:]
+        for v in hull.verts where abs(v.y - 0.64) < 0.06 {
+            let a = atan2(v.z, v.x)
+            let bucket = Int((a + .pi) / (2 * .pi) * 36) % 36
+            byAngle[bucket] = max(byAngle[bucket] ?? 0, sqrt(v.x * v.x + v.z * v.z))
+        }
+        guard let lo = byAngle.values.min(), let hi = byAngle.values.max() else {
+            return XCTFail("no rim band sampled")
+        }
+        XCTAssertGreaterThan(hi - lo, 0.05,
+            "rim radius varies by only \(hi - lo) — the hull is still a surface of revolution")
+        // But not so deep it stops reading as a saucer.
+        XCTAssertLessThan(hi - lo, 0.30, "dent is \(hi - lo) deep, which is a bite not a dent")
+    }
+
+    /// Plating. Adjacent panels carry different tones, and that only survives because the
+    /// vertices are unshared — if someone re-indexes this mesh to save memory the panels blend
+    /// into one shell and the hull goes back to looking moulded.
+    func testPanelsCarryDistinctTones() {
+        let tones = Set(hull.cols.map { Int(($0.x + $0.y + $0.z) / 3 * 200) })
+        XCTAssertGreaterThan(tones.count, 6,
+            "only \(tones.count) distinct tones — the plating has collapsed to a flat shell")
+    }
+
+    /// The welded patch is a different hue, not just a different brightness. A darker grey
+    /// reads as shading; a brown reads as somebody else's metal.
+    func testTheWeldedPatchIsAnotherColourEntirely() {
+        let warm = hull.cols.filter { $0.x > $0.z * 1.3 && $0.x > 0.25 }
+        XCTAssertFalse(warm.isEmpty, "no oxidised patch anywhere on the hull")
+        // Present, but a repair rather than a repaint.
+        let share = Float(warm.count) / Float(hull.cols.count)
+        XCTAssertLessThan(share, 0.25, "the patch covers \(share * 100)% of the hull")
+    }
+
+    /// No degenerate triangles. The profile has two poles where the radius reaches zero, and a
+    /// fan built carelessly there produces zero-area faces that flicker under specular.
+    func testNoDegenerateTriangles() {
+        var bad = 0
+        for t in 0..<hull.triangleCount {
+            let n = hull.faceNormal(t)
+            if !n.x.isFinite || !n.y.isFinite || !n.z.isFinite { bad += 1 }
+        }
+        XCTAssertEqual(bad, 0, "\(bad) of \(hull.triangleCount) faces have no usable normal")
+    }
+}
