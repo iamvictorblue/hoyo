@@ -854,6 +854,15 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     /// with the trees the player can actually see beside the trail.
     private static let palmWindRate: Float = 1.05
 
+    /// The two race banners, with the distance each is strung across and whether the craft
+    /// has already burst it.
+    ///
+    /// `arch()` hung a zero-thickness double-sided plane across the road at y 4.8...6.4 and
+    /// `floatHeight` is 12, so a float has always had to pass straight through it — twice,
+    /// going up and coming down. From underneath, a 13 m flat coloured quad with no edge and
+    /// no thickness reads as a roof somebody left floating over the trail. Now it tears.
+    private var banners: [(pivot: SCNNode, s: Float, torn: Bool)] = []
+
     /// Our own wind clock, in seconds, advanced by the dilated `dt`.
     private var windT: Float = 0
     /// The foliage materials, so the clock can be pushed to them once a frame. Three writes,
@@ -2439,16 +2448,26 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
                 post.position = SCNVector3(xo, 3, 0)
                 grp.addChildNode(post)
             }
-            let banner = SCNNode(geometry: SCNPlane(width: CGFloat(archHalf * 2 + 0.4), height: 1.6))
+            let bannerH: CGFloat = 1.6
+            let banner = SCNNode(geometry: SCNPlane(width: CGFloat(archHalf * 2 + 0.4),
+                                                    height: bannerH))
             let bm = constant(.white)
             bm.diffuse.contents = Textures.banner(text: text, background: color)
             bm.isDoubleSided = true
             banner.geometry!.materials = [bm]
-            banner.position.y = 5.6
-            grp.addChildNode(banner)
+            // Hung from a pivot on its top edge rather than positioned directly, so tearing it
+            // can swing it up and over the way a banner on a wire actually goes: about the line
+            // it is strung from. Rotating the plane about its own centre instead scissors it
+            // through the wire, which looks like one bug fixing another.
+            let pivot = SCNNode()
+            pivot.position.y = Float(5.6 + bannerH / 2)
+            banner.position.y = -Float(bannerH / 2)
+            pivot.addChildNode(banner)
+            grp.addChildNode(pivot)
             grp.simdPosition = p
             grp.simdLook(at: p + t, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
             parent.addChildNode(grp)
+            banners.append((pivot, Float(i2) * Self.step, false))
         }
         // sits just ahead of the 40 m starting point
         // Pueblo street lamps. Warm emissive heads against the sunset, which the
@@ -4538,6 +4557,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
         shake = 0; flashT = 0; jolt = 0; invuln = 0; dustT = 0
         warp = 0; warpCool = 0; applyWarp()
         windT = 0
+        resetBanners()
         runSealed = 0; runFloats = 0
         clearTrace()
         lightningT = 0; lightningCool = 6
@@ -4659,6 +4679,7 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
     private func beginLap() {
         lap += 1
         clearTrace()
+        resetBanners()
         s = Self.startOffset
         v = min(v, 34)                       // carry momentum, but not all of it
         jump.reset()
@@ -4949,6 +4970,60 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
 
     private func popupAsync(_ msg: String, _ tone: PopupTone = .praise) {
         DispatchQueue.main.async { self.state.popup(msg, tone) }
+    }
+
+    /// Bursts a race banner if the craft is flying through where it hangs.
+    ///
+    /// Flying through it was never avoidable — the banner sits at 4.8...6.4 m and a float
+    /// climbs to 12 — so the choice is between passing through a solid-looking sheet and
+    /// taking it with you. A stolen saucer at 200 km/h should take it with you.
+    ///
+    /// The band is generous at both ends. The craft is about 2.4 m across and the banner is
+    /// 1.6 m tall, so requiring an exact overlap means clipping a corner of it silently at
+    /// the edges of the window, which is the original complaint in miniature.
+    private func tearBanners() {
+        for i in banners.indices where !banners[i].torn {
+            guard Self.hitsBanner(bannerS: banners[i].s, craftS: s, y: jumpY) else { continue }
+            banners[i].torn = true
+            // Up and over, past vertical, so it ends slack and hanging backwards off its wire
+            // rather than standing neatly upright — which would read as a door opening.
+            let flip = SCNAction.rotateBy(x: -2.35, y: 0, z: 0, duration: 0.42)
+            flip.timingMode = .easeOut
+            banners[i].pivot.runAction(flip)
+            // bumpCombo first, exactly as the fly-over-a-hole award does. Without it the
+            // award is 120 * combo with combo still 0 on the opening straight, and the very
+            // first banner anyone tears pays "+0" — measured, that is what it printed.
+            // Bursting a banner mid-float is a style move, so it belongs in the chain rather
+            // than paying a flat rate beside it.
+            bumpCombo()
+            let award = 120 * combo
+            score += Float(award)
+            popupAsync("¡ROMPISTE LA MANTA! +\(award)", .big)
+            sound.playThunk()
+            Haptics.shared.crash(intensity: 0.55)
+        }
+    }
+
+    /// Whether a craft at distance `craftS` and height `y` is inside the banner.
+    ///
+    /// The banner spans 4.8...6.4 m, but the band here is wider at both ends on purpose: the
+    /// craft is about 2.4 m across and 0.9 m tall, so testing against the exact quad clips a
+    /// corner of it silently near the edges of the window — the original complaint in
+    /// miniature. The ceiling matters as much as the floor. A float levels off at 12 m and
+    /// crosses well clear, so anything above 8 m must pass over untouched; tearing a banner
+    /// you flew a comfortable four metres above would be worse than the bug.
+    static func hitsBanner(bannerS: Float, craftS: Float, y: Float) -> Bool {
+        abs(bannerS - craftS) < 3.2 && y > 3.4 && y < 8.0
+    }
+
+    /// Restores both banners. Called per run and per lap, or an endless run tears them on lap
+    /// one and spends the next forty laps flying through two limp rags.
+    private func resetBanners() {
+        for i in banners.indices {
+            banners[i].pivot.removeAllActions()
+            banners[i].pivot.eulerAngles = SCNVector3Zero
+            banners[i].torn = false
+        }
     }
 
     /// Fires a teaching prompt the first time ever, and never again. See `Tip`.
@@ -5368,6 +5443,8 @@ final class GameScene: NSObject, SCNSceneRendererDelegate {
             // and shouldn't be free just because you clipped a pothole a moment ago
             if Float.random(in: 0...1) < dt * 2.2 { damage(2, nil, grace: false) }
         }
+
+        tearBanners()
 
         // potholes
         for hIdx in 0..<holes.count {

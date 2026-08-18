@@ -290,3 +290,59 @@ final class WindTests: XCTestCase {
         XCTAssertLessThan(d, 1.2, "\(d) rad across one crown would tear it in half")
     }
 }
+
+/// The banner-tear window. Its two edges encode opposite failures — too tight and the craft
+/// clips a corner of a solid-looking sheet in silence, too loose and a banner tears while you
+/// fly clear over the top of it — and neither is visible in a still frame.
+final class BannerTests: XCTestCase {
+
+    private let bannerS: Float = 3586
+
+    /// The whole reason this exists: a float climbs to 12 m through a banner hung at 4.8...6.4,
+    /// so mid-climb at the arch must register.
+    func testClimbingThroughItTears() {
+        for y in [Float(4.0), 4.8, 5.6, 6.4, 7.5] {
+            XCTAssertTrue(GameScene.hitsBanner(bannerS: bannerS, craftS: bannerS, y: y),
+                          "y=\(y) is inside the banner and should tear it")
+        }
+    }
+
+    /// Driving under it is the normal case — every run passes both arches on the ground twice
+    /// in endless — and must never tear anything.
+    func testDrivingUnderItDoesNot() {
+        for y in [Float(0), 0.9, 2.0, 3.0] {
+            XCTAssertFalse(GameScene.hitsBanner(bannerS: bannerS, craftS: bannerS, y: y),
+                           "y=\(y) is well under the banner")
+        }
+    }
+
+    /// A levelled-off float clears it by nearly 6 m. Tearing from up there would read as the
+    /// game reaching up to grab something you had visibly avoided.
+    func testFloatingOverItDoesNot() {
+        for y in [Float(8.5), 10, 12] {
+            XCTAssertFalse(GameScene.hitsBanner(bannerS: bannerS, craftS: bannerS, y: y),
+                           "y=\(y) passes above the banner")
+        }
+    }
+
+    /// Longitudinally bounded, or a float anywhere on the course would tear both banners at
+    /// once from hundreds of metres away.
+    func testOnlyNearTheArch() {
+        XCTAssertTrue(GameScene.hitsBanner(bannerS: bannerS, craftS: bannerS - 3, y: 5.6))
+        XCTAssertFalse(GameScene.hitsBanner(bannerS: bannerS, craftS: bannerS - 40, y: 5.6))
+        XCTAssertFalse(GameScene.hitsBanner(bannerS: bannerS, craftS: 0, y: 5.6))
+    }
+
+    /// The window has to be wider than the craft is long, or at 55 m/s a frame step of ~1.8 m
+    /// can straddle it and the tear never fires at all.
+    func testWindowSurvivesAFrameStepAtFullSpeed() {
+        let step: Float = 55 * (1.0 / 30.0)      // worst case, 30 fps
+        var fired = false
+        var d = -8.0 as Float
+        while d < 8 {
+            if GameScene.hitsBanner(bannerS: bannerS, craftS: bannerS + d, y: 5.6) { fired = true }
+            d += step
+        }
+        XCTAssertTrue(fired, "a \(step) m frame step can jump the window entirely")
+    }
+}
